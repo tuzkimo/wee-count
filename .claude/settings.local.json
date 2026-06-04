@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(rustc --version)",
+      "Bash(rustup --version)",
+      "Bash(cargo --version)",
+      "Bash(java --version)",
+      "Bash(javac --version)",
+      "Bash(adb --version)"
+    ]
+  }
+}
