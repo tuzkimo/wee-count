@@ -38,9 +38,12 @@ function formatBalance(value: number): string {
 
 // 长按检测
 let pressTimer: ReturnType<typeof setTimeout> | null = null;
+let longPressed = false;
 
 function onTouchStart() {
+  longPressed = false;
   pressTimer = setTimeout(() => {
+    longPressed = true;
     emit("longpress");
   }, 500);
 }
@@ -53,6 +56,7 @@ function onTouchEnd() {
 }
 
 function onClick() {
+  if (longPressed) return;
   emit("tap");
 }
 </script>

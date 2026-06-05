@@ -1,13 +1,18 @@
 import Database from "@tauri-apps/plugin-sql";
 
 let db: Database | null = null;
+let dbPromise: Promise<Database> | null = null;
 
 export async function getDb(): Promise<Database> {
-  if (!db) {
-    db = await Database.load("sqlite:wee-count.db");
-    await initTables(db);
+  if (db) return db;
+  if (!dbPromise) {
+    dbPromise = Database.load("sqlite:wee-count.db").then(async (database) => {
+      await initTables(database);
+      db = database;
+      return database;
+    });
   }
-  return db;
+  return dbPromise;
 }
 
 async function initTables(db: Database): Promise<void> {
@@ -40,6 +45,21 @@ async function initTables(db: Database): Promise<void> {
       type TEXT NOT NULL DEFAULT 'bank',
       initial_balance REAL NOT NULL DEFAULT 0.00,
       color TEXT DEFAULT '#3b82f6',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      is_deleted INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY,
+      ledger_id TEXT REFERENCES ledgers(id) NOT NULL,
+      from_account_id TEXT REFERENCES accounts(id),
+      to_account_id TEXT REFERENCES accounts(id),
+      amount REAL NOT NULL DEFAULT 0.00,
+      type TEXT NOT NULL DEFAULT 'expense',
+      category TEXT,
+      note TEXT,
+      transacted_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       is_deleted INTEGER DEFAULT 0

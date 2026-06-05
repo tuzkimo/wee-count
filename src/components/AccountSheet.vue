@@ -40,7 +40,7 @@ const COLORS = [
 
 // 编辑模式下预填
 watch(
-  () => [props.visible, props.editAccount] as const,
+  [() => props.visible, () => props.editAccount],
   ([v, acc]) => {
     if (v) {
       if (acc) {

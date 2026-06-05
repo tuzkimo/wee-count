@@ -18,11 +18,16 @@ const editingAccount = ref<Account | null>(null);
 const isLoading = ref(true);
 
 onMounted(async () => {
-  await ledgerStore.init();
-  if (ledgerStore.currentLedger) {
-    await accountStore.fetchAll(ledgerStore.currentLedger.id);
+  try {
+    await ledgerStore.init();
+    if (ledgerStore.currentLedger) {
+      await accountStore.fetchAll(ledgerStore.currentLedger.id);
+    }
+  } catch (e) {
+    console.error("Failed to load accounts:", e);
+  } finally {
+    isLoading.value = false;
   }
-  isLoading.value = false;
 });
 
 function openAdd() {
@@ -35,9 +40,9 @@ function openEdit(account: Account) {
   sheetVisible.value = true;
 }
 
-function handleDelete(account: Account) {
+async function handleDelete(account: Account) {
   if (confirm(`确定删除账户"${account.name}"吗？`)) {
-    accountStore.remove(account.id);
+    await accountStore.remove(account.id);
   }
 }
 
