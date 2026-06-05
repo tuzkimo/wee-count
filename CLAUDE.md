@@ -35,3 +35,4 @@ cargo test               # Rust 单元测试
 - 不重构无关代码，不要修改未被明确要求的文件。
 - 测试优先：非 bugfix 类功能实现需附带单元测试，不可删改已有测试。
 - TypeScript 严格模式，禁止 `any`。
+- 每次 commit 必须同步更新 README.md，确保 README.md 反映真实项目状态。
