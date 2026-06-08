@@ -26,6 +26,7 @@ const account = computed(() =>
 );
 
 const name = ref("");
+const categoryTab = ref<"asset" | "liability">("asset");
 const accountType = ref<AccountType>("bank");
 const initialBalance = ref("0");
 const creditLimit = ref("");
@@ -55,10 +56,16 @@ const COLORS = [
 
 const isLiability = computed(() => ACCOUNT_CATEGORY[accountType.value] === "liability");
 
+function switchCategory(tab: "asset" | "liability") {
+  categoryTab.value = tab;
+  accountType.value = tab === "asset" ? "bank" : "credit_card";
+}
+
 onMounted(() => {
   if (account.value) {
     name.value = account.value.name;
     accountType.value = account.value.type;
+    categoryTab.value = account.value.category ?? "asset";
     initialBalance.value = String(account.value.initial_balance);
     creditLimit.value = account.value.credit_limit ? String(account.value.credit_limit) : "";
     repaymentDay.value = account.value.repayment_day ? String(account.value.repayment_day) : "";
@@ -120,9 +127,34 @@ async function handleDelete() {
         class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
       />
 
+      <!-- 账户类型 Tab 切换 -->
+      <div class="mb-3 flex rounded-lg bg-gray-100 p-0.5">
+        <button
+          class="flex-1 rounded-md py-1.5 text-sm font-medium transition-colors"
+          :class="
+            categoryTab === 'asset'
+              ? 'bg-surface text-text shadow-sm'
+              : 'text-text-secondary'
+          "
+          @click="switchCategory('asset')"
+        >
+          资产账户
+        </button>
+        <button
+          class="flex-1 rounded-md py-1.5 text-sm font-medium transition-colors"
+          :class="
+            categoryTab === 'liability'
+              ? 'bg-surface text-text shadow-sm'
+              : 'text-text-secondary'
+          "
+          @click="switchCategory('liability')"
+        >
+          负债账户
+        </button>
+      </div>
+
       <!-- 资产类型 -->
-      <label class="mb-2 block text-sm font-medium text-text">资产账户</label>
-      <div class="mb-2 grid grid-cols-3 gap-2">
+      <div v-if="categoryTab === 'asset'" class="mb-4 grid grid-cols-3 gap-2">
         <button
           v-for="item in ASSET_TYPES"
           :key="item.type"
@@ -140,8 +172,7 @@ async function handleDelete() {
       </div>
 
       <!-- 负债类型 -->
-      <label class="mb-2 block text-sm font-medium text-text">负债账户</label>
-      <div class="mb-4 grid grid-cols-4 gap-2">
+      <div v-if="categoryTab === 'liability'" class="mb-4 grid grid-cols-4 gap-2">
         <button
           v-for="item in LIABILITY_TYPES"
           :key="item.type"
@@ -158,8 +189,10 @@ async function handleDelete() {
         </button>
       </div>
 
-      <!-- 初始余额 -->
-      <label class="mb-1 block text-sm font-medium text-text">初始余额</label>
+      <!-- 初始余额/初始欠款 -->
+      <label class="mb-1 block text-sm font-medium text-text">
+        {{ isLiability ? "初始欠款" : "初始余额" }}
+      </label>
       <input
         v-model="initialBalance"
         type="number"

@@ -11,6 +11,4 @@
   --color-text-secondary: #64748b;
 }
 
-body {
-  padding-top: env(safe-area-inset-top);
-}
+/* safe-area-inset-top 由各页面自行处理（AppHeader 等组件已包含） */

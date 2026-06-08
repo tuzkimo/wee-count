@@ -8,6 +8,7 @@ export async function getDb(): Promise<Database> {
   if (!dbPromise) {
     dbPromise = Database.load("sqlite:wee-count.db").then(async (database) => {
       await initTables(database);
+      await migrateAccounts(database);
       db = database;
       return database;
     });
@@ -68,6 +69,23 @@ async function initTables(db: Database): Promise<void> {
       is_deleted INTEGER DEFAULT 0
     );
   `);
+}
+
+async function migrateAccounts(db: Database): Promise<void> {
+  const tableInfo = await db.select<{ name: string }[]>(
+    "PRAGMA table_info(accounts)"
+  );
+  const columns = new Set(tableInfo.map((col) => col.name));
+
+  if (!columns.has("category")) {
+    await db.execute("ALTER TABLE accounts ADD COLUMN category TEXT NOT NULL DEFAULT 'asset'");
+  }
+  if (!columns.has("credit_limit")) {
+    await db.execute("ALTER TABLE accounts ADD COLUMN credit_limit REAL");
+  }
+  if (!columns.has("repayment_day")) {
+    await db.execute("ALTER TABLE accounts ADD COLUMN repayment_day INTEGER");
+  }
 }
 
 export async function ensureDefaultData(): Promise<void> {

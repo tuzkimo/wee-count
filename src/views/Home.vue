@@ -2,7 +2,7 @@
 </script>
 
 <template>
-  <div class="p-4">
+  <div class="p-4 pt-[calc(1rem+env(safe-area-inset-top))]">
     <h1 class="text-xl font-bold text-text">一起记账</h1>
     <p class="text-text-secondary mt-2">首页 — 后续放记账入口和流水概览</p>
     <div class="mt-6">
