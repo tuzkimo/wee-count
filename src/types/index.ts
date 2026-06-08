@@ -1,25 +1,44 @@
+export type AccountCategory = "asset" | "liability";
+export type AssetType = "cash" | "bank" | "digital";
+export type LiabilityType = "credit_card" | "huabei" | "meituan_monthly" | "other_loan";
+export type AccountType = AssetType | LiabilityType;
+
+export const ACCOUNT_CATEGORY: Record<AccountType, AccountCategory> = {
+  cash: "asset",
+  bank: "asset",
+  digital: "asset",
+  credit_card: "liability",
+  huabei: "liability",
+  meituan_monthly: "liability",
+  other_loan: "liability",
+};
+
+export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
+  cash: "现金",
+  bank: "银行卡",
+  digital: "电子钱包",
+  credit_card: "信用卡",
+  huabei: "花呗",
+  meituan_monthly: "美团月付",
+  other_loan: "其他借贷",
+};
+
 export interface Account {
   id: string;
   ledger_id: string;
   owner_id: string;
   name: string;
   type: AccountType;
+  category?: AccountCategory;
   initial_balance: number;
+  credit_limit?: number;
+  repayment_day?: number;
   color: string;
   created_at: string;
   updated_at: string;
   is_deleted: boolean;
   current_balance?: number;
 }
-
-export type AccountType = "bank" | "credit_card" | "digital" | "debt";
-
-export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
-  bank: "银行卡",
-  credit_card: "信用卡",
-  digital: "电子钱包",
-  debt: "借贷",
-};
 
 export interface Ledger {
   id: string;
