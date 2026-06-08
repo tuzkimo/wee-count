@@ -221,7 +221,7 @@ async function handleDelete() {
     <!-- 删除确认对话框 -->
     <ConfirmDialog
       :visible="deleteDialogVisible"
-      :title="`确定删除账户\"${account?.name ?? ''}\"吗？`"
+      :title="`确定删除账户「${account?.name ?? ''}」吗？`"
       description="删除后不可恢复"
       confirm-text="删除"
       :danger="true"
