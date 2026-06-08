@@ -3,6 +3,8 @@ import {
   Building2,
   CreditCard,
   Smartphone,
+  Banknote,
+  Wallet,
   Scale,
 } from "lucide-vue-next";
 import type { Account, AccountType } from "@/types";
@@ -13,16 +15,18 @@ const props = defineProps<{
   account: Account;
 }>();
 
-const emit = defineEmits<{
+defineEmits<{
   tap: [];
-  longpress: [];
 }>();
 
 const iconMap: Record<AccountType, typeof Building2> = {
+  cash: Banknote,
   bank: Building2,
-  credit_card: CreditCard,
   digital: Smartphone,
-  debt: Scale,
+  credit_card: CreditCard,
+  huabei: Wallet,
+  meituan_monthly: Wallet,
+  other_loan: Scale,
 };
 
 const typeLabel = computed(() => ACCOUNT_TYPE_LABELS[props.account.type]);
@@ -36,39 +40,20 @@ function formatBalance(value: number): string {
   return value < 0 ? `-¥${formatted}` : `¥${formatted}`;
 }
 
-// 长按检测
-let pressTimer: ReturnType<typeof setTimeout> | null = null;
-let longPressed = false;
-
-function onTouchStart() {
-  longPressed = false;
-  pressTimer = setTimeout(() => {
-    longPressed = true;
-    emit("longpress");
-  }, 500);
-}
-
-function onTouchEnd() {
-  if (pressTimer) {
-    clearTimeout(pressTimer);
-    pressTimer = null;
+const balanceClass = computed(() => {
+  const bal = props.account.current_balance ?? 0;
+  if (props.account.category === "liability" && bal < 0) {
+    return "text-expense";
   }
-}
-
-function onClick() {
-  if (longPressed) return;
-  emit("tap");
-}
+  return "text-text";
+});
 </script>
 
 <template>
   <div
     class="flex cursor-pointer items-center gap-3 rounded-xl bg-surface p-4 shadow-sm transition-shadow hover:shadow-md"
     :style="{ borderLeft: `4px solid ${account.color}` }"
-    @touchstart.passive="onTouchStart"
-    @touchend="onTouchEnd"
-    @touchmove="onTouchEnd"
-    @click="onClick"
+    @click="$emit('tap')"
   >
     <div
       class="flex h-10 w-10 items-center justify-center rounded-full"
@@ -81,10 +66,7 @@ function onClick() {
       <p class="text-xs text-text-secondary">{{ typeLabel }}</p>
     </div>
     <div class="text-right">
-      <p
-        class="text-base font-semibold"
-        :class="(account.current_balance ?? 0) >= 0 ? 'text-text' : 'text-expense'"
-      >
+      <p class="text-base font-semibold" :class="balanceClass">
         {{ formatBalance(account.current_balance ?? 0) }}
       </p>
     </div>
