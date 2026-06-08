@@ -15,6 +15,16 @@ const router = createRouter({
       name: "accounts",
       component: AccountList,
     },
+    {
+      path: "/accounts/:id/transactions",
+      name: "account-transactions",
+      component: () => import("@/views/TransactionList.vue"),
+    },
+    {
+      path: "/accounts/:id/edit",
+      name: "account-edit",
+      component: () => import("@/views/AccountEdit.vue"),
+    },
   ],
 });
 
