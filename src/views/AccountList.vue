@@ -7,14 +7,14 @@ import { useAccountStore } from "@/stores/account";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountCard from "@/components/AccountCard.vue";
 import AccountSheet from "@/components/AccountSheet.vue";
-import type { Account } from "@/types";
+import type { AccountType } from "@/types";
+import { ACCOUNT_CATEGORY } from "@/types";
 
 const router = useRouter();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 
 const sheetVisible = ref(false);
-const editingAccount = ref<Account | null>(null);
 const isLoading = ref(true);
 
 onMounted(async () => {
@@ -31,38 +31,28 @@ onMounted(async () => {
 });
 
 function openAdd() {
-  editingAccount.value = null;
   sheetVisible.value = true;
 }
 
-function openEdit(account: Account) {
-  editingAccount.value = account;
-  sheetVisible.value = true;
-}
-
-async function handleDelete(account: Account) {
-  if (confirm(`确定删除账户"${account.name}"吗？`)) {
-    await accountStore.remove(account.id);
-  }
+function goTransactions(accountId: string) {
+  router.push(`/accounts/${accountId}/transactions`);
 }
 
 async function handleSubmit(data: {
   name: string;
-  type: import("@/types").AccountType;
+  type: AccountType;
   initial_balance: number;
+  credit_limit?: number;
+  repayment_day?: number;
   color: string;
 }) {
   if (!ledgerStore.currentLedger) return;
-
-  if (editingAccount.value) {
-    await accountStore.update(editingAccount.value.id, data);
-  } else {
-    await accountStore.add({
-      ledger_id: ledgerStore.currentLedger.id,
-      owner_id: ledgerStore.currentLedger.owner_id,
-      ...data,
-    });
-  }
+  await accountStore.add({
+    ledger_id: ledgerStore.currentLedger.id,
+    owner_id: ledgerStore.currentLedger.owner_id,
+    category: ACCOUNT_CATEGORY[data.type],
+    ...data,
+  });
 }
 </script>
 
@@ -70,12 +60,20 @@ async function handleSubmit(data: {
   <div class="flex min-h-screen flex-col bg-bg">
     <AppHeader title="账户管理" :show-back="true" @back="router.push('/')" />
 
-    <!-- 总资产汇总 -->
+    <!-- 净资产汇总 -->
     <div class="bg-surface px-4 py-4">
-      <p class="text-xs text-text-secondary">总资产</p>
+      <p class="text-xs text-text-secondary">净资产</p>
       <p class="mt-0.5 text-2xl font-bold text-text">
-        ¥{{ accountStore.totalBalance.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        ¥{{ accountStore.netAssets.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
       </p>
+      <div class="mt-2 flex gap-6 text-xs">
+        <span class="text-text-secondary">
+          资产 ¥{{ accountStore.assetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        </span>
+        <span class="text-text-secondary">
+          负债 ¥{{ Math.abs(accountStore.liabilitiesTotal).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        </span>
+      </div>
     </div>
 
     <!-- 账户列表 -->
@@ -99,8 +97,7 @@ async function handleSubmit(data: {
           v-for="account in accountStore.accounts"
           :key="account.id"
           :account="account"
-          @tap="openEdit(account)"
-          @longpress="handleDelete(account)"
+          @tap="goTransactions(account.id)"
         />
       </div>
     </div>
@@ -116,10 +113,9 @@ async function handleSubmit(data: {
       </button>
     </div>
 
-    <!-- 新增/编辑 Sheet -->
+    <!-- 新增 Sheet -->
     <AccountSheet
       :visible="sheetVisible"
-      :edit-account="editingAccount"
       @close="sheetVisible = false"
       @submit="handleSubmit"
     />
