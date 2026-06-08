@@ -22,6 +22,7 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
     owner_id: "local-user-1",
     name: "测试账户",
     type: "bank",
+    category: "asset",
     initial_balance: 100,
     color: "#3b82f6",
     created_at: "2026-06-01T00:00:00Z",
@@ -47,7 +48,10 @@ describe("accountStore", () => {
           owner_id: "u-1",
           name: "招商储蓄卡",
           type: "bank",
+          category: "asset",
           initial_balance: 5000,
+          credit_limit: null,
+          repayment_day: null,
           color: "#ef4444",
           created_at: "2026-06-01T00:00:00Z",
           updated_at: "2026-06-01T00:00:00Z",
@@ -92,28 +96,49 @@ describe("accountStore", () => {
     });
   });
 
+  describe("netAssets", () => {
+    it("should compute net assets as assets - liabilities", async () => {
+      const rows = [
+        { ...makeAccount({ id: "a1", category: "asset", current_balance: 50000, type: "bank" }), is_deleted: 0 },
+        { ...makeAccount({ id: "a2", category: "asset", current_balance: 10000, type: "digital" }), is_deleted: 0 },
+        { ...makeAccount({ id: "a3", category: "liability", current_balance: -37500, type: "credit_card" }), is_deleted: 0 },
+      ];
+      mockDb.select.mockResolvedValueOnce(rows);
+
+      const store = useAccountStore();
+      await store.fetchAll("pl-1");
+
+      expect(store.assetsTotal).toBe(60000);
+      expect(store.liabilitiesTotal).toBe(-37500);
+      expect(store.netAssets).toBe(22500);
+    });
+  });
+
   describe("add", () => {
-    it("should insert account and refresh list", async () => {
+    it("should insert account with category and new fields, then refresh list", async () => {
       mockDb.execute.mockResolvedValueOnce(undefined);
       mockDb.select.mockResolvedValueOnce([]);
       // 第一次是 add 里的 INSERT 后 fetchAll
       mockDb.select.mockResolvedValueOnce([
-        { ...makeAccount({ name: "新账户" }), is_deleted: 0 },
+        { ...makeAccount({ name: "新信用卡", type: "credit_card", category: "liability" }), is_deleted: 0 },
       ]);
 
       const store = useAccountStore();
       await store.add({
         ledger_id: "pl-1",
         owner_id: "u-1",
-        name: "新账户",
-        type: "digital",
+        name: "新信用卡",
+        type: "credit_card",
+        category: "liability",
         initial_balance: 0,
-        color: "#22c55e",
+        credit_limit: 50000,
+        repayment_day: 15,
+        color: "#ef4444",
       });
 
       expect(mockDb.execute).toHaveBeenCalledWith(
         expect.stringContaining("INSERT INTO accounts"),
-        expect.arrayContaining(["新账户"])
+        expect.arrayContaining(["新信用卡", "credit_card", "liability", 50000, 15, "#ef4444"])
       );
     });
   });
@@ -131,6 +156,21 @@ describe("accountStore", () => {
       expect(mockDb.execute).toHaveBeenCalledWith(
         expect.stringContaining("UPDATE accounts"),
         expect.arrayContaining(["改名后", "#000000", "a1"])
+      );
+    });
+
+    it("should update liability fields", async () => {
+      mockDb.execute.mockResolvedValueOnce(undefined);
+      mockDb.select.mockResolvedValueOnce([
+        { ...makeAccount({ id: "a1", type: "credit_card", category: "liability", credit_limit: 80000, repayment_day: 10 }), is_deleted: 0 },
+      ]);
+
+      const store = useAccountStore();
+      await store.update("a1", { credit_limit: 80000, repayment_day: 10 });
+
+      expect(mockDb.execute).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE accounts"),
+        expect.arrayContaining([80000, 10, "a1"])
       );
     });
   });
