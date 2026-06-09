@@ -35,7 +35,7 @@ function openAdd() {
 }
 
 function goTransactions(accountId: string) {
-  router.push(`/accounts/${accountId}/transactions`);
+  router.push(`/transactions?account=${accountId}`);
 }
 
 async function handleSubmit(data: {
@@ -58,7 +58,7 @@ async function handleSubmit(data: {
 
 <template>
   <div class="flex min-h-screen flex-col bg-bg">
-    <AppHeader title="账户管理" :show-back="true" @back="router.push('/')" />
+    <AppHeader title="账户管理" />
 
     <!-- 净资产汇总 -->
     <div class="bg-surface px-4 py-4">
