@@ -1,29 +1,37 @@
 import { createRouter, createWebHistory } from "vue-router";
-import Home from "@/views/Home.vue";
-import AccountList from "@/views/AccountList.vue";
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: "/",
-      name: "home",
-      component: Home,
+      name: "record",
+      component: () => import("@/views/RecordPage.vue"),
+    },
+    {
+      path: "/record/:id",
+      name: "record-edit",
+      component: () => import("@/views/RecordPage.vue"),
+    },
+    {
+      path: "/transactions",
+      name: "transactions",
+      component: () => import("@/views/TransactionList.vue"),
     },
     {
       path: "/accounts",
       name: "accounts",
-      component: AccountList,
-    },
-    {
-      path: "/accounts/:id/transactions",
-      name: "account-transactions",
-      component: () => import("@/views/TransactionList.vue"),
+      component: () => import("@/views/AccountList.vue"),
     },
     {
       path: "/accounts/:id/edit",
       name: "account-edit",
       component: () => import("@/views/AccountEdit.vue"),
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("@/views/SettingsPage.vue"),
     },
   ],
 });
