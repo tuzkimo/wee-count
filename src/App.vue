@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useRoute } from "vue-router";
 import { Home, List, Wallet, Settings } from "lucide-vue-next";
-import { computed } from "vue";
 
 const route = useRoute();
 

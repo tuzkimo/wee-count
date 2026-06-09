@@ -10,7 +10,7 @@ import { useTransactionStore } from "@/stores/transaction";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
-import type { Category, TransactionType } from "@/types";
+import type { Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
 const router = useRouter();
@@ -105,7 +105,7 @@ function onTagConfirm(tagIds: string[]) {
 const selectedTags = computed(() =>
   selectedTagIds.value
     .map((id) => tagStore.tags.find((t) => t.id === id))
-    .filter(Boolean)
+    .filter((t): t is Tag => t != null)
 );
 
 // 切换标签选中

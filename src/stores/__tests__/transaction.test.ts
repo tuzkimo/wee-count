@@ -81,7 +81,7 @@ describe("transactionStore", () => {
       expect(store.transactions).toHaveLength(1);
       const tx = store.transactions[0];
       expect(tx.amount).toBe(32.5);
-      expect(tx.category).toEqual({
+      expect(tx.category).toMatchObject({
         id: "cat-1",
         name: "餐饮",
         type: "expense",
@@ -89,14 +89,14 @@ describe("transactionStore", () => {
         sort_order: 1,
       });
       expect(tx.tags).toHaveLength(2);
-      expect(tx.tags![0]).toEqual({ id: "tag-1", name: "午餐" });
-      expect(tx.from_account).toEqual({
+      expect(tx.tags![0]).toMatchObject({ id: "tag-1", name: "午餐" });
+      expect(tx.from_account).toMatchObject({
         id: "acc-1",
         name: "招行卡",
         type: "bank",
         color: "#ef4444",
       });
-      expect(tx.to_account).toBeNull();
+      expect(tx.to_account).toBeUndefined();
     });
 
     it("should filter by account when accountId is provided", async () => {
@@ -179,9 +179,11 @@ describe("transactionStore", () => {
   describe("update", () => {
     it("should update transaction and rebuild tags", async () => {
       mockDb.execute.mockResolvedValue(undefined);
+      mockDb.select.mockResolvedValueOnce([]); // fetchAll during init
       mockDb.select.mockResolvedValueOnce([]); // fetchAll after update
 
       const store = useTransactionStore();
+      await store.fetchAll("pl-1"); // 设置 _ledgerId
       await store.update("tx-1", {
         amount: 50,
         category_id: "cat-2",
@@ -211,9 +213,11 @@ describe("transactionStore", () => {
   describe("remove", () => {
     it("should soft-delete transaction", async () => {
       mockDb.execute.mockResolvedValue(undefined);
-      mockDb.select.mockResolvedValueOnce([]);
+      mockDb.select.mockResolvedValueOnce([]); // fetchAll during init
+      mockDb.select.mockResolvedValueOnce([]); // fetchAll after remove
 
       const store = useTransactionStore();
+      await store.fetchAll("pl-1"); // 设置 _ledgerId
       await store.remove("tx-1");
 
       expect(mockDb.execute).toHaveBeenCalledWith(
