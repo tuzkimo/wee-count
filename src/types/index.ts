@@ -3,6 +3,48 @@ export type AssetType = "cash" | "bank" | "digital";
 export type LiabilityType = "credit_card" | "huabei" | "meituan_monthly" | "other_loan";
 export type AccountType = AssetType | LiabilityType;
 
+export type CategoryType = "income" | "expense";
+export type TransactionType = "income" | "expense" | "transfer";
+
+export interface Category {
+  id: string;
+  ledger_id: string | null;
+  name: string;
+  type: CategoryType;
+  icon: string | null;
+  sort_order: number;
+  updated_at: string;
+  is_deleted: boolean;
+}
+
+export interface Tag {
+  id: string;
+  ledger_id: string;
+  name: string;
+  updated_at: string;
+  is_deleted: boolean;
+}
+
+export interface Transaction {
+  id: string;
+  ledger_id: string;
+  user_id: string;
+  amount: number;
+  type: TransactionType;
+  from_account_id: string | null;
+  to_account_id: string | null;
+  category_id: string | null;
+  occurred_at: string;
+  created_at: string;
+  updated_at: string;
+  is_deleted: boolean;
+  // 查询时 JOIN 填充
+  category?: Category;
+  tags?: Tag[];
+  from_account?: Account;
+  to_account?: Account;
+}
+
 export const ACCOUNT_CATEGORY: Record<AccountType, AccountCategory> = {
   cash: "asset",
   bank: "asset",
