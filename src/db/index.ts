@@ -9,6 +9,7 @@ export async function getDb(): Promise<Database> {
     dbPromise = Database.load("sqlite:wee-count.db").then(async (database) => {
       await initTables(database);
       await migrateAccounts(database);
+      await migrateTransactions(database);
       db = database;
       return database;
     });
@@ -68,6 +69,32 @@ async function initTables(db: Database): Promise<void> {
       updated_at TEXT NOT NULL,
       is_deleted INTEGER DEFAULT 0
     );
+
+    CREATE TABLE IF NOT EXISTS categories (
+      id TEXT PRIMARY KEY,
+      ledger_id TEXT,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      icon TEXT,
+      sort_order INTEGER DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      is_deleted INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS tags (
+      id TEXT PRIMARY KEY,
+      ledger_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      is_deleted INTEGER DEFAULT 0,
+      UNIQUE(ledger_id, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS transaction_tags (
+      transaction_id TEXT REFERENCES transactions(id) ON DELETE CASCADE,
+      tag_id TEXT REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (transaction_id, tag_id)
+    );
   `);
 }
 
@@ -85,6 +112,25 @@ async function migrateAccounts(db: Database): Promise<void> {
   }
   if (!columns.has("repayment_day")) {
     await db.execute("ALTER TABLE accounts ADD COLUMN repayment_day INTEGER");
+  }
+}
+
+async function migrateTransactions(db: Database): Promise<void> {
+  const tableInfo = await db.select<{ name: string }[]>(
+    "PRAGMA table_info(transactions)"
+  );
+  const columns = new Set(tableInfo.map((col) => col.name));
+
+  if (!columns.has("category_id")) {
+    await db.execute("ALTER TABLE transactions ADD COLUMN category_id TEXT REFERENCES categories(id)");
+  }
+  if (!columns.has("user_id")) {
+    await db.execute("ALTER TABLE transactions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local-user-1' REFERENCES users(id)");
+  }
+  if (!columns.has("occurred_at")) {
+    await db.execute("ALTER TABLE transactions ADD COLUMN occurred_at TEXT NOT NULL DEFAULT ''");
+    // 将原有 transacted_at 数据复制到 occurred_at
+    await db.execute("UPDATE transactions SET occurred_at = transacted_at WHERE occurred_at = ''");
   }
 }
 
@@ -111,5 +157,34 @@ export async function ensureDefaultData(): Promise<void> {
       "INSERT INTO ledgers (id, name, type, team_id, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       ["personal-ledger-1", "个人账本", "personal", null, "local-user-1", now, now]
     );
+  }
+
+  const existingCategories = await database.select<{ count: number }[]>(
+    "SELECT COUNT(*) as count FROM categories"
+  );
+  if (existingCategories[0].count === 0) {
+    const now = new Date().toISOString();
+    const categories = [
+      ["餐饮", "expense", "🍜", 1],
+      ["交通", "expense", "🚌", 2],
+      ["购物", "expense", "🛒", 3],
+      ["娱乐", "expense", "🎮", 4],
+      ["居家", "expense", "🏠", 5],
+      ["通讯", "expense", "📱", 6],
+      ["医疗", "expense", "💊", 7],
+      ["其他支出", "expense", "💸", 99],
+      ["工资", "income", "💰", 1],
+      ["奖金", "income", "🎁", 2],
+      ["理财", "income", "📈", 3],
+      ["退款", "income", "↩️", 4],
+      ["报销", "income", "🧾", 5],
+      ["其他收入", "income", "📥", 99],
+    ];
+    for (const [name, type, icon, sortOrder] of categories) {
+      await database.execute(
+        "INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [crypto.randomUUID(), null, name, type, icon, sortOrder, now]
+      );
+    }
   }
 }
