@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
@@ -103,10 +103,22 @@ function onDateConfirm(val: string) {
   }
   datePickerVisible.value = false;
 }
+
+function formatDateDisplay(dateStr: string): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return `${month}月${day}日 ${weekDays[d.getDay()]}`;
+}
+
+const dateFromDisplay = computed(() => formatDateDisplay(dateFrom.value));
+const dateToDisplay = computed(() => formatDateDisplay(dateTo.value));
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
+  <div class="flex h-full flex-col bg-bg">
     <AppHeader title="筛选" :show-back="true" @back="goBack" />
 
     <div class="flex-1 overflow-auto px-4 py-4">
@@ -137,14 +149,14 @@ function onDateConfirm(val: string) {
             class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
             @click="openDatePicker('from')"
           >
-            {{ dateFrom || '开始日期' }}
+            {{ dateFromDisplay || '开始日期' }}
           </button>
           <span class="text-text-secondary">─</span>
           <button
             class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
             @click="openDatePicker('to')"
           >
-            {{ dateTo || '结束日期' }}
+            {{ dateToDisplay || '结束日期' }}
           </button>
         </div>
       </div>

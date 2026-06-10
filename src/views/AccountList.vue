@@ -57,7 +57,7 @@ async function handleSubmit(data: {
 </script>
 
 <template>
-  <div class="flex flex-1 flex-col bg-bg">
+  <div class="flex h-full flex-col bg-bg">
     <AppHeader title="账户管理">
       <template #action>
         <button

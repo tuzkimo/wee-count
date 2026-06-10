@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-1 flex-col bg-bg">
+  <div class="flex h-full flex-col bg-bg">
     <div class="flex min-h-14 items-center border-b border-gray-200 bg-surface px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
       <h1 class="flex-1 text-lg font-semibold text-text">报表</h1>
     </div>

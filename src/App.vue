@@ -26,8 +26,8 @@ const showTab = computed(() => !route.meta.hideTab);
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
-    <div class="flex-1 overflow-auto">
+  <div class="flex h-screen flex-col bg-bg">
+    <div class="flex-1 min-h-0">
       <RouterView />
     </div>
 

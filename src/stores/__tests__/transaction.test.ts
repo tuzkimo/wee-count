@@ -103,7 +103,7 @@ describe("transactionStore", () => {
       mockDb.select.mockResolvedValueOnce([]);
 
       const store = useTransactionStore();
-      await store.fetchAll("pl-1", "acc-2");
+      await store.fetchAll("pl-1", { accountId: "acc-2" });
 
       expect(mockDb.select).toHaveBeenCalledWith(
         expect.stringContaining("AND (t.from_account_id = ? OR t.to_account_id = ?)"),

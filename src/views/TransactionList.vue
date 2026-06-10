@@ -57,7 +57,8 @@ onMounted(async () => {
     if (qAccount) filterAccountId.value = qAccount;
   }
 
-  await transactionStore.fetchAll(ledgerId, filterAccountId.value || undefined);
+  const opts = buildFetchOpts();
+  await transactionStore.fetchAll(ledgerId, opts);
   isLoading.value = false;
 });
 
@@ -71,11 +72,25 @@ watch(
 
     const qAccount = route.query.account as string | undefined;
     filterAccountId.value = qAccount || "";
-    await transactionStore.fetchAll(ledgerId, qAccount || undefined);
+    const opts = buildFetchOpts();
+    await transactionStore.fetchAll(ledgerId, opts);
     // 刷新账户余额
     await accountStore.fetchAll(ledgerId);
   }
 );
+
+function buildFetchOpts() {
+  const qAccount = route.query.account as string | undefined;
+  const qDateFrom = route.query.dateFrom as string | undefined;
+  const qDateTo = route.query.dateTo as string | undefined;
+  const qTags = route.query.tags as string | undefined;
+  return {
+    accountId: qAccount || undefined,
+    dateFrom: qDateFrom || undefined,
+    dateTo: qDateTo || undefined,
+    tagIds: qTags ? qTags.split(",").filter(Boolean) : undefined,
+  };
+}
 
 // 按日期分组
 interface DayGroup {
@@ -138,13 +153,19 @@ function formatAmount(tx: Transaction): string {
   return `${sign}¥${tx.amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+// 带符号的金额显示（用于净资产汇总）
+function formatSignedAmount(value: number): string {
+  const sign = value >= 0 ? "+" : "-";
+  return `${sign}¥${Math.abs(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function goRecord(txId: string) {
   router.push(`/record/${txId}`);
 }
 </script>
 
 <template>
-  <div class="flex flex-1 flex-col bg-bg">
+  <div class="flex h-full flex-col bg-bg">
     <!-- Header：账户详情模式 -->
     <AppHeader
       v-if="isAccountMode"
@@ -181,7 +202,7 @@ function goRecord(txId: string) {
     </AppHeader>
 
     <!-- 汇总卡片 -->
-    <div class="bg-surface px-4 py-3">
+    <div class="shrink-0 bg-surface px-4 py-3">
       <!-- 首页模式：净资产 / 净收支 -->
       <template v-if="!isAccountMode">
         <p class="text-xs text-text-secondary">净资产</p>
@@ -193,7 +214,7 @@ function goRecord(txId: string) {
             资产 ¥{{ accountStore.assetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
           </span>
           <span class="text-text-secondary">
-            负债 -¥{{ Math.abs(accountStore.liabilitiesTotal).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            负债 {{ formatSignedAmount(accountStore.liabilitiesTotal) }}
           </span>
         </div>
       </template>
@@ -217,7 +238,7 @@ function goRecord(txId: string) {
 
 
     <!-- 流水列表 -->
-    <div class="flex-1 overflow-auto px-4 py-3">
+    <div class="flex-1 min-h-0 overflow-auto px-4 py-3">
       <div v-if="isLoading" class="py-12 text-center text-text-secondary">
         加载中...
       </div>

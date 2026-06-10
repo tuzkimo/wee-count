@@ -209,7 +209,7 @@ async function doSave(): Promise<boolean> {
       type: txType.value,
       amount: amt,
       category_id: txType.value === "transfer" ? null : categoryId.value,
-      from_account_id: fromAccountId.value,
+      from_account_id: txType.value === "expense" || txType.value === "transfer" ? fromAccountId.value : null,
       to_account_id: txType.value === "income" || txType.value === "transfer" ? toAccountId.value : null,
       occurred_at: new Date(occurredAt.value).toISOString(),
       tag_ids: selectedTagIds.value,
@@ -279,7 +279,7 @@ const dateDisplay = computed(() => {
 </script>
 
 <template>
-  <div class="flex flex-1 flex-col bg-bg">
+  <div class="flex h-full flex-col bg-bg">
     <AppHeader
       :title="isEdit ? '编辑记录' : '记账'"
       :show-back="true"
@@ -299,7 +299,7 @@ const dateDisplay = computed(() => {
       <p class="text-text-secondary">加载中...</p>
     </div>
 
-    <div v-else class="flex-1 overflow-auto px-4 py-4">
+    <div v-else class="flex-1 min-h-0 overflow-auto px-4 py-4">
       <!-- 1. 类型切换 -->
       <div class="mb-4 flex rounded-lg bg-gray-100 p-0.5">
         <button

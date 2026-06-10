@@ -101,7 +101,7 @@ async function handleDelete() {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
+  <div class="flex h-full flex-col bg-bg">
     <AppHeader
       title="编辑账户"
       :show-back="true"

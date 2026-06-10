@@ -140,15 +140,38 @@ export const useTransactionStore = defineStore("transaction", () => {
       .reduce((sum, t) => sum + t.amount, 0)
   );
 
-  async function fetchAll(ledgerId: string, accountId?: string): Promise<void> {
+  async function fetchAll(
+    ledgerId: string,
+    opts?: {
+      accountId?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      tagIds?: string[];
+    }
+  ): Promise<void> {
     _ledgerId = ledgerId;
     const db = await getDb();
     let sql = QUERY;
     const params: string[] = [ledgerId];
 
-    if (accountId) {
+    if (opts?.accountId) {
       sql += " AND (t.from_account_id = ? OR t.to_account_id = ?)";
-      params.push(accountId, accountId);
+      params.push(opts.accountId, opts.accountId);
+    }
+
+    if (opts?.dateFrom) {
+      sql += " AND t.occurred_at >= ?";
+      params.push(opts.dateFrom);
+    }
+
+    if (opts?.dateTo) {
+      sql += " AND t.occurred_at <= ?";
+      params.push(opts.dateTo + "T23:59:59");
+    }
+
+    if (opts?.tagIds && opts.tagIds.length > 0) {
+      sql += ` AND t.id IN (SELECT transaction_id FROM transaction_tags WHERE tag_id IN (${opts.tagIds.map(() => "?").join(",")}))`;
+      params.push(...opts.tagIds);
     }
 
     sql += " GROUP BY t.id ORDER BY t.occurred_at DESC, t.created_at DESC";
