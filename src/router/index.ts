@@ -5,18 +5,31 @@ const router = createRouter({
   routes: [
     {
       path: "/",
+      name: "home",
+      component: () => import("@/views/TransactionList.vue"),
+    },
+    {
+      path: "/accounts/:id",
+      name: "account-detail",
+      component: () => import("@/views/TransactionList.vue"),
+    },
+    {
+      path: "/record",
       name: "record",
       component: () => import("@/views/RecordPage.vue"),
+      meta: { hideTab: true },
     },
     {
       path: "/record/:id",
       name: "record-edit",
       component: () => import("@/views/RecordPage.vue"),
+      meta: { hideTab: true },
     },
     {
-      path: "/transactions",
-      name: "transactions",
-      component: () => import("@/views/TransactionList.vue"),
+      path: "/filter",
+      name: "filter",
+      component: () => import("@/views/FilterPage.vue"),
+      meta: { hideTab: true },
     },
     {
       path: "/accounts",
@@ -29,8 +42,22 @@ const router = createRouter({
       component: () => import("@/views/AccountEdit.vue"),
     },
     {
+      path: "/reports",
+      name: "reports",
+      component: () => import("@/views/ReportsPage.vue"),
+    },
+    {
+      path: "/me",
+      name: "me",
+      component: () => import("@/views/MePage.vue"),
+    },
+    // 旧路由重定向
+    {
+      path: "/transactions",
+      redirect: "/",
+    },
+    {
       path: "/settings",
-      name: "settings",
       component: () => import("@/views/SettingsPage.vue"),
     },
   ],
