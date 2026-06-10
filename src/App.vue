@@ -1,20 +1,28 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useRoute } from "vue-router";
-import { Home, List, Wallet, Settings } from "lucide-vue-next";
+import { Home, BarChart3, Wallet, User } from "lucide-vue-next";
 
 const route = useRoute();
 
 const tabs = [
-  { path: "/", label: "记账", icon: Home },
-  { path: "/transactions", label: "流水", icon: List },
+  { path: "/", label: "首页", icon: Home },
+  { path: "/reports", label: "报表", icon: BarChart3 },
   { path: "/accounts", label: "账户", icon: Wallet },
-  { path: "/settings", label: "设置", icon: Settings },
+  { path: "/me", label: "我的", icon: User },
 ];
 
 function isActive(tabPath: string): boolean {
-  if (tabPath === "/") return route.path === "/" || route.path.startsWith("/record");
-  return route.path.startsWith(tabPath);
+  if (tabPath === "/") {
+    return route.path === "/";
+  }
+  if (tabPath === "/accounts") {
+    return route.path.startsWith("/accounts");
+  }
+  return route.path === tabPath;
 }
+
+const showTab = computed(() => !route.meta.hideTab);
 </script>
 
 <template>
@@ -23,7 +31,10 @@ function isActive(tabPath: string): boolean {
       <RouterView />
     </div>
 
-    <nav class="flex shrink-0 border-t border-gray-200 bg-surface pb-[env(safe-area-inset-bottom)]">
+    <nav
+      v-if="showTab"
+      class="flex shrink-0 border-t border-gray-200 bg-surface pb-[env(safe-area-inset-bottom)]"
+    >
       <router-link
         v-for="tab in tabs"
         :key="tab.path"
