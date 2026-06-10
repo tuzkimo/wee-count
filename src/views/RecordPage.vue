@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronDown, Trash2 } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
@@ -11,6 +11,8 @@ import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
+import DateTimeSheet from "@/components/DateTimeSheet.vue";
+import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import type { Account, Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
@@ -30,13 +32,14 @@ const categoryId = ref<string | null>(null);
 const fromAccountId = ref<string | null>(null);
 const toAccountId = ref<string | null>(null);
 const occurredAt = ref("");
-const amount = ref("");
+const expression = ref(""); // 表达式原文
 const selectedTagIds = ref<string[]>([]);
 
 const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
 const accountPickerVisible = ref(false);
 const accountPickerTarget = ref<"from" | "to">("from");
+const dateTimeSheetVisible = ref(false);
 const isSaving = ref(false);
 const isReady = ref(false);
 
@@ -45,10 +48,34 @@ const filteredCategories = computed(() =>
   categoryStore.categories.filter((c) => c.type === txType.value)
 );
 
-// 资产/负债账户（全部账户都可用于交易）
+// 按 sort_order 排序，找出默认分类
+const defaultCategoryId = computed(() => {
+  const cats = [...filteredCategories.value].sort((a, b) => a.sort_order - b.sort_order);
+  return cats[0]?.id ?? null;
+});
+
+// 可用账户
 const availableAccounts = computed(() =>
   accountStore.accounts.filter((a) => !a.is_deleted)
 );
+
+// 表达式求值结果
+const calcResult = computed<number | null>(() => {
+  const expr = expression.value.trim();
+  if (!expr || /[+\-.]$/.test(expr)) return null;
+  // 安全求值：只允许数字、+、-、.
+  if (!/^[\d.\-+]+$/.test(expr)) return null;
+  try {
+    // 用 Function 安全求值
+    const result = new Function(`return (${expr})`)() as number;
+    if (isNaN(result) || result <= 0) return null;
+    return Math.round(result * 100) / 100;
+  } catch {
+    return null;
+  }
+});
+
+const isValid = computed(() => calcResult.value !== null);
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -71,47 +98,51 @@ onMounted(async () => {
       fromAccountId.value = tx.from_account_id;
       toAccountId.value = tx.to_account_id;
       occurredAt.value = tx.occurred_at.slice(0, 16);
-      amount.value = tx.amount.toString();
+      expression.value = tx.amount.toString();
       selectedTagIds.value = tx.tags?.map((t) => t.id) ?? [];
     }
   } else {
-    // 新增模式：默认当前时间，默认选中第一个账户
+    // 新增模式：默认当前时间
     const now = new Date();
     occurredAt.value = now.toISOString().slice(0, 16);
-    if (availableAccounts.value.length > 0) {
-      fromAccountId.value = availableAccounts.value[0].id;
-      toAccountId.value = availableAccounts.value[0].id;
+    // 从 query 读取默认账户
+    const qAccount = route.query.account as string | undefined;
+    const defaultAcc = qAccount
+      ? availableAccounts.value.find((a) => a.id === qAccount)
+      : availableAccounts.value[0];
+    if (defaultAcc) {
+      fromAccountId.value = defaultAcc.id;
+      toAccountId.value = defaultAcc.id;
     }
+    // 默认分类
+    categoryId.value = defaultCategoryId.value;
   }
 
   isReady.value = true;
 });
 
-// 切换交易类型
-function switchType(type: TransactionType) {
-  txType.value = type;
-  categoryId.value = null;
-}
+// 切换交易类型时重置分类
+watch(txType, () => {
+  categoryId.value = defaultCategoryId.value;
+});
 
-// 选择分类
+// 分类选择
 function selectCategory(cat: Category) {
   categoryId.value = cat.id;
 }
 
-// 标签 Sheet 确认
+// 标签
 function onTagConfirm(tagIds: string[]) {
   selectedTagIds.value = tagIds;
   tagSheetVisible.value = false;
 }
 
-// 已选标签对象列表
 const selectedTags = computed(() =>
   selectedTagIds.value
     .map((id) => tagStore.tags.find((t) => t.id === id))
     .filter((t): t is Tag => t != null)
 );
 
-// 切换标签选中
 function toggleTag(tagId: string) {
   const idx = selectedTagIds.value.indexOf(tagId);
   if (idx >= 0) {
@@ -121,12 +152,12 @@ function toggleTag(tagId: string) {
   }
 }
 
+// 账户相关
 function getAccountName(id: string | null): string {
   if (!id) return "";
   return accountStore.accounts.find((a) => a.id === id)?.name ?? "";
 }
 
-// 账户选择
 function openAccountPicker(target: "from" | "to") {
   accountPickerTarget.value = target;
   accountPickerVisible.value = true;
@@ -141,16 +172,34 @@ function onAccountSelect(acc: Account) {
   accountPickerVisible.value = false;
 }
 
-// 保存
-async function save() {
-  const ledgerId = ledgerStore.currentLedger?.id;
-  if (!ledgerId || isSaving.value) return;
+// 键盘输入处理
+function onKeypadInput(key: string) {
+  if (key === "delete") {
+    expression.value = expression.value.slice(0, -1);
+  } else {
+    // 防止连续两个运算符
+    const last = expression.value.slice(-1);
+    if ((key === "+" || key === "-") && (last === "+" || last === "-")) {
+      expression.value = expression.value.slice(0, -1) + key;
+    } else if (key === "." && last === ".") {
+      return;
+    } else {
+      expression.value += key;
+    }
+  }
+}
 
-  const amt = parseFloat(amount.value);
-  if (!amt || amt <= 0) return;
-  if (txType.value !== "transfer" && !categoryId.value) return;
-  if (!fromAccountId.value) return;
-  if (txType.value !== "expense" && !toAccountId.value) return;
+// 保存逻辑
+async function doSave(): Promise<boolean> {
+  const ledgerId = ledgerStore.currentLedger?.id;
+  if (!ledgerId || isSaving.value || !isValid.value) return false;
+
+  const amt = calcResult.value!;
+
+  // 基础校验
+  if (txType.value !== "transfer" && !categoryId.value) return false;
+  if (!fromAccountId.value) return false;
+  if (txType.value !== "expense" && !toAccountId.value) return false;
 
   isSaving.value = true;
   try {
@@ -158,7 +207,7 @@ async function save() {
       ledger_id: ledgerId,
       user_id: "local-user-1",
       type: txType.value,
-      amount: Math.round(amt * 100) / 100,
+      amount: amt,
       category_id: txType.value === "transfer" ? null : categoryId.value,
       from_account_id: fromAccountId.value,
       to_account_id: txType.value === "income" || txType.value === "transfer" ? toAccountId.value : null,
@@ -171,12 +220,29 @@ async function save() {
     } else {
       await transactionStore.add(data);
     }
-
-    router.replace("/transactions");
+    return true;
   } catch (e) {
     console.error("Save transaction failed:", e);
+    return false;
   } finally {
     isSaving.value = false;
+  }
+}
+
+async function onDone() {
+  const ok = await doSave();
+  if (ok) router.replace("/");
+}
+
+async function onSaveNext() {
+  const ok = await doSave();
+  if (ok) {
+    // 重置表单
+    expression.value = "";
+    categoryId.value = defaultCategoryId.value;
+    const now = new Date();
+    occurredAt.value = now.toISOString().slice(0, 16);
+    // 保留账户和标签
   }
 }
 
@@ -186,7 +252,7 @@ async function deleteTx() {
   isSaving.value = true;
   try {
     await transactionStore.remove(editId.value);
-    router.replace("/transactions");
+    router.replace("/");
   } catch (e) {
     console.error("Delete transaction failed:", e);
   } finally {
@@ -195,28 +261,27 @@ async function deleteTx() {
 }
 
 function goBack() {
-  if (isEdit.value) {
-    router.push("/transactions");
-  } else {
-    router.push("/");
-  }
+  router.back();
 }
 
-// 格式化金额显示
-const amountDisplay = computed(() => {
-  const v = parseFloat(amount.value);
-  if (isNaN(v)) return "";
-  return v.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// 格式化日期显示
+const dateDisplay = computed(() => {
+  if (!occurredAt.value) return "";
+  const d = new Date(occurredAt.value);
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const hours = d.getHours().toString().padStart(2, "0");
+  const mins = d.getMinutes().toString().padStart(2, "0");
+  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return `${month}月${day}日 ${weekDays[d.getDay()]} ${hours}:${mins}`;
 });
-
-const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
 </script>
 
 <template>
   <div class="flex flex-1 flex-col bg-bg">
     <AppHeader
       :title="isEdit ? '编辑记录' : '记账'"
-      :show-back="isEdit"
+      :show-back="true"
       @back="goBack"
     >
       <template v-if="isEdit" #action>
@@ -234,20 +299,37 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
     </div>
 
     <div v-else class="flex-1 overflow-auto px-4 py-4">
-      <!-- 类型切换 -->
+      <!-- 1. 类型切换 -->
       <div class="mb-4 flex rounded-lg bg-gray-100 p-0.5">
         <button
           v-for="t in (['expense', 'income', 'transfer'] as TransactionType[])"
           :key="t"
           class="flex-1 rounded-md py-2 text-sm font-medium transition-colors"
           :class="txType === t ? 'bg-surface text-text shadow-sm' : 'text-text-secondary'"
-          @click="switchType(t)"
+          @click="txType = t"
         >
           {{ t === 'expense' ? '支出' : t === 'income' ? '收入' : '转账' }}
         </button>
       </div>
 
-      <!-- 分类网格（转账时隐藏） -->
+      <!-- 2. 金额 (表达式输入) -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">金额</label>
+        <div class="relative">
+          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-semibold text-text">¥</span>
+          <div
+            class="w-full rounded-lg border border-gray-200 bg-surface py-2.5 pl-8 pr-3 text-right text-lg font-semibold text-text outline-none focus:border-primary"
+          >
+            <span v-if="expression">{{ expression }}</span>
+            <span v-else class="text-gray-300">0</span>
+          </div>
+        </div>
+        <p v-if="calcResult !== null" class="mt-1 text-right text-xs text-text-secondary">
+          = {{ calcResult.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        </p>
+      </div>
+
+      <!-- 3. 分类网格（转账时隐藏） -->
       <div v-if="txType !== 'transfer'" class="mb-4">
         <div class="grid grid-cols-4 gap-2">
           <button
@@ -263,7 +345,7 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
         </div>
       </div>
 
-      <!-- 账户选择器 -->
+      <!-- 4. 账户 -->
       <div class="mb-4 space-y-2">
         <div v-if="txType === 'transfer'" class="space-y-2">
           <div>
@@ -322,37 +404,20 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
         </div>
       </div>
 
-      <!-- 日期时间 -->
+      <!-- 5. 日期时间 -->
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">日期时间</label>
-        <input
-          v-model="occurredAt"
-          type="datetime-local"
-          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-        />
+        <button
+          class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+          @click="dateTimeSheetVisible = true"
+        >
+          <span>{{ dateDisplay || '请选择' }}</span>
+          <ChevronDown :size="14" class="text-text-secondary" />
+        </button>
       </div>
 
-      <!-- 金额 -->
+      <!-- 6. 标签 -->
       <div class="mb-4">
-        <label class="mb-1 block text-xs text-text-secondary">金额</label>
-        <div class="relative">
-          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-semibold text-text">¥</span>
-          <input
-            v-model="amount"
-            type="number"
-            step="0.01"
-            min="0.01"
-            placeholder="0.00"
-            class="w-full rounded-lg border border-gray-200 bg-surface py-2.5 pl-8 pr-3 text-right text-lg font-semibold text-text outline-none focus:border-primary"
-          />
-        </div>
-        <p v-if="amountDisplay" class="mt-1 text-right text-xs text-text-secondary">
-          {{ amountDisplay }}
-        </p>
-      </div>
-
-      <!-- 标签 -->
-      <div class="mb-6">
         <label class="mb-1 block text-xs text-text-secondary">标签</label>
         <div class="flex flex-wrap gap-1.5">
           <span
@@ -373,17 +438,24 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
       </div>
     </div>
 
-    <!-- 保存按钮 -->
-    <div v-if="isReady" class="bg-surface border-t border-gray-200 px-4 py-3">
-      <button
-        class="w-full rounded-xl py-3 text-center text-base font-semibold text-white transition-colors disabled:opacity-50"
-        :class="txType === 'expense' ? 'bg-expense hover:bg-red-600' : txType === 'income' ? 'bg-income hover:bg-green-600' : 'bg-primary hover:bg-primary-dark'"
-        :disabled="isSaving"
-        @click="save"
-      >
-        {{ isSaving ? '保存中...' : saveLabel }}
-      </button>
-    </div>
+    <!-- 自定义键盘 -->
+    <CalculatorKeypad
+      v-if="isReady"
+      :expression="expression"
+      :result="calcResult"
+      :is-valid="isValid"
+      @input="onKeypadInput"
+      @done="onDone"
+      @save-next="onSaveNext"
+    />
+
+    <!-- DateTimeSheet -->
+    <DateTimeSheet
+      :visible="dateTimeSheetVisible"
+      :date-time="occurredAt"
+      @close="dateTimeSheetVisible = false"
+      @confirm="(val) => { occurredAt = val; dateTimeSheetVisible = false }"
+    />
 
     <!-- 标签选择 Sheet -->
     <TagSheet
