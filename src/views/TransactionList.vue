@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ChevronDown, Filter, Plus } from "lucide-vue-next";
+import { ChevronDown, Filter, Plus, Pencil } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTransactionStore } from "@/stores/transaction";
 import AppHeader from "@/components/AppHeader.vue";
-import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import type { Transaction } from "@/types";
 
 const route = useRoute();
@@ -62,19 +61,21 @@ onMounted(async () => {
   isLoading.value = false;
 });
 
-// 账户过滤切换
-watch(filterAccountId, async (newVal) => {
-  const ledgerId = ledgerStore.currentLedger?.id;
-  if (!ledgerId || isLoading.value) return;
-  await transactionStore.fetchAll(ledgerId, newVal || undefined);
-});
+// 监听路由 query 变化，重新获取数据
+watch(
+  () => route.query,
+  async () => {
+    if (isLoading.value) return;
+    const ledgerId = ledgerStore.currentLedger?.id;
+    if (!ledgerId) return;
 
-const accountPickerVisible = ref(false);
-
-function getAccountName(id: string): string {
-  if (!id) return "全部账户";
-  return accountStore.accounts.find((a) => a.id === id)?.name ?? id;
-}
+    const qAccount = route.query.account as string | undefined;
+    filterAccountId.value = qAccount || "";
+    await transactionStore.fetchAll(ledgerId, qAccount || undefined);
+    // 刷新账户余额
+    await accountStore.fetchAll(ledgerId);
+  }
+);
 
 // 按日期分组
 interface DayGroup {
@@ -152,15 +153,11 @@ function goRecord(txId: string) {
       @back="router.push('/accounts')"
     >
       <template #action>
-        <span
-          class="h-3 w-3 shrink-0 rounded-full"
-          :style="{ backgroundColor: currentAccount?.color || '#3b82f6' }"
-        />
         <button
           class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
-          @click="router.push('/filter')"
+          @click="router.push(`/accounts/${accountId}/edit`)"
         >
-          <Filter :size="18" class="text-text-secondary" />
+          <Pencil :size="18" class="text-text-secondary" />
         </button>
       </template>
     </AppHeader>
@@ -168,7 +165,7 @@ function goRecord(txId: string) {
     <!-- Header：首页模式 -->
     <AppHeader v-else title="">
       <template #title>
-        <button class="flex items-center gap-1 text-lg font-semibold text-text">
+        <button class="flex flex-1 items-center gap-1 text-lg font-semibold text-text">
           我的账本
           <ChevronDown :size="16" class="text-text-secondary" />
         </button>
@@ -176,7 +173,7 @@ function goRecord(txId: string) {
       <template #action>
         <button
           class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
-          @click="router.push('/filter')"
+          @click="router.push({ path: '/filter', query: route.query })"
         >
           <Filter :size="18" class="text-text-secondary" />
         </button>
@@ -218,23 +215,6 @@ function goRecord(txId: string) {
       </template>
     </div>
 
-    <!-- 账户过滤器（仅首页模式，且未指定账户时显示） -->
-    <div v-if="!isAccountMode && !route.query.account" class="bg-surface px-4 pb-2">
-      <button
-        class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-        @click="accountPickerVisible = true"
-      >
-        <span class="flex items-center gap-2">
-          <span
-            v-if="filterAccountId"
-            class="h-2.5 w-2.5 shrink-0 rounded-full"
-            :style="{ backgroundColor: accountStore.accounts.find(a => a.id === filterAccountId)?.color || '#3b82f6' }"
-          />
-          {{ getAccountName(filterAccountId) }}
-        </span>
-        <ChevronDown :size="14" class="text-text-secondary" />
-      </button>
-    </div>
 
     <!-- 流水列表 -->
     <div class="flex-1 overflow-auto px-4 py-3">
@@ -292,13 +272,5 @@ function goRecord(txId: string) {
       <Plus :size="28" />
     </router-link>
 
-    <!-- 账户选择 Sheet -->
-    <AccountPickerSheet
-      :visible="accountPickerVisible"
-      :show-all-option="true"
-      @close="accountPickerVisible = false"
-      @select="(acc) => { filterAccountId = acc.id; accountPickerVisible = false }"
-      @select-all="filterAccountId = ''; accountPickerVisible = false"
-    />
   </div>
 </template>

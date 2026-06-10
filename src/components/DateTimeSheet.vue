@@ -4,7 +4,8 @@ import { X } from "lucide-vue-next";
 
 const props = defineProps<{
   visible: boolean;
-  dateTime: string; // ISO datetime-local format "YYYY-MM-DDTHH:mm"
+  dateTime: string; // ISO datetime-local format "YYYY-MM-DDTHH:mm" or date-only "YYYY-MM-DD"
+  showTime?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -20,14 +21,21 @@ watch(
   (val) => {
     if (val) {
       localDate.value = val.slice(0, 10);
-      localTime.value = val.slice(11, 16);
+      if (val.length >= 16) {
+        localTime.value = val.slice(11, 16);
+      } else {
+        localTime.value = "00:00";
+      }
     }
   },
   { immediate: true }
 );
 
 function confirm() {
-  if (localDate.value && localTime.value) {
+  if (!localDate.value) return;
+  if (props.showTime === false) {
+    emit("confirm", localDate.value);
+  } else if (localTime.value) {
     emit("confirm", `${localDate.value}T${localTime.value}`);
   }
 }
@@ -48,7 +56,7 @@ function confirm() {
         class="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-xl"
       >
         <div class="mb-4 flex items-center justify-between">
-          <h2 class="text-lg font-semibold text-text">选择日期时间</h2>
+          <h2 class="text-lg font-semibold text-text">{{ showTime === false ? '选择日期' : '选择日期时间' }}</h2>
           <button
             class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
             @click="$emit('close')"
@@ -66,7 +74,7 @@ function confirm() {
           />
         </div>
 
-        <div class="mb-6">
+        <div v-if="showTime !== false" class="mb-6">
           <label class="mb-1 block text-xs text-text-secondary">时间</label>
           <input
             v-model="localTime"
@@ -74,6 +82,7 @@ function confirm() {
             class="w-full rounded-lg border border-gray-200 bg-bg px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
           />
         </div>
+        <div v-else class="mb-6" />
 
         <button
           class="w-full rounded-xl bg-primary py-3 text-center text-base font-semibold text-white transition-colors hover:bg-primary-dark"

@@ -6,6 +6,7 @@ import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
+import DateTimeSheet from "@/components/DateTimeSheet.vue";
 import type { Account } from "@/types";
 
 const route = useRoute();
@@ -21,6 +22,8 @@ const dateTo = ref("");
 const selectedTagIds = ref<string[]>([]);
 
 const accountPickerVisible = ref(false);
+const datePickerTarget = ref<"from" | "to">("from");
+const datePickerVisible = ref(false);
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -86,6 +89,20 @@ function reset() {
 function goBack() {
   router.back();
 }
+
+function openDatePicker(target: "from" | "to") {
+  datePickerTarget.value = target;
+  datePickerVisible.value = true;
+}
+
+function onDateConfirm(val: string) {
+  if (datePickerTarget.value === "from") {
+    dateFrom.value = val;
+  } else {
+    dateTo.value = val;
+  }
+  datePickerVisible.value = false;
+}
 </script>
 
 <template>
@@ -116,17 +133,19 @@ function goBack() {
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">📅 日期范围</label>
         <div class="flex items-center gap-2">
-          <input
-            v-model="dateFrom"
-            type="date"
+          <button
             class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-          />
+            @click="openDatePicker('from')"
+          >
+            {{ dateFrom || '开始日期' }}
+          </button>
           <span class="text-text-secondary">─</span>
-          <input
-            v-model="dateTo"
-            type="date"
+          <button
             class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-          />
+            @click="openDatePicker('to')"
+          >
+            {{ dateTo || '结束日期' }}
+          </button>
         </div>
       </div>
 
@@ -173,6 +192,15 @@ function goBack() {
       @close="accountPickerVisible = false"
       @select="onAccountSelect"
       @select-all="onSelectAll"
+    />
+
+    <!-- 日期选择 Sheet -->
+    <DateTimeSheet
+      :visible="datePickerVisible"
+      :show-time="false"
+      :date-time="datePickerTarget === 'from' ? dateFrom : dateTo"
+      @close="datePickerVisible = false"
+      @confirm="onDateConfirm"
     />
   </div>
 </template>

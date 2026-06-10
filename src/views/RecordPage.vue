@@ -239,6 +239,7 @@ async function onSaveNext() {
   if (ok) {
     // 重置表单
     expression.value = "";
+    selectedTagIds.value = [];
     categoryId.value = defaultCategoryId.value;
     const now = new Date();
     occurredAt.value = now.toISOString().slice(0, 16);

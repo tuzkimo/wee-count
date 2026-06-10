@@ -9,10 +9,10 @@ const BALANCE_QUERY = `
     a.initial_balance, a.credit_limit, a.repayment_day,
     a.color, a.created_at, a.updated_at, a.is_deleted,
     CASE WHEN a.category = 'liability'
-      THEN -ABS(
+      THEN -(
         a.initial_balance
-        + COALESCE((SELECT SUM(amount) FROM transactions WHERE to_account_id = a.id AND is_deleted = 0), 0)
-        - COALESCE((SELECT SUM(amount) FROM transactions WHERE from_account_id = a.id AND is_deleted = 0), 0)
+        - COALESCE((SELECT SUM(amount) FROM transactions WHERE to_account_id = a.id AND is_deleted = 0), 0)
+        + COALESCE((SELECT SUM(amount) FROM transactions WHERE from_account_id = a.id AND is_deleted = 0), 0)
       )
       ELSE (
         a.initial_balance

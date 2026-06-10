@@ -14,10 +14,11 @@ const emit = defineEmits<{
 }>();
 
 const keys = [
-  ["7", "8", "9", "saveNext"],
-  ["4", "5", "6", "+"],
-  ["1", "2", "3", "-"],
-  [".", "0", "delete", "done"],
+  ["7", "8", "9", "+"],
+  ["4", "5", "6", "-"],
+  ["1", "2", "3", "delete"],
+  [".", "0", "saveNext"],
+  ["done"],
 ];
 
 function onKey(key: string) {
@@ -58,7 +59,8 @@ function keyLabel(key: string): string {
           'bg-primary text-white active:bg-primary-dark': key === 'done' && isValid,
           'bg-expense text-white active:bg-red-600': key === 'saveNext' && isValid,
           'bg-gray-200 text-gray-400 cursor-not-allowed': (key === 'done' || key === 'saveNext') && !isValid,
-          'col-span-2': key === 'done' || key === 'saveNext',
+          'col-span-2': key === 'saveNext',
+          'col-span-full': key === 'done',
         }"
         :disabled="(key === 'done' || key === 'saveNext') && !isValid"
         @click="onKey(key)"
