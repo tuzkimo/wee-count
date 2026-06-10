@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ChevronDown } from "lucide-vue-next";
+import { ChevronDown, Filter, Plus } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTransactionStore } from "@/stores/transaction";
@@ -18,6 +18,33 @@ const transactionStore = useTransactionStore();
 const filterAccountId = ref<string>("");
 const isLoading = ref(true);
 
+// 判断是否为账户详情模式
+const isAccountMode = computed(() => !!route.params.id);
+const accountId = computed(() => route.params.id as string | undefined);
+
+// 当前账户信息
+const currentAccount = computed(() => {
+  if (!accountId.value) return null;
+  return accountStore.accounts.find((a) => a.id === accountId.value) ?? null;
+});
+
+// 筛选后的收入合计
+const filteredIncome = computed(() =>
+  transactionStore.transactions
+    .filter((t) => t.type === "income")
+    .reduce((sum, t) => sum + t.amount, 0)
+);
+
+// 筛选后的支出合计
+const filteredExpense = computed(() =>
+  transactionStore.transactions
+    .filter((t) => t.type === "expense")
+    .reduce((sum, t) => sum + t.amount, 0)
+);
+
+// 净收支
+const netChange = computed(() => filteredIncome.value - filteredExpense.value);
+
 onMounted(async () => {
   await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -25,9 +52,14 @@ onMounted(async () => {
 
   await accountStore.fetchAll(ledgerId);
 
-  // 从 query 读取过滤条件
-  const qAccount = route.query.account as string | undefined;
-  if (qAccount) filterAccountId.value = qAccount;
+  // 从 route params 判断模式
+  if (isAccountMode.value && accountId.value) {
+    filterAccountId.value = accountId.value;
+  } else {
+    // 从 query 读取筛选条件
+    const qAccount = route.query.account as string | undefined;
+    if (qAccount) filterAccountId.value = qAccount;
+  }
 
   await transactionStore.fetchAll(ledgerId, filterAccountId.value || undefined);
   isLoading.value = false;
@@ -39,6 +71,16 @@ watch(filterAccountId, async (newVal) => {
   if (!ledgerId || isLoading.value) return;
   await transactionStore.fetchAll(ledgerId, newVal || undefined);
 });
+
+// 从 route.query 读取筛选参数
+function getFilterParams() {
+  return {
+    account: (route.query.account as string) || "",
+    dateFrom: (route.query.dateFrom as string) || "",
+    dateTo: (route.query.dateTo as string) || "",
+    tags: (route.query.tags as string) || "",
+  };
+}
 
 const accountPickerVisible = ref(false);
 
@@ -115,10 +157,82 @@ function goRecord(txId: string) {
 
 <template>
   <div class="flex flex-1 flex-col bg-bg">
-    <AppHeader title="流水" />
+    <!-- Header：账户详情模式 -->
+    <AppHeader
+      v-if="isAccountMode"
+      :title="currentAccount?.name ?? '账户'"
+      show-back
+      @back="router.push('/accounts')"
+    >
+      <template #action>
+        <span
+          class="h-3 w-3 shrink-0 rounded-full"
+          :style="{ backgroundColor: currentAccount?.color || '#3b82f6' }"
+        />
+        <button
+          class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+          @click="router.push('/filter')"
+        >
+          <Filter :size="18" class="text-text-secondary" />
+        </button>
+      </template>
+    </AppHeader>
 
-    <!-- 账户过滤器 -->
-    <div class="bg-surface px-4 py-2">
+    <!-- Header：首页模式 -->
+    <AppHeader v-else title="">
+      <template #title>
+        <button class="flex items-center gap-1 text-lg font-semibold text-text">
+          我的账本
+          <ChevronDown :size="16" class="text-text-secondary" />
+        </button>
+      </template>
+      <template #action>
+        <button
+          class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+          @click="router.push('/filter')"
+        >
+          <Filter :size="18" class="text-text-secondary" />
+        </button>
+      </template>
+    </AppHeader>
+
+    <!-- 汇总卡片 -->
+    <div class="bg-surface px-4 py-3">
+      <!-- 首页模式：净资产 / 净收支 -->
+      <template v-if="!isAccountMode">
+        <p class="text-xs text-text-secondary">净资产</p>
+        <p class="mt-0.5 text-2xl font-bold text-text">
+          ¥{{ accountStore.netAssets.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        </p>
+        <div class="mt-2 flex gap-6 text-xs">
+          <span class="text-text-secondary">
+            资产 ¥{{ accountStore.assetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+          <span class="text-text-secondary">
+            负债 -¥{{ Math.abs(accountStore.liabilitiesTotal).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+        </div>
+      </template>
+
+      <!-- 账户详情模式：当前余额 + 收入/支出合计 -->
+      <template v-else>
+        <p class="text-xs text-text-secondary">当前余额</p>
+        <p class="mt-0.5 text-2xl font-bold text-text">
+          ¥{{ (currentAccount?.current_balance ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        </p>
+        <div class="mt-2 flex gap-6 text-xs">
+          <span class="text-text-secondary">
+            收入 ¥{{ filteredIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+          <span class="text-text-secondary">
+            支出 ¥{{ filteredExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+        </div>
+      </template>
+    </div>
+
+    <!-- 账户过滤器（仅首页模式，且未指定账户时显示） -->
+    <div v-if="!isAccountMode && !route.query.account" class="bg-surface px-4 pb-2">
       <button
         class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
         @click="accountPickerVisible = true"
@@ -181,6 +295,15 @@ function goRecord(txId: string) {
         </div>
       </template>
     </div>
+
+    <!-- FAB -->
+    <router-link
+      :to="isAccountMode ? `/record?account=${accountId}` : '/record'"
+      class="fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
+      style="top: 75%"
+    >
+      <Plus :size="28" />
+    </router-link>
 
     <!-- 账户选择 Sheet -->
     <AccountPickerSheet

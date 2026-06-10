@@ -22,7 +22,9 @@ defineEmits<{
     >
       <ArrowLeft :size="20" class="text-text" />
     </button>
-    <h1 class="flex-1 text-lg font-semibold text-text">{{ title }}</h1>
+    <slot name="title">
+      <h1 class="flex-1 text-lg font-semibold text-text">{{ title }}</h1>
+    </slot>
     <slot name="action" />
   </header>
 </template>
