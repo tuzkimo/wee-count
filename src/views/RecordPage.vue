@@ -10,7 +10,8 @@ import { useTransactionStore } from "@/stores/transaction";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
-import type { Category, Tag, TransactionType } from "@/types";
+import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
+import type { Account, Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
 const router = useRouter();
@@ -34,6 +35,8 @@ const selectedTagIds = ref<string[]>([]);
 
 const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
+const accountPickerVisible = ref(false);
+const accountPickerTarget = ref<"from" | "to">("from");
 const isSaving = ref(false);
 const isReady = ref(false);
 
@@ -118,6 +121,26 @@ function toggleTag(tagId: string) {
   }
 }
 
+function getAccountName(id: string | null): string {
+  if (!id) return "";
+  return accountStore.accounts.find((a) => a.id === id)?.name ?? "";
+}
+
+// 账户选择
+function openAccountPicker(target: "from" | "to") {
+  accountPickerTarget.value = target;
+  accountPickerVisible.value = true;
+}
+
+function onAccountSelect(acc: Account) {
+  if (accountPickerTarget.value === "from") {
+    fromAccountId.value = acc.id;
+  } else {
+    toAccountId.value = acc.id;
+  }
+  accountPickerVisible.value = false;
+}
+
 // 保存
 async function save() {
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -190,7 +213,7 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
+  <div class="flex flex-1 flex-col bg-bg">
     <AppHeader
       :title="isEdit ? '编辑记录' : '记账'"
       :show-back="isEdit"
@@ -245,47 +268,57 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
         <div v-if="txType === 'transfer'" class="space-y-2">
           <div>
             <label class="mb-1 block text-xs text-text-secondary">转出账户</label>
-            <select
-              v-model="fromAccountId"
-              class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+            <button
+              class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+              @click="openAccountPicker('from')"
             >
-              <option v-for="acc in availableAccounts" :key="acc.id" :value="acc.id">
-                {{ acc.name }}
-              </option>
-            </select>
+              <span class="flex items-center gap-2">
+                <span
+                  class="h-2.5 w-2.5 shrink-0 rounded-full"
+                  :style="{ backgroundColor: availableAccounts.find(a => a.id === fromAccountId)?.color || '#ccc' }"
+                />
+                {{ getAccountName(fromAccountId) || '请选择' }}
+              </span>
+              <ChevronDown :size="14" class="text-text-secondary" />
+            </button>
           </div>
           <div class="flex justify-center text-text-secondary">
             <ChevronDown :size="16" />
           </div>
           <div>
             <label class="mb-1 block text-xs text-text-secondary">转入账户</label>
-            <select
-              v-model="toAccountId"
-              class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+            <button
+              class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+              @click="openAccountPicker('to')"
             >
-              <option v-for="acc in availableAccounts" :key="acc.id" :value="acc.id">
-                {{ acc.name }}
-              </option>
-            </select>
+              <span class="flex items-center gap-2">
+                <span
+                  class="h-2.5 w-2.5 shrink-0 rounded-full"
+                  :style="{ backgroundColor: availableAccounts.find(a => a.id === toAccountId)?.color || '#ccc' }"
+                />
+                {{ getAccountName(toAccountId) || '请选择' }}
+              </span>
+              <ChevronDown :size="14" class="text-text-secondary" />
+            </button>
           </div>
         </div>
         <div v-else>
           <label class="mb-1 block text-xs text-text-secondary">
             {{ txType === 'expense' ? '扣款账户' : '入账账户' }}
           </label>
-          <select
-            :model-value="txType === 'expense' ? fromAccountId : toAccountId"
-            class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-            @change="(e: Event) => {
-              const v = (e.target as HTMLSelectElement).value;
-              if (txType === 'expense') fromAccountId = v;
-              else toAccountId = v;
-            }"
+          <button
+            class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+            @click="openAccountPicker(txType === 'expense' ? 'from' : 'to')"
           >
-            <option v-for="acc in availableAccounts" :key="acc.id" :value="acc.id">
-              {{ acc.name }}
-            </option>
-          </select>
+            <span class="flex items-center gap-2">
+              <span
+                class="h-2.5 w-2.5 shrink-0 rounded-full"
+                :style="{ backgroundColor: availableAccounts.find(a => a.id === (txType === 'expense' ? fromAccountId : toAccountId))?.color || '#ccc' }"
+              />
+              {{ getAccountName(txType === 'expense' ? fromAccountId : toAccountId) || '请选择' }}
+            </span>
+            <ChevronDown :size="14" class="text-text-secondary" />
+          </button>
         </div>
       </div>
 
@@ -358,6 +391,13 @@ const saveLabel = computed(() => (isEdit.value ? "保存" : "记一笔"));
       :selected-ids="selectedTagIds"
       @close="tagSheetVisible = false"
       @confirm="onTagConfirm"
+    />
+
+    <!-- 账户选择 Sheet -->
+    <AccountPickerSheet
+      :visible="accountPickerVisible"
+      @close="accountPickerVisible = false"
+      @select="onAccountSelect"
     />
 
     <!-- 删除确认 -->

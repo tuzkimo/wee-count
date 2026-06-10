@@ -57,7 +57,7 @@ async function handleSubmit(data: {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
+  <div class="flex flex-1 flex-col bg-bg">
     <AppHeader title="账户管理" />
 
     <!-- 净资产汇总 -->

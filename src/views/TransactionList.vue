@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { ChevronDown } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTransactionStore } from "@/stores/transaction";
 import AppHeader from "@/components/AppHeader.vue";
+import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import type { Transaction } from "@/types";
 
 const route = useRoute();
@@ -37,6 +39,13 @@ watch(filterAccountId, async (newVal) => {
   if (!ledgerId || isLoading.value) return;
   await transactionStore.fetchAll(ledgerId, newVal || undefined);
 });
+
+const accountPickerVisible = ref(false);
+
+function getAccountName(id: string): string {
+  if (!id) return "全部账户";
+  return accountStore.accounts.find((a) => a.id === id)?.name ?? id;
+}
 
 // 按日期分组
 interface DayGroup {
@@ -105,20 +114,25 @@ function goRecord(txId: string) {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
+  <div class="flex flex-1 flex-col bg-bg">
     <AppHeader title="流水" />
 
     <!-- 账户过滤器 -->
     <div class="bg-surface px-4 py-2">
-      <select
-        v-model="filterAccountId"
-        class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+      <button
+        class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+        @click="accountPickerVisible = true"
       >
-        <option value="">全部账户</option>
-        <option v-for="acc in accountStore.accounts" :key="acc.id" :value="acc.id">
-          {{ acc.name }}
-        </option>
-      </select>
+        <span class="flex items-center gap-2">
+          <span
+            v-if="filterAccountId"
+            class="h-2.5 w-2.5 shrink-0 rounded-full"
+            :style="{ backgroundColor: accountStore.accounts.find(a => a.id === filterAccountId)?.color || '#3b82f6' }"
+          />
+          {{ getAccountName(filterAccountId) }}
+        </span>
+        <ChevronDown :size="14" class="text-text-secondary" />
+      </button>
     </div>
 
     <!-- 流水列表 -->
@@ -167,5 +181,14 @@ function goRecord(txId: string) {
         </div>
       </template>
     </div>
+
+    <!-- 账户选择 Sheet -->
+    <AccountPickerSheet
+      :visible="accountPickerVisible"
+      :show-all-option="true"
+      @close="accountPickerVisible = false"
+      @select="(acc) => { filterAccountId = acc.id; accountPickerVisible = false }"
+      @select-all="filterAccountId = ''; accountPickerVisible = false"
+    />
   </div>
 </template>

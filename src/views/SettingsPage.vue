@@ -3,7 +3,7 @@ import AppHeader from "@/components/AppHeader.vue";
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-bg">
+  <div class="flex flex-1 flex-col bg-bg">
     <AppHeader title="设置" />
     <div class="flex flex-1 items-center justify-center">
       <div class="text-center">
