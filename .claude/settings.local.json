@@ -7,7 +7,16 @@
       "Bash(cargo --version)",
       "Bash(java --version)",
       "Bash(javac --version)",
-      "Bash(adb --version)"
+      "Bash(adb --version)",
+      "Skill(commit-commands:commit)",
+      "Bash(npx vue-tsc *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(cargo check *)",
+      "Bash(npx vitest *)",
+      "Bash(npm run *)",
+      "Bash(git -C * add *)",
+      "Bash(git -C * commit -m *)"
     ]
   }
 }
