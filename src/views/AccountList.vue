@@ -34,8 +34,8 @@ function openAdd() {
   sheetVisible.value = true;
 }
 
-function goTransactions(accountId: string) {
-  router.push(`/transactions?account=${accountId}`);
+function goAccountDetail(accountId: string) {
+  router.push(`/accounts/${accountId}`);
 }
 
 async function handleSubmit(data: {
@@ -58,7 +58,16 @@ async function handleSubmit(data: {
 
 <template>
   <div class="flex flex-1 flex-col bg-bg">
-    <AppHeader title="账户管理" />
+    <AppHeader title="账户管理">
+      <template #action>
+        <button
+          class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+          @click="openAdd"
+        >
+          <Plus :size="20" class="text-text" />
+        </button>
+      </template>
+    </AppHeader>
 
     <!-- 净资产汇总 -->
     <div class="bg-surface px-4 py-4">
@@ -97,20 +106,9 @@ async function handleSubmit(data: {
           v-for="account in accountStore.accounts"
           :key="account.id"
           :account="account"
-          @tap="goTransactions(account.id)"
+          @tap="goAccountDetail(account.id)"
         />
       </div>
-    </div>
-
-    <!-- 底部添加按钮 -->
-    <div class="bg-surface border-t border-gray-200 px-4 py-3">
-      <button
-        class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-primary py-3 text-white transition-colors hover:bg-primary-dark"
-        @click="openAdd"
-      >
-        <Plus :size="20" />
-        <span class="text-base font-medium">添加账户</span>
-      </button>
     </div>
 
     <!-- 新增 Sheet -->
