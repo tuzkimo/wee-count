@@ -42,9 +42,6 @@ const filteredExpense = computed(() =>
     .reduce((sum, t) => sum + t.amount, 0)
 );
 
-// 净收支
-const netChange = computed(() => filteredIncome.value - filteredExpense.value);
-
 onMounted(async () => {
   await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -71,16 +68,6 @@ watch(filterAccountId, async (newVal) => {
   if (!ledgerId || isLoading.value) return;
   await transactionStore.fetchAll(ledgerId, newVal || undefined);
 });
-
-// 从 route.query 读取筛选参数
-function getFilterParams() {
-  return {
-    account: (route.query.account as string) || "",
-    dateFrom: (route.query.dateFrom as string) || "",
-    dateTo: (route.query.dateTo as string) || "",
-    tags: (route.query.tags as string) || "",
-  };
-}
 
 const accountPickerVisible = ref(false);
 
