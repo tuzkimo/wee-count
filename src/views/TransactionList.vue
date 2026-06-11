@@ -41,8 +41,43 @@ const filteredExpense = computed(() =>
     .reduce((sum, t) => sum + t.amount, 0)
 );
 
-// 净收支
-const netChange = computed(() => filteredIncome.value - filteredExpense.value);
+// 是否启用日期/标签筛选
+const hasDateOrTagFilter = computed(() => {
+  return !!(route.query.dateFrom || route.query.dateTo || route.query.tags);
+});
+
+// 筛选后流水净收支
+const filteredNet = computed(() => filteredIncome.value - filteredExpense.value);
+
+// 根据筛选动态计算的净资产/资产/负债（依赖 filterAccountId 确保响应式更新）
+// 日期/标签筛选时：显示筛选期间的净收支；仅账户筛选时：显示账户余额
+const displayNetAssets = computed(() => {
+  // 日期/标签筛选生效时，显示筛选期间的净收支
+  if (hasDateOrTagFilter.value) return filteredNet.value;
+  if (filterAccountId.value) {
+    const acc = accountStore.accounts.find((a) => a.id === filterAccountId.value);
+    return acc?.current_balance ?? 0;
+  }
+  return accountStore.netAssets;
+});
+
+const displayAssetsTotal = computed(() => {
+  if (hasDateOrTagFilter.value) return filteredIncome.value;
+  if (filterAccountId.value) {
+    const acc = accountStore.accounts.find((a) => a.id === filterAccountId.value);
+    return acc && acc.category === "asset" ? (acc.current_balance ?? 0) : 0;
+  }
+  return accountStore.assetsTotal;
+});
+
+const displayLiabilitiesTotal = computed(() => {
+  if (hasDateOrTagFilter.value) return -filteredExpense.value;
+  if (filterAccountId.value) {
+    const acc = accountStore.accounts.find((a) => a.id === filterAccountId.value);
+    return acc && acc.category === "liability" ? (acc.current_balance ?? 0) : 0;
+  }
+  return accountStore.liabilitiesTotal;
+});
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -164,7 +199,11 @@ function formatSignedAmount(value: number): string {
 }
 
 function goRecord(txId: string) {
-  router.push(`/record/${txId}`);
+  if (isAccountMode.value && accountId.value) {
+    router.push(`/record/${txId}?account=${accountId.value}`);
+  } else {
+    router.push(`/record/${txId}`);
+  }
 }
 </script>
 
@@ -207,30 +246,18 @@ function goRecord(txId: string) {
 
     <!-- 汇总卡片 -->
     <div class="shrink-0 bg-surface px-4 py-3">
-      <!-- 首页模式：净资产 / 净收支 -->
+      <!-- 首页模式：净资产 / 资产 / 负债（根据筛选动态计算） -->
       <template v-if="!isAccountMode">
         <p class="text-xs text-text-secondary">净资产</p>
         <p class="mt-0.5 text-2xl font-bold text-text">
-          ¥{{ accountStore.netAssets.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          ¥{{ displayNetAssets.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
         </p>
         <div class="mt-2 flex gap-6 text-xs">
           <span class="text-text-secondary">
-            资产 ¥{{ accountStore.assetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            资产 ¥{{ displayAssetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
           </span>
           <span class="text-text-secondary">
-            负债 {{ formatSignedAmount(accountStore.liabilitiesTotal) }}
-          </span>
-        </div>
-        <!-- 本期收支（随筛选变化） -->
-        <div class="mt-3 flex gap-4 border-t border-gray-100 pt-2 text-xs">
-          <span class="text-income">
-            收入 ¥{{ filteredIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-          </span>
-          <span class="text-expense">
-            支出 ¥{{ filteredExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-          </span>
-          <span :class="netChange >= 0 ? 'text-income' : 'text-expense'">
-            结余 {{ formatSignedAmount(netChange) }}
+            负债 {{ formatSignedAmount(displayLiabilitiesTotal) }}
           </span>
         </div>
       </template>

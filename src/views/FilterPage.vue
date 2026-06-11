@@ -6,7 +6,6 @@ import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
-import DateTimePicker from "@/components/DateTimePicker.vue";
 import type { Account } from "@/types";
 
 const route = useRoute();
@@ -116,10 +115,18 @@ function goBack() {
       <!-- 日期时间范围 -->
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">📅 日期时间范围</label>
-        <div class="flex items-end gap-2">
-          <DateTimePicker v-model="dateFrom" class="flex-1" />
-          <span class="pb-2.5 text-text-secondary">─</span>
-          <DateTimePicker v-model="dateTo" class="flex-1" />
+        <div class="flex items-center gap-2">
+          <input
+            v-model="dateFrom"
+            type="datetime-local"
+            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+          />
+          <span class="text-text-secondary">─</span>
+          <input
+            v-model="dateTo"
+            type="datetime-local"
+            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+          />
         </div>
       </div>
 

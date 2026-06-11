@@ -43,7 +43,7 @@ function onKey(key: string) {
         :class="{
           'text-text': key !== 'done' && key !== 'saveNext' && key !== 'delete',
           'bg-primary text-white active:bg-primary-dark': key === 'done' && isValid,
-          'bg-expense text-white active:bg-red-600': key === 'saveNext' && isValid,
+          'bg-emerald-500 text-white active:bg-emerald-600': key === 'saveNext' && isValid,
           'bg-gray-200 text-gray-400 cursor-not-allowed': (key === 'done' || key === 'saveNext') && !isValid,
         }"
         :disabled="(key === 'done' || key === 'saveNext') && !isValid"

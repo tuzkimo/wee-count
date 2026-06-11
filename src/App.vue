@@ -26,7 +26,9 @@ const showTab = computed(() => !route.meta.hideTab);
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-bg">
+  <div class="flex h-dvh flex-col bg-bg">
+    <!-- 系统状态栏安全区占位 -->
+    <div class="shrink-0 bg-surface" :style="{ height: `max(env(safe-area-inset-top), 1.5rem)` }" />
     <div class="flex-1 min-h-0">
       <RouterView />
     </div>

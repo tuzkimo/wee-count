@@ -160,18 +160,24 @@ export const useTransactionStore = defineStore("transaction", () => {
     }
 
     if (opts?.dateFrom) {
+      // 将用户输入的本地时间转为 UTC，与 DB 中 UTC 存储值比较
+      const localStr = opts.dateFrom.includes("T") ? opts.dateFrom : opts.dateFrom + "T00:00:00";
       sql += " AND t.occurred_at >= ?";
-      params.push(opts.dateFrom.includes("T") ? opts.dateFrom : opts.dateFrom + "T00:00:00");
+      params.push(new Date(localStr).toISOString());
     }
 
     if (opts?.dateTo) {
-      sql += " AND t.occurred_at <= ?";
-      params.push(opts.dateTo.includes("T") ? opts.dateTo : opts.dateTo + "T23:59:59");
+      const localStr = opts.dateTo.includes("T") ? opts.dateTo : opts.dateTo + "T00:00:00";
+      sql += " AND t.occurred_at < ?";
+      params.push(new Date(localStr).toISOString());
     }
 
     if (opts?.tagIds && opts.tagIds.length > 0) {
-      sql += ` AND t.id IN (SELECT transaction_id FROM transaction_tags WHERE tag_id IN (${opts.tagIds.map(() => "?").join(",")}))`;
-      params.push(...opts.tagIds);
+      // AND 关系：同时拥有所有选中标签，用多个 IN 子查询取交集
+      for (const tagId of opts.tagIds) {
+        sql += " AND t.id IN (SELECT transaction_id FROM transaction_tags WHERE tag_id = ?)";
+        params.push(tagId);
+      }
     }
 
     sql += " GROUP BY t.id ORDER BY t.occurred_at DESC, t.created_at DESC";

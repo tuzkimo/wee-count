@@ -13,7 +13,7 @@ defineEmits<{
 
 <template>
   <header
-    class="flex min-h-14 items-center border-b border-gray-200 bg-surface px-4 py-2 pt-[calc(0.5rem+env(safe-area-inset-top))]"
+    class="flex min-h-14 items-center border-b border-gray-200 bg-surface px-4 py-2"
   >
     <button
       v-if="showBack"

@@ -12,7 +12,7 @@ import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
-import DateTimePicker from "@/components/DateTimePicker.vue";
+import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
 import type { Account, Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
@@ -96,14 +96,13 @@ onMounted(async () => {
       categoryId.value = tx.category_id;
       fromAccountId.value = tx.from_account_id;
       toAccountId.value = tx.to_account_id;
-      occurredAt.value = tx.occurred_at.slice(0, 16);
+      occurredAt.value = utcToLocalDatetimeString(tx.occurred_at);
       expression.value = tx.amount.toString();
       selectedTagIds.value = tx.tags?.map((t) => t.id) ?? [];
     }
   } else {
-    // 新增模式：默认当前时间
-    const now = new Date();
-    occurredAt.value = now.toISOString().slice(0, 16);
+    // 新增模式：默认当前本地时间
+    occurredAt.value = toLocalDatetimeString(new Date());
     // 从 query 读取默认账户
     const qAccount = route.query.account as string | undefined;
     const defaultAcc = qAccount
@@ -248,8 +247,7 @@ async function onSaveNext() {
     expression.value = "";
     selectedTagIds.value = [];
     categoryId.value = defaultCategoryId.value;
-    const now = new Date();
-    occurredAt.value = now.toISOString().slice(0, 16);
+    occurredAt.value = toLocalDatetimeString(new Date());
     // 保留账户和标签
   }
 }
@@ -260,7 +258,13 @@ async function deleteTx() {
   isSaving.value = true;
   try {
     await transactionStore.remove(editId.value);
-    router.replace("/");
+    // 从账户详情页进入时，删除后返回该账户详情页
+    const qAccount = route.query.account as string | undefined;
+    if (qAccount) {
+      router.replace(`/accounts/${qAccount}`);
+    } else {
+      router.replace("/");
+    }
   } catch (e) {
     console.error("Delete transaction failed:", e);
   } finally {
@@ -271,6 +275,7 @@ async function deleteTx() {
 function goBack() {
   router.back();
 }
+
 </script>
 
 <template>
@@ -401,7 +406,14 @@ function goBack() {
       </div>
 
       <!-- 5. 日期时间 -->
-      <DateTimePicker v-model="occurredAt" label="日期时间" class="mb-4" />
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">日期时间</label>
+        <input
+          v-model="occurredAt"
+          type="datetime-local"
+          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+        />
+      </div>
 
       <!-- 6. 标签 -->
       <div class="mb-4">
