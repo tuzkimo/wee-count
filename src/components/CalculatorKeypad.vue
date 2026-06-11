@@ -14,10 +14,10 @@ const emit = defineEmits<{
 }>();
 
 const keys = [
-  ["7", "8", "9", "+"],
-  ["4", "5", "6", "-"],
-  ["1", "2", "3", "delete"],
-  [".", "0", "done", "saveNext"],
+  ["7", "8", "9", "saveNext"],
+  ["4", "5", "6", "+"],
+  ["1", "2", "3", "-"],
+  [".", "0", "delete", "done"],
 ];
 
 function onKey(key: string) {

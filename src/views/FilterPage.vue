@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
-import DateTimeSheet from "@/components/DateTimeSheet.vue";
+import DateTimePicker from "@/components/DateTimePicker.vue";
 import type { Account } from "@/types";
 
 const route = useRoute();
@@ -22,8 +22,6 @@ const dateTo = ref("");
 const selectedTagIds = ref<string[]>([]);
 
 const accountPickerVisible = ref(false);
-const datePickerTarget = ref<"from" | "to">("from");
-const datePickerVisible = ref(false);
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -89,32 +87,6 @@ function reset() {
 function goBack() {
   router.back();
 }
-
-function openDatePicker(target: "from" | "to") {
-  datePickerTarget.value = target;
-  datePickerVisible.value = true;
-}
-
-function onDateConfirm(val: string) {
-  if (datePickerTarget.value === "from") {
-    dateFrom.value = val;
-  } else {
-    dateTo.value = val;
-  }
-  datePickerVisible.value = false;
-}
-
-function formatDateDisplay(dateStr: string): string {
-  if (!dateStr) return "";
-  const d = new Date(dateStr);
-  const month = d.getMonth() + 1;
-  const day = d.getDate();
-  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  return `${month}月${day}日 ${weekDays[d.getDay()]}`;
-}
-
-const dateFromDisplay = computed(() => formatDateDisplay(dateFrom.value));
-const dateToDisplay = computed(() => formatDateDisplay(dateTo.value));
 </script>
 
 <template>
@@ -141,23 +113,13 @@ const dateToDisplay = computed(() => formatDateDisplay(dateTo.value));
         </button>
       </div>
 
-      <!-- 日期范围 -->
+      <!-- 日期时间范围 -->
       <div class="mb-4">
-        <label class="mb-1 block text-xs text-text-secondary">📅 日期范围</label>
-        <div class="flex items-center gap-2">
-          <button
-            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-            @click="openDatePicker('from')"
-          >
-            {{ dateFromDisplay || '开始日期' }}
-          </button>
-          <span class="text-text-secondary">─</span>
-          <button
-            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-            @click="openDatePicker('to')"
-          >
-            {{ dateToDisplay || '结束日期' }}
-          </button>
+        <label class="mb-1 block text-xs text-text-secondary">📅 日期时间范围</label>
+        <div class="flex items-end gap-2">
+          <DateTimePicker v-model="dateFrom" class="flex-1" />
+          <span class="pb-2.5 text-text-secondary">─</span>
+          <DateTimePicker v-model="dateTo" class="flex-1" />
         </div>
       </div>
 
@@ -204,15 +166,6 @@ const dateToDisplay = computed(() => formatDateDisplay(dateTo.value));
       @close="accountPickerVisible = false"
       @select="onAccountSelect"
       @select-all="onSelectAll"
-    />
-
-    <!-- 日期选择 Sheet -->
-    <DateTimeSheet
-      :visible="datePickerVisible"
-      :show-time="false"
-      :date-time="datePickerTarget === 'from' ? dateFrom : dateTo"
-      @close="datePickerVisible = false"
-      @confirm="onDateConfirm"
     />
   </div>
 </template>

@@ -41,6 +41,9 @@ const filteredExpense = computed(() =>
     .reduce((sum, t) => sum + t.amount, 0)
 );
 
+// 净收支
+const netChange = computed(() => filteredIncome.value - filteredExpense.value);
+
 onMounted(async () => {
   await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -80,12 +83,13 @@ watch(
 );
 
 function buildFetchOpts() {
-  const qAccount = route.query.account as string | undefined;
+  // 账户详情模式：始终筛选当前账户
+  const accId = isAccountMode.value ? accountId.value : (route.query.account as string | undefined);
   const qDateFrom = route.query.dateFrom as string | undefined;
   const qDateTo = route.query.dateTo as string | undefined;
   const qTags = route.query.tags as string | undefined;
   return {
-    accountId: qAccount || undefined,
+    accountId: accId || undefined,
     dateFrom: qDateFrom || undefined,
     dateTo: qDateTo || undefined,
     tagIds: qTags ? qTags.split(",").filter(Boolean) : undefined,
@@ -217,6 +221,18 @@ function goRecord(txId: string) {
             负债 {{ formatSignedAmount(accountStore.liabilitiesTotal) }}
           </span>
         </div>
+        <!-- 本期收支（随筛选变化） -->
+        <div class="mt-3 flex gap-4 border-t border-gray-100 pt-2 text-xs">
+          <span class="text-income">
+            收入 ¥{{ filteredIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+          <span class="text-expense">
+            支出 ¥{{ filteredExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+          <span :class="netChange >= 0 ? 'text-income' : 'text-expense'">
+            结余 {{ formatSignedAmount(netChange) }}
+          </span>
+        </div>
       </template>
 
       <!-- 账户详情模式：当前余额 + 收入/支出合计 -->
@@ -287,7 +303,7 @@ function goRecord(txId: string) {
     <!-- FAB -->
     <router-link
       :to="isAccountMode ? `/record?account=${accountId}` : '/record'"
-      class="fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
+      class="fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
       style="top: 75%"
     >
       <Plus :size="28" />

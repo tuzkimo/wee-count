@@ -11,8 +11,8 @@ import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
-import DateTimeSheet from "@/components/DateTimeSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
+import DateTimePicker from "@/components/DateTimePicker.vue";
 import type { Account, Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
@@ -39,7 +39,6 @@ const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
 const accountPickerVisible = ref(false);
 const accountPickerTarget = ref<"from" | "to">("from");
-const dateTimeSheetVisible = ref(false);
 const isSaving = ref(false);
 const isReady = ref(false);
 
@@ -231,7 +230,15 @@ async function doSave(): Promise<boolean> {
 
 async function onDone() {
   const ok = await doSave();
-  if (ok) router.replace("/");
+  if (ok) {
+    // 从账户详情页进入时，返回该账户详情页
+    const qAccount = route.query.account as string | undefined;
+    if (qAccount) {
+      router.replace(`/accounts/${qAccount}`);
+    } else {
+      router.replace("/");
+    }
+  }
 }
 
 async function onSaveNext() {
@@ -264,18 +271,6 @@ async function deleteTx() {
 function goBack() {
   router.back();
 }
-
-// 格式化日期显示
-const dateDisplay = computed(() => {
-  if (!occurredAt.value) return "";
-  const d = new Date(occurredAt.value);
-  const month = d.getMonth() + 1;
-  const day = d.getDate();
-  const hours = d.getHours().toString().padStart(2, "0");
-  const mins = d.getMinutes().toString().padStart(2, "0");
-  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  return `${month}月${day}日 ${weekDays[d.getDay()]} ${hours}:${mins}`;
-});
 </script>
 
 <template>
@@ -406,16 +401,7 @@ const dateDisplay = computed(() => {
       </div>
 
       <!-- 5. 日期时间 -->
-      <div class="mb-4">
-        <label class="mb-1 block text-xs text-text-secondary">日期时间</label>
-        <button
-          class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-          @click="dateTimeSheetVisible = true"
-        >
-          <span>{{ dateDisplay || '请选择' }}</span>
-          <ChevronDown :size="14" class="text-text-secondary" />
-        </button>
-      </div>
+      <DateTimePicker v-model="occurredAt" label="日期时间" class="mb-4" />
 
       <!-- 6. 标签 -->
       <div class="mb-4">
@@ -448,14 +434,6 @@ const dateDisplay = computed(() => {
       @input="onKeypadInput"
       @done="onDone"
       @save-next="onSaveNext"
-    />
-
-    <!-- DateTimeSheet -->
-    <DateTimeSheet
-      :visible="dateTimeSheetVisible"
-      :date-time="occurredAt"
-      @close="dateTimeSheetVisible = false"
-      @confirm="(val) => { occurredAt = val; dateTimeSheetVisible = false }"
     />
 
     <!-- 标签选择 Sheet -->

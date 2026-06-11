@@ -161,12 +161,12 @@ export const useTransactionStore = defineStore("transaction", () => {
 
     if (opts?.dateFrom) {
       sql += " AND t.occurred_at >= ?";
-      params.push(opts.dateFrom);
+      params.push(opts.dateFrom.includes("T") ? opts.dateFrom : opts.dateFrom + "T00:00:00");
     }
 
     if (opts?.dateTo) {
       sql += " AND t.occurred_at <= ?";
-      params.push(opts.dateTo + "T23:59:59");
+      params.push(opts.dateTo.includes("T") ? opts.dateTo : opts.dateTo + "T23:59:59");
     }
 
     if (opts?.tagIds && opts.tagIds.length > 0) {
