@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ChevronDown, Filter, Plus, Pencil, ListChecks, Trash2, Circle, CheckCircle } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
+import { useTagStore } from "@/stores/tag";
 import { useTransactionStore } from "@/stores/transaction";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
@@ -13,6 +14,7 @@ const route = useRoute();
 const router = useRouter();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
+const tagStore = useTagStore();
 const transactionStore = useTransactionStore();
 
 const filterAccountId = ref<string>("");
@@ -52,6 +54,12 @@ async function doBatchDelete() {
   await transactionStore.batchRemove([...selectedTxIds.value]);
   exitMultiSelectMode();
   batchDeleteDialogVisible.value = false;
+  // batchRemove 内部 fetchAll 不带 accountId 过滤，需重新按当前账户过滤
+  const ledgerId = ledgerStore.currentLedger?.id;
+  if (ledgerId && accountId.value) {
+    await transactionStore.fetchAll(ledgerId, { accountId: accountId.value });
+    await accountStore.fetchAll(ledgerId);
+  }
 }
 
 // 判断是否为账户详情模式
@@ -75,6 +83,7 @@ onMounted(async () => {
   if (!ledgerId) return;
 
   await accountStore.fetchAll(ledgerId);
+  await tagStore.fetchAll(ledgerId);
 
   // 从 route params 判断模式
   if (isAccountMode.value && accountId.value) {
@@ -154,8 +163,17 @@ const filterSummary = computed(() => {
 
   // 标签
   if (q.tags) {
-    const tagCount = (q.tags as string).split(",").filter(Boolean).length;
-    parts.push(`🏷️ ${tagCount}个标签`);
+    const tagIds = (q.tags as string).split(",").filter(Boolean);
+    const tagNames = tagIds
+      .map((id) => tagStore.tags.find((t) => t.id === id)?.name)
+      .filter(Boolean) as string[];
+    const MAX_VISIBLE = 2;
+    if (tagNames.length <= MAX_VISIBLE) {
+      parts.push(`🏷️ ${tagNames.join(", ")}`);
+    } else {
+      const visible = tagNames.slice(0, MAX_VISIBLE).join(", ");
+      parts.push(`🏷️ ${visible}等${tagNames.length}个标签`);
+    }
   } else {
     parts.push("🏷️ 全部标签");
   }

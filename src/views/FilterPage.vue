@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
@@ -7,6 +7,7 @@ import { useTagStore } from "@/stores/tag";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
+import { toLocalDatetimeString } from "@/utils/datetime";
 import type { Account } from "@/types";
 
 const route = useRoute();
@@ -24,6 +25,9 @@ const selectedTagIds = ref<string[]>([]);
 const accountPickerVisible = ref(false);
 const datePickerVisible = ref(false);
 const datePickerTarget = ref<"from" | "to">("from");
+
+// 默认日期：筛选页打开时默认选当前本地时间
+const nowDatetime = computed(() => toLocalDatetimeString(new Date()));
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -192,7 +196,7 @@ function goBack() {
     <!-- 日期时间选择器 -->
     <DateTimePicker
       :visible="datePickerVisible"
-      :model-value="datePickerTarget === 'from' ? (dateFrom || '2025-01-01T00:00') : (dateTo || '2025-12-31T23:55')"
+      :model-value="datePickerTarget === 'from' ? (dateFrom || nowDatetime) : (dateTo || nowDatetime)"
       @confirm="onDateTimeConfirm"
       @close="datePickerVisible = false"
     />

@@ -68,16 +68,24 @@ const emit = defineEmits<{
 }>();
 
 // 生成选项列表
-const currentYear = new Date().getFullYear();
+const now = new Date();
+const currentYear = now.getFullYear();
 const yearMonthOptions = generateYearMonthOptions(currentYear);
 
-const selectedYearMonth = ref<YearMonthOption>(yearMonthOptions[0]);
-const dayOptions = ref<number[]>([]);
-const selectedDay = ref(1);
+// 默认选中当前年月
+const defaultYearMonth = yearMonthOptions.find(
+  (o) => o.year === currentYear && o.month === now.getMonth() + 1
+) ?? yearMonthOptions[0];
+
+const selectedYearMonth = ref<YearMonthOption>(defaultYearMonth);
+const dayOptions = ref<number[]>(generateDayOptions(defaultYearMonth.year, defaultYearMonth.month));
+const selectedDay = ref(now.getDate());
 const hourOptions = generateHourOptions();
-const selectedHour = ref("00");
+const selectedHour = ref(String(now.getHours()).padStart(2, "0"));
 const minuteOptions = generateMinuteOptions();
-const selectedMinute = ref("00");
+// 分钟取最近 5 分钟步长
+const roundedMinuteDefault = Math.round(now.getMinutes() / 5) * 5;
+const selectedMinute = ref(String(Math.min(roundedMinuteDefault, 55)).padStart(2, "0"));
 
 // 滚轮容器 ref，用于初始化滚动位置
 const ymScrollRef = ref<HTMLElement | null>(null);
@@ -235,7 +243,7 @@ function onClose() {
                   <div
                     v-for="opt in yearMonthOptions"
                     :key="`${opt.year}-${opt.month}`"
-                    class="flex items-center justify-center snap-center text-sm"
+                    class="flex items-center justify-center snap-center text-sm leading-none"
                     :style="{ height: `${ITEM_HEIGHT}px` }"
                     :class="
                       selectedYearMonth.year === opt.year && selectedYearMonth.month === opt.month
@@ -248,7 +256,7 @@ function onClose() {
                 </div>
                 <!-- 选中行高亮指示器 -->
                 <div
-                  class="pointer-events-none absolute left-0 right-0 border-y border-gray-100 bg-primary/5"
+                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
                   :style="{
                     top: `${ITEM_HEIGHT * 2}px`,
                     height: `${ITEM_HEIGHT}px`,
@@ -267,7 +275,7 @@ function onClose() {
                   <div
                     v-for="d in dayOptions"
                     :key="d"
-                    class="flex items-center justify-center snap-center text-sm"
+                    class="flex items-center justify-center snap-center text-sm leading-none"
                     :style="{ height: `${ITEM_HEIGHT}px` }"
                     :class="
                       selectedDay === d ? 'text-text font-semibold' : 'text-gray-300'
@@ -277,7 +285,7 @@ function onClose() {
                   </div>
                 </div>
                 <div
-                  class="pointer-events-none absolute left-0 right-0 border-y border-gray-100 bg-primary/5"
+                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
                   :style="{
                     top: `${ITEM_HEIGHT * 2}px`,
                     height: `${ITEM_HEIGHT}px`,
@@ -296,7 +304,7 @@ function onClose() {
                   <div
                     v-for="h in hourOptions"
                     :key="h"
-                    class="flex items-center justify-center snap-center text-sm"
+                    class="flex items-center justify-center snap-center text-sm leading-none"
                     :style="{ height: `${ITEM_HEIGHT}px` }"
                     :class="
                       selectedHour === h ? 'text-text font-semibold' : 'text-gray-300'
@@ -306,7 +314,7 @@ function onClose() {
                   </div>
                 </div>
                 <div
-                  class="pointer-events-none absolute left-0 right-0 border-y border-gray-100 bg-primary/5"
+                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
                   :style="{
                     top: `${ITEM_HEIGHT * 2}px`,
                     height: `${ITEM_HEIGHT}px`,
@@ -325,7 +333,7 @@ function onClose() {
                   <div
                     v-for="m in minuteOptions"
                     :key="m"
-                    class="flex items-center justify-center snap-center text-sm"
+                    class="flex items-center justify-center snap-center text-sm leading-none"
                     :style="{ height: `${ITEM_HEIGHT}px` }"
                     :class="
                       selectedMinute === m ? 'text-text font-semibold' : 'text-gray-300'
@@ -335,7 +343,7 @@ function onClose() {
                   </div>
                 </div>
                 <div
-                  class="pointer-events-none absolute left-0 right-0 border-y border-gray-100 bg-primary/5"
+                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
                   :style="{
                     top: `${ITEM_HEIGHT * 2}px`,
                     height: `${ITEM_HEIGHT}px`,
