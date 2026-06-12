@@ -27,57 +27,10 @@ const currentAccount = computed(() => {
   return accountStore.accounts.find((a) => a.id === accountId.value) ?? null;
 });
 
-// 筛选后的收入合计
-const filteredIncome = computed(() =>
-  transactionStore.transactions
-    .filter((t) => t.type === "income")
-    .reduce((sum, t) => sum + t.amount, 0)
-);
-
-// 筛选后的支出合计
-const filteredExpense = computed(() =>
-  transactionStore.transactions
-    .filter((t) => t.type === "expense")
-    .reduce((sum, t) => sum + t.amount, 0)
-);
-
-// 是否启用日期/标签筛选
-const hasDateOrTagFilter = computed(() => {
-  return !!(route.query.dateFrom || route.query.dateTo || route.query.tags);
-});
-
-// 筛选后流水净收支
-const filteredNet = computed(() => filteredIncome.value - filteredExpense.value);
-
-// 根据筛选动态计算的净资产/资产/负债（依赖 filterAccountId 确保响应式更新）
-// 日期/标签筛选时：显示筛选期间的净收支；仅账户筛选时：显示账户余额
-const displayNetAssets = computed(() => {
-  // 日期/标签筛选生效时，显示筛选期间的净收支
-  if (hasDateOrTagFilter.value) return filteredNet.value;
-  if (filterAccountId.value) {
-    const acc = accountStore.accounts.find((a) => a.id === filterAccountId.value);
-    return acc?.current_balance ?? 0;
-  }
-  return accountStore.netAssets;
-});
-
-const displayAssetsTotal = computed(() => {
-  if (hasDateOrTagFilter.value) return filteredIncome.value;
-  if (filterAccountId.value) {
-    const acc = accountStore.accounts.find((a) => a.id === filterAccountId.value);
-    return acc && acc.category === "asset" ? (acc.current_balance ?? 0) : 0;
-  }
-  return accountStore.assetsTotal;
-});
-
-const displayLiabilitiesTotal = computed(() => {
-  if (hasDateOrTagFilter.value) return -filteredExpense.value;
-  if (filterAccountId.value) {
-    const acc = accountStore.accounts.find((a) => a.id === filterAccountId.value);
-    return acc && acc.category === "liability" ? (acc.current_balance ?? 0) : 0;
-  }
-  return accountStore.liabilitiesTotal;
-});
+// 使用 store 的 totalIncome / totalExpense
+const totalIncome = computed(() => transactionStore.totalIncome);
+const totalExpense = computed(() => transactionStore.totalExpense);
+const totalBalance = computed(() => totalIncome.value - totalExpense.value);
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -118,17 +71,71 @@ watch(
 );
 
 function buildFetchOpts() {
-  // 账户详情模式：始终筛选当前账户
   const accId = isAccountMode.value ? accountId.value : (route.query.account as string | undefined);
   const qDateFrom = route.query.dateFrom as string | undefined;
   const qDateTo = route.query.dateTo as string | undefined;
   const qTags = route.query.tags as string | undefined;
+
+  // 首页模式无任何筛选参数时，默认查当月
+  let dateFrom = qDateFrom;
+  let dateTo = qDateTo;
+  if (!isAccountMode.value && !qDateFrom && !qDateTo && !qTags && !accId) {
+    const now = new Date();
+    dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01T00:00`;
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    dateTo = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, "0")}-${String(lastDay.getDate()).padStart(2, "0")}T23:59`;
+  }
+
   return {
     accountId: accId || undefined,
-    dateFrom: qDateFrom || undefined,
-    dateTo: qDateTo || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
     tagIds: qTags ? qTags.split(",").filter(Boolean) : undefined,
   };
+}
+
+// 基于 query 参数生成筛选摘要文本（用于筛选状态栏）
+const filterSummary = computed(() => {
+  const parts: string[] = [];
+  const q = route.query;
+
+  // 日期范围
+  if (q.dateFrom || q.dateTo) {
+    parts.push(`📅 ${formatDateRange(q.dateFrom as string, q.dateTo as string)}`);
+  } else {
+    const now = new Date();
+    parts.push(`📅 ${now.getFullYear()}年${now.getMonth() + 1}月`);
+  }
+
+  // 账户
+  if (q.account) {
+    const acc = accountStore.accounts.find((a) => a.id === q.account);
+    parts.push(`📋 ${acc?.name ?? q.account}`);
+  } else {
+    parts.push("📋 全部账户");
+  }
+
+  // 标签
+  if (q.tags) {
+    const tagCount = (q.tags as string).split(",").filter(Boolean).length;
+    parts.push(`🏷️ ${tagCount}个标签`);
+  } else {
+    parts.push("🏷️ 全部标签");
+  }
+
+  return parts.join(" · ");
+});
+
+function formatDateRange(from: string, to: string): string {
+  if (from && to) {
+    const [fd] = from.split("T");
+    const [td] = to.split("T");
+    if (fd === td) return fd;
+    return `${fd} ~ ${td}`;
+  }
+  if (from) return `${from.split("T")[0]} 起`;
+  if (to) return `至 ${to.split("T")[0]}`;
+  return "";
 }
 
 // 按日期分组
@@ -192,12 +199,6 @@ function formatAmount(tx: Transaction): string {
   return `${sign}¥${tx.amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// 带符号的金额显示（用于净资产汇总）
-function formatSignedAmount(value: number): string {
-  const sign = value >= 0 ? "+" : "-";
-  return `${sign}¥${Math.abs(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
 function goRecord(txId: string) {
   if (isAccountMode.value && accountId.value) {
     router.push(`/record/${txId}?account=${accountId.value}`);
@@ -244,25 +245,46 @@ function goRecord(txId: string) {
       </template>
     </AppHeader>
 
+    <!-- 筛选状态栏（仅首页模式） -->
+    <div
+      v-if="!isAccountMode"
+      class="shrink-0 flex items-center gap-1 overflow-x-auto border-b border-gray-100 bg-surface px-4 py-2"
+      @click="router.push({ path: '/filter', query: route.query })"
+    >
+      <span class="whitespace-nowrap text-xs text-text-secondary">{{ filterSummary }}</span>
+      <span class="text-[10px] text-gray-400">→</span>
+    </div>
+
     <!-- 汇总卡片 -->
     <div class="shrink-0 bg-surface px-4 py-3">
-      <!-- 首页模式：净资产 / 资产 / 负债（根据筛选动态计算） -->
+      <!-- 首页模式：收入 / 支出 / 结余 -->
       <template v-if="!isAccountMode">
-        <p class="text-xs text-text-secondary">净资产</p>
-        <p class="mt-0.5 text-2xl font-bold text-text">
-          ¥{{ displayNetAssets.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-        </p>
-        <div class="mt-2 flex gap-6 text-xs">
-          <span class="text-text-secondary">
-            资产 ¥{{ displayAssetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-          </span>
-          <span class="text-text-secondary">
-            负债 {{ formatSignedAmount(displayLiabilitiesTotal) }}
-          </span>
+        <div class="flex gap-4">
+          <div class="flex-1 text-center">
+            <p class="text-xs text-text-secondary">收入</p>
+            <p class="mt-1 text-lg font-bold text-income">
+              ¥{{ totalIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            </p>
+          </div>
+          <div class="flex-1 text-center">
+            <p class="text-xs text-text-secondary">支出</p>
+            <p class="mt-1 text-lg font-bold text-expense">
+              -¥{{ totalExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            </p>
+          </div>
+          <div class="flex-1 text-center">
+            <p class="text-xs text-text-secondary">结余</p>
+            <p
+              class="mt-1 text-lg font-bold"
+              :class="totalBalance >= 0 ? 'text-text' : 'text-expense'"
+            >
+              {{ totalBalance >= 0 ? '' : '-' }}¥{{ Math.abs(totalBalance).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            </p>
+          </div>
         </div>
       </template>
 
-      <!-- 账户详情模式：当前余额 + 收入/支出合计 -->
+      <!-- 账户详情模式：当前余额 + 收入/支出合计（保持不变） -->
       <template v-else>
         <p class="text-xs text-text-secondary">当前余额</p>
         <p class="mt-0.5 text-2xl font-bold text-text">
@@ -270,10 +292,10 @@ function goRecord(txId: string) {
         </p>
         <div class="mt-2 flex gap-6 text-xs">
           <span class="text-text-secondary">
-            收入 ¥{{ filteredIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            收入 ¥{{ totalIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
           </span>
           <span class="text-text-secondary">
-            支出 ¥{{ filteredExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            支出 ¥{{ totalExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
           </span>
         </div>
       </template>
