@@ -6,6 +6,7 @@ import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
+import DateTimePicker from "@/components/DateTimePicker.vue";
 import type { Account } from "@/types";
 
 const route = useRoute();
@@ -21,6 +22,8 @@ const dateTo = ref("");
 const selectedTagIds = ref<string[]>([]);
 
 const accountPickerVisible = ref(false);
+const datePickerVisible = ref(false);
+const datePickerTarget = ref<"from" | "to">("from");
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -83,6 +86,15 @@ function reset() {
   selectedTagIds.value = [];
 }
 
+function onDateTimeConfirm(value: string) {
+  if (datePickerTarget.value === "from") {
+    dateFrom.value = value;
+  } else {
+    dateTo.value = value;
+  }
+  datePickerVisible.value = false;
+}
+
 function goBack() {
   router.back();
 }
@@ -116,17 +128,19 @@ function goBack() {
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">📅 日期时间范围</label>
         <div class="flex items-center gap-2">
-          <input
-            v-model="dateFrom"
-            type="datetime-local"
-            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-          />
+          <button
+            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary text-left"
+            @click="datePickerTarget = 'from'; datePickerVisible = true"
+          >
+            {{ dateFrom || '开始日期' }}
+          </button>
           <span class="text-text-secondary">─</span>
-          <input
-            v-model="dateTo"
-            type="datetime-local"
-            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
-          />
+          <button
+            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary text-left"
+            @click="datePickerTarget = 'to'; datePickerVisible = true"
+          >
+            {{ dateTo || '结束日期' }}
+          </button>
         </div>
       </div>
 
@@ -173,6 +187,14 @@ function goBack() {
       @close="accountPickerVisible = false"
       @select="onAccountSelect"
       @select-all="onSelectAll"
+    />
+
+    <!-- 日期时间选择器 -->
+    <DateTimePicker
+      :visible="datePickerVisible"
+      :model-value="datePickerTarget === 'from' ? (dateFrom || '2025-01-01T00:00') : (dateTo || '2025-12-31T23:55')"
+      @confirm="onDateTimeConfirm"
+      @close="datePickerVisible = false"
     />
   </div>
 </template>
