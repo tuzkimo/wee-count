@@ -235,13 +235,13 @@ function onClose() {
   <Teleport to="body">
     <Transition name="picker-fade">
       <div
-        v-if="visible"
+        v-show="visible"
         class="fixed inset-0 z-50 flex flex-col justify-end bg-black/40"
         @click.self="onClose"
       >
         <Transition name="picker-slide">
           <div
-            v-if="visible"
+            v-show="visible"
             class="flex flex-col rounded-t-2xl bg-surface shadow-xl"
           >
             <!-- Header -->
