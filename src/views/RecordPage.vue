@@ -12,6 +12,7 @@ import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
+import DateTimePicker from "@/components/DateTimePicker.vue";
 import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
 import type { Account, Category, Tag, TransactionType } from "@/types";
 
@@ -41,6 +42,7 @@ const accountPickerVisible = ref(false);
 const accountPickerTarget = ref<"from" | "to">("from");
 const isSaving = ref(false);
 const isReady = ref(false);
+const datePickerVisible = ref(false);
 
 // 按类型过滤分类
 const filteredCategories = computed(() =>
@@ -272,6 +274,11 @@ async function deleteTx() {
   }
 }
 
+function onDateTimeConfirm(value: string) {
+  occurredAt.value = value;
+  datePickerVisible.value = false;
+}
+
 function goBack() {
   router.back();
 }
@@ -408,11 +415,13 @@ function goBack() {
       <!-- 5. 日期时间 -->
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">日期时间</label>
-        <input
-          v-model="occurredAt"
-          type="datetime-local"
-          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-        />
+        <button
+          class="flex w-full items-center gap-2 rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+          @click="datePickerVisible = true"
+        >
+          <span>📅</span>
+          <span>{{ occurredAt }}</span>
+        </button>
       </div>
 
       <!-- 6. 标签 -->
@@ -472,6 +481,14 @@ function goBack() {
       :danger="true"
       @confirm="deleteTx"
       @cancel="deleteDialogVisible = false"
+    />
+
+    <!-- 日期时间选择器 -->
+    <DateTimePicker
+      :visible="datePickerVisible"
+      :model-value="occurredAt"
+      @confirm="onDateTimeConfirm"
+      @close="datePickerVisible = false"
     />
   </div>
 </template>
