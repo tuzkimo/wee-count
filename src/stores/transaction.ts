@@ -292,5 +292,21 @@ export const useTransactionStore = defineStore("transaction", () => {
     }
   }
 
-  return { transactions, totalIncome, totalExpense, fetchAll, add, update, remove };
+  async function batchRemove(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const placeholders = ids.map(() => "?").join(",");
+    await db.execute(
+      `UPDATE transactions SET is_deleted = 1, updated_at = ? WHERE id IN (${placeholders})`,
+      [now, ...ids]
+    );
+    if (_ledgerId) {
+      await fetchAll(_ledgerId);
+      const accountStore = useAccountStore();
+      await accountStore.fetchAll(_ledgerId);
+    }
+  }
+
+  return { transactions, totalIncome, totalExpense, fetchAll, add, update, remove, batchRemove };
 });
