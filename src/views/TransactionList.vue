@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ChevronDown, Filter, Plus, Pencil } from "lucide-vue-next";
+import { ChevronDown, Filter, Plus, Pencil, ListChecks, Trash2, Circle, CheckCircle } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTransactionStore } from "@/stores/transaction";
 import AppHeader from "@/components/AppHeader.vue";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import type { Transaction } from "@/types";
 
 const route = useRoute();
@@ -16,6 +17,42 @@ const transactionStore = useTransactionStore();
 
 const filterAccountId = ref<string>("");
 const isLoading = ref(true);
+
+// 多选模式（仅账户详情模式）
+const isMultiSelectMode = ref(false);
+const selectedTxIds = ref<Set<string>>(new Set());
+
+function enterMultiSelectMode() {
+  isMultiSelectMode.value = true;
+  selectedTxIds.value = new Set();
+}
+
+function exitMultiSelectMode() {
+  isMultiSelectMode.value = false;
+  selectedTxIds.value = new Set();
+}
+
+function toggleTxSelection(txId: string) {
+  const next = new Set(selectedTxIds.value);
+  if (next.has(txId)) {
+    next.delete(txId);
+  } else {
+    next.add(txId);
+  }
+  selectedTxIds.value = next;
+}
+
+const selectedCount = computed(() => selectedTxIds.value.size);
+
+// 批量删除确认
+const batchDeleteDialogVisible = ref(false);
+
+async function doBatchDelete() {
+  if (selectedCount.value === 0) return;
+  await transactionStore.batchRemove([...selectedTxIds.value]);
+  exitMultiSelectMode();
+  batchDeleteDialogVisible.value = false;
+}
 
 // 判断是否为账户详情模式
 const isAccountMode = computed(() => !!route.params.id);
@@ -213,17 +250,43 @@ function goRecord(txId: string) {
     <!-- Header：账户详情模式 -->
     <AppHeader
       v-if="isAccountMode"
-      :title="currentAccount?.name ?? '账户'"
+      :title="isMultiSelectMode ? `已选 ${selectedCount} 项` : (currentAccount?.name ?? '账户')"
       show-back
-      @back="router.push('/accounts')"
+      @back="isMultiSelectMode ? exitMultiSelectMode() : router.push('/accounts')"
     >
       <template #action>
-        <button
-          class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
-          @click="router.push(`/accounts/${accountId}/edit`)"
-        >
-          <Pencil :size="18" class="text-text-secondary" />
-        </button>
+        <!-- 多选模式下的操作 -->
+        <template v-if="isMultiSelectMode">
+          <button
+            class="mr-2 text-sm font-medium text-text-secondary"
+            @click="exitMultiSelectMode"
+          >
+            取消
+          </button>
+          <button
+            class="flex h-8 w-8 items-center justify-center rounded-full"
+            :class="selectedCount === 0 ? 'text-gray-300' : 'text-expense hover:bg-red-50'"
+            :disabled="selectedCount === 0"
+            @click="batchDeleteDialogVisible = true"
+          >
+            <Trash2 :size="18" />
+          </button>
+        </template>
+        <!-- 正常模式 -->
+        <template v-else>
+          <button
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+            @click="enterMultiSelectMode"
+          >
+            <ListChecks :size="18" class="text-text-secondary" />
+          </button>
+          <button
+            class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
+            @click="router.push(`/accounts/${accountId}/edit`)"
+          >
+            <Pencil :size="18" class="text-text-secondary" />
+          </button>
+        </template>
       </template>
     </AppHeader>
 
@@ -321,9 +384,23 @@ function goRecord(txId: string) {
               v-for="tx in group.transactions"
               :key="tx.id"
               class="flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
-              @click="goRecord(tx.id)"
+              @click="isMultiSelectMode ? toggleTxSelection(tx.id) : goRecord(tx.id)"
             >
-              <span class="text-xl">{{ getTxIcon(tx) }}</span>
+              <!-- 多选模式：选择指示器 -->
+              <template v-if="isMultiSelectMode">
+                <CheckCircle
+                  v-if="selectedTxIds.has(tx.id)"
+                  :size="20"
+                  class="text-primary"
+                />
+                <Circle
+                  v-else
+                  :size="20"
+                  class="text-gray-300"
+                />
+              </template>
+              <!-- 正常模式：交易图标 -->
+              <span v-else class="text-xl">{{ getTxIcon(tx) }}</span>
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium text-text">{{ getTxCategoryName(tx) }}</p>
                 <p class="text-xs text-text-secondary">{{ getTxDescription(tx) }}</p>
@@ -349,14 +426,26 @@ function goRecord(txId: string) {
       </template>
     </div>
 
-    <!-- FAB -->
+    <!-- FAB（多选模式下隐藏） -->
     <router-link
+      v-if="!isMultiSelectMode"
       :to="isAccountMode ? `/record?account=${accountId}` : '/record'"
       class="fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
       style="top: 75%"
     >
       <Plus :size="28" />
     </router-link>
+
+    <!-- 批量删除确认 -->
+    <ConfirmDialog
+      :visible="batchDeleteDialogVisible"
+      title="批量删除"
+      :description="`确定删除选中的 ${selectedCount} 条流水吗？此操作不可撤销。`"
+      confirm-text="删除"
+      :danger="true"
+      @confirm="doBatchDelete"
+      @cancel="batchDeleteDialogVisible = false"
+    />
 
   </div>
 </template>
