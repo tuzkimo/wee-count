@@ -94,6 +94,18 @@ describe("parseModelValue", () => {
       minute: 0,
     });
   });
+
+  it("should return null for empty string", () => {
+    expect(parseModelValue("")).toBeNull();
+  });
+
+  it("should return null for string without T separator", () => {
+    expect(parseModelValue("2025-06-12")).toBeNull();
+  });
+
+  it("should return null for incomplete date parts", () => {
+    expect(parseModelValue("2025-06T14:30")).toBeNull();
+  });
 });
 
 describe("getDefaultIndex", () => {

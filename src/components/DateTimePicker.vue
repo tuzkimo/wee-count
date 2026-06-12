@@ -37,10 +37,15 @@ export function parseModelValue(value: string): {
   day: number;
   hour: number;
   minute: number;
-} {
+} | null {
+  if (!value || !value.includes("T")) return null;
   const [datePart, timePart] = value.split("T");
-  const [y, m, d] = datePart.split("-").map(Number);
-  const [hh, mm] = timePart.split(":").map(Number);
+  const parts = datePart.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  const [y, m, d] = parts;
+  const timeParts = timePart.split(":").map(Number);
+  if (timeParts.length < 2 || timeParts.some(isNaN)) return null;
+  const [hh, mm] = timeParts;
   return { year: y, month: m, day: d, hour: hh, minute: mm };
 }
 
@@ -67,25 +72,35 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+// 获取当前时间的默认选中值
+function getCurrentDefaults(): { year: number; month: number; day: number; hour: number; minute: number } {
+  const n = new Date();
+  return {
+    year: n.getFullYear(),
+    month: n.getMonth() + 1,
+    day: n.getDate(),
+    hour: n.getHours(),
+    minute: Math.min(Math.round(n.getMinutes() / 5) * 5, 55),
+  };
+}
+
 // 生成选项列表
-const now = new Date();
-const currentYear = now.getFullYear();
+const currentYear = new Date().getFullYear();
 const yearMonthOptions = generateYearMonthOptions(currentYear);
 
 // 默认选中当前年月
+const defaults = getCurrentDefaults();
 const defaultYearMonth = yearMonthOptions.find(
-  (o) => o.year === currentYear && o.month === now.getMonth() + 1
+  (o) => o.year === defaults.year && o.month === defaults.month
 ) ?? yearMonthOptions[0];
 
 const selectedYearMonth = ref<YearMonthOption>(defaultYearMonth);
 const dayOptions = ref<number[]>(generateDayOptions(defaultYearMonth.year, defaultYearMonth.month));
-const selectedDay = ref(now.getDate());
+const selectedDay = ref(defaults.day);
 const hourOptions = generateHourOptions();
-const selectedHour = ref(String(now.getHours()).padStart(2, "0"));
+const selectedHour = ref(String(defaults.hour).padStart(2, "0"));
 const minuteOptions = generateMinuteOptions();
-// 分钟取最近 5 分钟步长
-const roundedMinuteDefault = Math.round(now.getMinutes() / 5) * 5;
-const selectedMinute = ref(String(Math.min(roundedMinuteDefault, 55)).padStart(2, "0"));
+const selectedMinute = ref(String(defaults.minute).padStart(2, "0"));
 
 // 滚轮容器 ref，用于初始化滚动位置
 const ymScrollRef = ref<HTMLElement | null>(null);
@@ -110,41 +125,51 @@ watch(
 // 初始化选中值
 function initFromModelValue() {
   const parsed = parseModelValue(props.modelValue);
+  const cur = parsed ?? getCurrentDefaults();
+
   const ymIdx = yearMonthOptions.findIndex(
-    (o) => o.year === parsed.year && o.month === parsed.month
+    (o) => o.year === cur.year && o.month === cur.month
   );
   if (ymIdx >= 0) {
     selectedYearMonth.value = yearMonthOptions[ymIdx];
+  } else {
+    // modelValue 中的年月不在可选范围内，回退到当前年月
+    const fallback = getCurrentDefaults();
+    const fbIdx = yearMonthOptions.findIndex(
+      (o) => o.year === fallback.year && o.month === fallback.month
+    );
+    selectedYearMonth.value = fbIdx >= 0 ? yearMonthOptions[fbIdx] : yearMonthOptions[0];
   }
+
   dayOptions.value = generateDayOptions(
     selectedYearMonth.value.year,
     selectedYearMonth.value.month
   );
-  selectedDay.value = parsed.day <= dayOptions.value.length ? parsed.day : dayOptions.value.length;
-  selectedHour.value = String(parsed.hour).padStart(2, "0");
-  // 分钟取最近 5 分钟步长
-  const roundedMinute = Math.round(parsed.minute / 5) * 5;
-  selectedMinute.value = String(Math.min(roundedMinute, 55)).padStart(2, "0");
+  selectedDay.value = cur.day <= dayOptions.value.length ? cur.day : dayOptions.value.length;
+  selectedHour.value = String(cur.hour).padStart(2, "0");
+  selectedMinute.value = String(cur.minute).padStart(2, "0");
 }
 
 // 滚动到选中项
 async function scrollToSelected() {
   await nextTick();
   if (ymScrollRef.value) {
-    const ymIdx = yearMonthOptions.indexOf(selectedYearMonth.value);
-    ymScrollRef.value.scrollTop = ymIdx * ITEM_HEIGHT;
+    const ymIdx = yearMonthOptions.findIndex(
+      (o) => o.year === selectedYearMonth.value.year && o.month === selectedYearMonth.value.month
+    );
+    if (ymIdx >= 0) ymScrollRef.value.scrollTop = ymIdx * ITEM_HEIGHT;
   }
   if (dayScrollRef.value) {
     const dIdx = dayOptions.value.indexOf(selectedDay.value);
-    dayScrollRef.value.scrollTop = dIdx * ITEM_HEIGHT;
+    if (dIdx >= 0) dayScrollRef.value.scrollTop = dIdx * ITEM_HEIGHT;
   }
   if (hourScrollRef.value) {
     const hIdx = hourOptions.indexOf(selectedHour.value);
-    hourScrollRef.value.scrollTop = hIdx * ITEM_HEIGHT;
+    if (hIdx >= 0) hourScrollRef.value.scrollTop = hIdx * ITEM_HEIGHT;
   }
   if (minuteScrollRef.value) {
     const mIdx = minuteOptions.indexOf(selectedMinute.value);
-    minuteScrollRef.value.scrollTop = mIdx * ITEM_HEIGHT;
+    if (mIdx >= 0) minuteScrollRef.value.scrollTop = mIdx * ITEM_HEIGHT;
   }
 }
 
@@ -254,14 +279,6 @@ function onClose() {
                     {{ opt.label }}
                   </div>
                 </div>
-                <!-- 选中行高亮指示器 -->
-                <div
-                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
-                  :style="{
-                    top: `${ITEM_HEIGHT * 2}px`,
-                    height: `${ITEM_HEIGHT}px`,
-                  }"
-                />
               </div>
 
               <!-- 日列 -->
@@ -284,13 +301,6 @@ function onClose() {
                     {{ d }}日
                   </div>
                 </div>
-                <div
-                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
-                  :style="{
-                    top: `${ITEM_HEIGHT * 2}px`,
-                    height: `${ITEM_HEIGHT}px`,
-                  }"
-                />
               </div>
 
               <!-- 时列 -->
@@ -313,13 +323,6 @@ function onClose() {
                     {{ h }}
                   </div>
                 </div>
-                <div
-                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
-                  :style="{
-                    top: `${ITEM_HEIGHT * 2}px`,
-                    height: `${ITEM_HEIGHT}px`,
-                  }"
-                />
               </div>
 
               <!-- 分列 -->
@@ -342,13 +345,6 @@ function onClose() {
                     {{ m }}
                   </div>
                 </div>
-                <div
-                  class="pointer-events-none absolute left-0 right-0 rounded-lg bg-gray-100"
-                  :style="{
-                    top: `${ITEM_HEIGHT * 2}px`,
-                    height: `${ITEM_HEIGHT}px`,
-                  }"
-                />
               </div>
             </div>
 
