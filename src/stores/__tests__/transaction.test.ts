@@ -228,6 +228,47 @@ describe("transactionStore", () => {
     });
   });
 
+  describe("batchRemove", () => {
+    it("should soft-delete multiple transactions", async () => {
+      mockDb.execute.mockResolvedValue(undefined);
+      mockDb.select.mockResolvedValueOnce([]); // fetchAll during init
+      mockDb.select.mockResolvedValueOnce([]); // fetchAll after batchRemove
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1");
+      await store.batchRemove(["tx-1", "tx-2", "tx-3"]);
+
+      expect(mockDb.execute).toHaveBeenCalledWith(
+        "UPDATE transactions SET is_deleted = 1, updated_at = ? WHERE id IN (?,?,?)",
+        expect.arrayContaining(["tx-1", "tx-2", "tx-3"])
+      );
+      expect(mockFetchAll).toHaveBeenCalledWith("pl-1");
+    });
+
+    it("should not execute when ids array is empty", async () => {
+      mockDb.select.mockResolvedValueOnce([]);
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1");
+      mockDb.execute.mockClear();
+
+      await store.batchRemove([]);
+
+      expect(mockDb.execute).not.toHaveBeenCalled();
+    });
+
+    it("should not refresh when _ledgerId is not set", async () => {
+      mockDb.execute.mockResolvedValue(undefined);
+      const store = useTransactionStore();
+      // 不调用 fetchAll，所以 _ledgerId 为空
+      await store.batchRemove(["tx-1"]);
+
+      // 仍然执行 SQL
+      expect(mockDb.execute).toHaveBeenCalled();
+      // 但不刷新数据（因为 _ledgerId 未设置）
+      expect(mockDb.select).not.toHaveBeenCalled();
+    });
+  });
+
   describe("computed", () => {
     it("should compute totalIncome and totalExpense correctly", async () => {
       const rows = [
