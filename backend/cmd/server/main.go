@@ -39,10 +39,12 @@ func main() {
 	// services
 	authSvc := service.NewAuthService(pool, cfg.JWTSecret)
 	syncSvc := service.NewSyncService(pool)
+	teamSvc := service.NewTeamService(pool, redisClient)
 
 	// handlers
 	authH := handler.NewAuthHandler(authSvc)
 	syncH := handler.NewSyncHandler(syncSvc)
+	teamH := handler.NewTeamHandler(teamSvc)
 
 	// router
 	r := chi.NewRouter()
@@ -60,6 +62,9 @@ func main() {
 			r.Use(mw.AuthMiddleware(cfg.JWTSecret))
 			r.Get("/me", authH.Me)
 			r.Post("/sync", syncH.Sync)
+			r.Post("/teams", teamH.Create)
+			r.Post("/teams/{id}/invite", teamH.Invite)
+			r.Post("/teams/join", teamH.Join)
 		})
 	})
 
