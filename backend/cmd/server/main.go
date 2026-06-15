@@ -38,9 +38,11 @@ func main() {
 
 	// services
 	authSvc := service.NewAuthService(pool, cfg.JWTSecret)
+	syncSvc := service.NewSyncService(pool)
 
 	// handlers
 	authH := handler.NewAuthHandler(authSvc)
+	syncH := handler.NewSyncHandler(syncSvc)
 
 	// router
 	r := chi.NewRouter()
@@ -57,6 +59,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(mw.AuthMiddleware(cfg.JWTSecret))
 			r.Get("/me", authH.Me)
+			r.Post("/sync", syncH.Sync)
 		})
 	})
 
