@@ -38,6 +38,7 @@ export interface Transaction {
   created_at: string;
   updated_at: string;
   is_deleted: boolean;
+  tag_ids?: string[];
   // 查询时 JOIN 填充
   category?: Category;
   tags?: Tag[];
