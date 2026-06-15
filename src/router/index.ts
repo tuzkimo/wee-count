@@ -51,6 +51,18 @@ const router = createRouter({
       name: "me",
       component: () => import("@/views/MePage.vue"),
     },
+    {
+      path: "/login",
+      name: "login",
+      component: () => import("@/views/LoginPage.vue"),
+      meta: { hideTab: true },
+    },
+    {
+      path: "/register",
+      name: "register",
+      component: () => import("@/views/RegisterPage.vue"),
+      meta: { hideTab: true },
+    },
     // 旧路由重定向
     {
       path: "/transactions",
