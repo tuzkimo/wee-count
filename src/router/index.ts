@@ -63,6 +63,18 @@ const router = createRouter({
       component: () => import("@/views/RegisterPage.vue"),
       meta: { hideTab: true },
     },
+    {
+      path: "/teams/create",
+      name: "create-team",
+      component: () => import("@/views/CreateTeamPage.vue"),
+      meta: { hideTab: true },
+    },
+    {
+      path: "/teams/join",
+      name: "join-team",
+      component: () => import("@/views/JoinTeamPage.vue"),
+      meta: { hideTab: true },
+    },
     // 旧路由重定向
     {
       path: "/transactions",
