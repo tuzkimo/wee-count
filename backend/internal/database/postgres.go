@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed ../../migrations/*.sql
+//go:embed migrations/*.sql
 var migrationsFS embed.FS
 
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {

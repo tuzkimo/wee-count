@@ -16,7 +16,10 @@
       "Bash(npx vitest *)",
       "Bash(npm run *)",
       "Bash(git -C * add *)",
-      "Bash(git -C * commit -m *)"
+      "Bash(git -C * commit -m *)",
+      "Bash(git diff-tree *)",
+      "Bash(GOPROXY=https://goproxy.cn,direct go build *)",
+      "Bash(GOPROXY=https://goproxy.cn,direct go test *)"
     ]
   }
 }
