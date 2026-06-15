@@ -3,6 +3,8 @@ import { ref, computed } from "vue";
 import { getDb } from "@/db";
 import { useAccountStore } from "@/stores/account";
 import type { Transaction, TransactionType } from "@/types";
+import { enqueueSync } from "@/services/sync";
+import { useAuthStore } from "@/stores/auth";
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -224,6 +226,15 @@ export const useTransactionStore = defineStore("transaction", () => {
     const accountStore = useAccountStore();
     await accountStore.fetchAll(data.ledger_id);
 
+    // Trigger sync if authenticated
+    const authStore = useAuthStore();
+    if (authStore.isAuthenticated) {
+      const tx = transactions.value.find(t => t.id === id);
+      if (tx) {
+        enqueueSync({ accounts: [], tags: [], categories: [], transactions: [tx] });
+      }
+    }
+
     return id;
   }
 
@@ -276,6 +287,15 @@ export const useTransactionStore = defineStore("transaction", () => {
       const accountStore = useAccountStore();
       await accountStore.fetchAll(_ledgerId);
     }
+
+    // Trigger sync
+    const authStore = useAuthStore();
+    if (authStore.isAuthenticated && id) {
+      const tx = transactions.value.find(t => t.id === id);
+      if (tx) {
+        enqueueSync({ accounts: [], tags: [], categories: [], transactions: [tx] });
+      }
+    }
   }
 
   async function remove(id: string): Promise<void> {
@@ -289,6 +309,17 @@ export const useTransactionStore = defineStore("transaction", () => {
       await fetchAll(_ledgerId);
       const accountStore = useAccountStore();
       await accountStore.fetchAll(_ledgerId);
+    }
+
+    // Trigger sync with tombstone
+    const authStore = useAuthStore();
+    if (authStore.isAuthenticated) {
+      enqueueSync({
+        accounts: [],
+        tags: [],
+        categories: [],
+        transactions: [{ id, is_deleted: true, updated_at: now } as Transaction],
+      });
     }
   }
 
@@ -305,6 +336,18 @@ export const useTransactionStore = defineStore("transaction", () => {
       await fetchAll(_ledgerId);
       const accountStore = useAccountStore();
       await accountStore.fetchAll(_ledgerId);
+    }
+
+    // Trigger sync with tombstones
+    const authStore = useAuthStore();
+    if (authStore.isAuthenticated) {
+      const now = new Date().toISOString();
+      enqueueSync({
+        accounts: [],
+        tags: [],
+        categories: [],
+        transactions: ids.map(id => ({ id, is_deleted: true, updated_at: now } as Transaction)),
+      });
     }
   }
 
