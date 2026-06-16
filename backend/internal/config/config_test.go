@@ -12,23 +12,28 @@ func TestLoadDefaults(t *testing.T) {
 	os.Unsetenv("JWT_SECRET")
 	os.Unsetenv("PORT")
 
-	cfg := Load()
+	_, err := Load()
 
-	if cfg.DatabaseURL != "postgres://wee:wee@localhost:5432/wee-count?sslmode=disable" {
-		t.Errorf("unexpected DATABASE_URL: %s", cfg.DatabaseURL)
-	}
-	if cfg.Port != "8080" {
-		t.Errorf("unexpected Port: %s", cfg.Port)
+	// 敏感配置不再提供默认值，缺少时必须返回错误
+	if err == nil {
+		t.Error("expected error when required env vars are missing")
 	}
 }
 
 func TestLoadFromEnv(t *testing.T) {
 	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	os.Setenv("REDIS_URL", "localhost:6379")
+	os.Setenv("JWT_SECRET", "test-secret")
 	os.Setenv("PORT", "9090")
 	defer os.Unsetenv("DATABASE_URL")
+	defer os.Unsetenv("REDIS_URL")
+	defer os.Unsetenv("JWT_SECRET")
 	defer os.Unsetenv("PORT")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if cfg.DatabaseURL != "postgres://test:test@localhost/test" {
 		t.Errorf("unexpected DATABASE_URL: %s", cfg.DatabaseURL)

@@ -17,7 +17,10 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config.Load: %v", err)
+	}
 
 	ctx := context.Background()
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
