@@ -16,6 +16,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2.4.0",
+    "bcryptjs": "^3.0.3",
     "lucide-vue-next": "^0.577.0",
     "pinia": "^3.0.4",
     "tailwindcss": "^4.3.0",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/bcryptjs": "^2.4.6",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/test-utils": "^2.4.10",
     "happy-dom": "^20.9.0",

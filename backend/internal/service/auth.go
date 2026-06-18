@@ -55,6 +55,7 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 	defer tx.Rollback(ctx)
 
 	userID := uuid.New().String()
+	ledgerID := uuid.New().String()
 	now := time.Now().UTC()
 
 	_, err = tx.Exec(ctx,
@@ -66,65 +67,10 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
 
-	// create personal ledger
-	ledgerID := uuid.New().String()
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledgers (id, name, type, owner_id, created_at, updated_at)
-		 VALUES ($1, $2, 'personal', $3, $4, $5)`,
-		ledgerID, req.Nickname+"的账本", userID, now, now,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert ledger: %w", err)
-	}
-
-	// create default accounts
-	defaultAccounts := []struct {
-		id, name, atype string
-	}{
-		{uuid.New().String(), "现金", "cash"},
-		{uuid.New().String(), "银行卡", "bank"},
-		{uuid.New().String(), "电子钱包", "digital"},
-	}
-	for _, a := range defaultAccounts {
-		_, err = tx.Exec(ctx,
-			`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, 'asset', 0, $6, $7)`,
-			a.id, ledgerID, userID, a.name, a.atype, now, now,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("insert default account: %w", err)
-		}
-	}
-
-	// create default categories (same as frontend ensureDefaultData)
-	defaultCategories := []struct {
-		name, ctype, icon string
-		sortOrder         int
-	}{
-		{"餐饮", "expense", "🍜", 1},
-		{"交通", "expense", "🚌", 2},
-		{"购物", "expense", "🛒", 3},
-		{"娱乐", "expense", "🎮", 4},
-		{"居家", "expense", "🏠", 5},
-		{"通讯", "expense", "📱", 6},
-		{"医疗", "expense", "💊", 7},
-		{"其他支出", "expense", "💸", 99},
-		{"工资", "income", "💰", 1},
-		{"奖金", "income", "🎁", 2},
-		{"理财", "income", "📈", 3},
-		{"退款", "income", "↩️", 4},
-		{"报销", "income", "🧾", 5},
-		{"其他收入", "income", "📥", 99},
-	}
-	for _, c := range defaultCategories {
-		_, err = tx.Exec(ctx,
-			`INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at)
-			 VALUES ($1, NULL, $2, $3, $4, $5, $6)`,
-			uuid.New().String(), c.name, c.ctype, c.icon, c.sortOrder, now,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("insert default category: %w", err)
-		}
+	// 创建账本（含默认分类和账户）
+	ledgerName := req.Nickname + "的账本"
+	if err := CreateLedger(ctx, tx, ledgerID, userID, ledgerName, "personal"); err != nil {
+		return nil, fmt.Errorf("create ledger: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -146,6 +92,7 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 		},
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
+		LedgerID:     ledgerID,
 	}, nil
 }
 
@@ -216,10 +163,21 @@ func (s *AuthService) Login(ctx context.Context, req model.LoginRequest) (*model
 		return nil, err
 	}
 
+	// 查询个人账本
+	var ledgerID string
+	err = s.pool.QueryRow(ctx,
+		`SELECT id FROM ledgers WHERE owner_id = $1 AND type = 'personal' AND is_deleted = FALSE LIMIT 1`,
+		user.ID,
+	).Scan(&ledgerID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("query ledger: %w", err)
+	}
+
 	return &model.AuthResponse{
 		User:         user,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
+		LedgerID:     ledgerID,
 	}, nil
 }
 

@@ -110,6 +110,9 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string,
 
 	// categories
 	for _, c := range changes.Categories {
+		if !ledgerSet[c.LedgerID] {
+			continue
+		}
 		if err := s.lwwMergeCategory(ctx, tx, c); err != nil {
 			return err
 		}
@@ -259,8 +262,8 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, 
 	}
 	payload.Tags = tags
 
-	// categories (system defaults ledger_id IS NULL, always include)
-	categories, err := s.queryCategories(ctx, since)
+	// categories
+	categories, err := s.queryCategories(ctx, since, ledgerIDs)
 	if err != nil {
 		return payload, err
 	}
@@ -317,10 +320,10 @@ func (s *SyncService) queryTags(ctx context.Context, ledgerIDs []string, since t
 	return tags, rows.Err()
 }
 
-func (s *SyncService) queryCategories(ctx context.Context, since time.Time) ([]model.Category, error) {
+func (s *SyncService) queryCategories(ctx context.Context, since time.Time, ledgerIDs []string) ([]model.Category, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE updated_at > $1`,
-		since,
+		`SELECT id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE updated_at > $1 AND ledger_id = ANY($2)`,
+		since, ledgerIDs,
 	)
 	if err != nil {
 		return nil, err

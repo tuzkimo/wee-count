@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { getDb } from "@/db";
+import { getUserDb } from "@/db/userDb";
 import type { Tag } from "@/types";
 
 function generateId(): string {
@@ -11,7 +11,8 @@ export const useTagStore = defineStore("tag", () => {
   const tags = ref<Tag[]>([]);
 
   async function fetchAll(ledgerId: string): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const rows = await db.select<(Tag & { is_deleted: number | boolean })[]>(
       `SELECT id, ledger_id, name, updated_at, is_deleted
        FROM tags
@@ -26,7 +27,8 @@ export const useTagStore = defineStore("tag", () => {
   }
 
   async function add(ledgerId: string, name: string): Promise<Tag> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     const id = generateId();
     await db.execute(
@@ -45,7 +47,8 @@ export const useTagStore = defineStore("tag", () => {
   }
 
   async function remove(id: string): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     await db.execute(
       "UPDATE tags SET is_deleted = 1, updated_at = ? WHERE id = ?",

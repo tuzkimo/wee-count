@@ -1,6 +1,6 @@
 // src/services/sync.ts
 import { apiFetch } from "./api";
-import { getDb } from "@/db";
+import { getUserDb } from "@/db/userDb";
 import type { Account, Transaction, Category, Tag } from "@/types";
 
 interface SyncPayload {
@@ -97,7 +97,8 @@ export async function performSync(): Promise<void> {
  * Apply remote changes to local SQLite (LWW merge)
  */
 async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
-  const db = await getDb();
+  const db = getUserDb();
+  if (!db) return;
 
   for (const account of remote.accounts) {
     const local = await db.select<{ updated_at: string }[]>(

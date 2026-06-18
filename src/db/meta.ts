@@ -1,0 +1,90 @@
+// src/db/meta.ts
+import Database from '@tauri-apps/plugin-sql'
+
+let metaDb: Database | null = null
+
+export async function getMetaDb(): Promise<Database> {
+  if (!metaDb) {
+    metaDb = await Database.load('sqlite:_meta.db')
+    await initMetaTables()
+  }
+  return metaDb
+}
+
+async function initMetaTables(): Promise<void> {
+  const db = metaDb!
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS local_users (
+      id TEXT PRIMARY KEY,
+      nickname TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      api_url TEXT,
+      server_user_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+}
+
+export interface LocalUser {
+  id: string
+  nickname: string
+  password_hash: string
+  api_url: string | null
+  server_user_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export async function getLocalUsers(): Promise<LocalUser[]> {
+  const db = await getMetaDb()
+  return db.select<LocalUser[]>(
+    'SELECT id, nickname, password_hash, api_url, server_user_id, created_at, updated_at FROM local_users ORDER BY created_at ASC'
+  )
+}
+
+export async function getLocalUser(id: string): Promise<LocalUser | null> {
+  const db = await getMetaDb()
+  const rows = await db.select<LocalUser[]>(
+    'SELECT id, nickname, password_hash, api_url, server_user_id, created_at, updated_at FROM local_users WHERE id = $1',
+    [id]
+  )
+  return rows.length > 0 ? rows[0] : null
+}
+
+export async function getLocalUserByNickname(nickname: string): Promise<LocalUser | null> {
+  const db = await getMetaDb()
+  const rows = await db.select<LocalUser[]>(
+    'SELECT id, nickname, password_hash, api_url, server_user_id, created_at, updated_at FROM local_users WHERE nickname = $1',
+    [nickname]
+  )
+  return rows.length > 0 ? rows[0] : null
+}
+
+export async function createLocalUser(
+  id: string,
+  nickname: string,
+  passwordHash: string
+): Promise<void> {
+  const db = await getMetaDb()
+  await db.execute(
+    `INSERT INTO local_users (id, nickname, password_hash) VALUES ($1, $2, $3)`,
+    [id, nickname, passwordHash]
+  )
+}
+
+export async function updateLocalUserBinding(
+  id: string,
+  apiUrl: string,
+  serverUserId: string
+): Promise<void> {
+  const db = await getMetaDb()
+  await db.execute(
+    `UPDATE local_users SET api_url = $1, server_user_id = $2, updated_at = datetime('now') WHERE id = $3`,
+    [apiUrl, serverUserId, id]
+  )
+}
+
+export function closeMetaDb(): void {
+  metaDb = null
+}

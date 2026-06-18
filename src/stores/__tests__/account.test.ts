@@ -7,9 +7,11 @@ const mockDb = {
   execute: vi.fn(),
 };
 
-vi.mock("@/db", () => ({
-  getDb: vi.fn(() => Promise.resolve(mockDb)),
-  ensureDefaultData: vi.fn(() => Promise.resolve()),
+vi.mock("@/db/userDb", () => ({
+  getUserDb: vi.fn(() => mockDb),
+  getCurrentUserId: vi.fn(() => "local-user-1"),
+  openUserDb: vi.fn(),
+  closeUserDb: vi.fn(),
 }));
 
 import { useAccountStore } from "@/stores/account";

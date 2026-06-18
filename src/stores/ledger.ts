@@ -1,27 +1,34 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
-import { ensureDefaultData } from "@/db";
+import { ref, computed } from "vue";
+import { getUserDb } from "@/db/userDb";
 import type { Ledger } from "@/types";
 
 export const useLedgerStore = defineStore("ledger", () => {
-  const currentLedger = ref<Ledger | null>(null);
-  const initialized = ref(false);
+  const ledgers = ref<Ledger[]>([]);
+  const currentLedgerId = ref<string | null>(null);
+
+  const currentLedger = computed(() => {
+    if (!currentLedgerId.value) return null;
+    return ledgers.value.find((l) => l.id === currentLedgerId.value) ?? null;
+  });
 
   async function init(): Promise<void> {
-    if (initialized.value) return;
-    await ensureDefaultData();
-    currentLedger.value = {
-      id: "personal-ledger-1",
-      name: "个人账本",
-      type: "personal",
-      team_id: null,
-      owner_id: "local-user-1",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      is_deleted: false,
-    };
-    initialized.value = true;
+    const db = getUserDb();
+    if (!db) return;
+
+    const rows = await db.select<Ledger[]>(
+      'SELECT id, name, type, owner_id, team_id, created_at, updated_at FROM ledgers WHERE is_deleted = 0'
+    );
+    ledgers.value = rows;
+
+    if (rows.length > 0 && !currentLedgerId.value) {
+      currentLedgerId.value = rows[0].id;
+    }
   }
 
-  return { currentLedger, initialized, init };
+  function setCurrentLedger(id: string): void {
+    currentLedgerId.value = id;
+  }
+
+  return { ledgers, currentLedgerId, currentLedger, init, setCurrentLedger };
 });

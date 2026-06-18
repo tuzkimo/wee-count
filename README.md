@@ -25,17 +25,34 @@
 - 底部 Tab 导航：记账/流水/账户/设置
 - 数据持久化：categories/tags/transaction_tags 三张新表 + transactions 表迁移
 
-### Phase 4：UI 重构优化（已完成）
-- 路由重构：流水首页（`/`）、账户详情（`/accounts/:id`）、记账页、筛选页
-- 底部 Tab：首页/报表/账户/我的（记账页和筛选页隐藏 Tab）
-- 首页：净资产/收支汇总卡片 + 流水列表 + FAB 记账按钮
-- 账户详情：当前余额 + 收入/支出合计 + 流水列表（自动按账户过滤）
-- 自定义计算器键盘（CalculatorKeypad）：九宫格 + 运算符 + 完成/再记一笔
-- 日期时间选择面板（DateTimeSheet）：底部弹出，支持日期+时间或纯日期
-- 全屏筛选页（FilterPage）：按账户/日期范围/标签筛选，应用后回首页
-- 报表页/我的页（占位）
-- 账户编辑页
-- Bug 修复：负债余额 SQL 公式修正、路由 query 响应式更新、键盘布局修复等
+### Phase 4-A：后端用户数据隔离（已完成）
+- 默认分类模板拷贝模式（CreateLedger 在事务中创建账本 + 拷贝默认分类/账户）
+- 数据库迁移：categories.ledger_id 改为 NOT NULL，删除 NULL-ledger 模式
+- 同步服务：categories 查询增加 ledger_id 过滤，与 accounts/tags/transactions 一致
+- Category Model：LedgerID 从 `*string` 改为 `string`
+- 登录/注册返回 ledger_id（AuthResponse）
+
+### Phase 4-B：前端 per-user SQLite（已完成）
+- `_meta.db`：管理本地用户列表（local_users 表），支持多用户切换
+- `per-user.db`：每用户独立 SQLite 数据库（`<user_id>.db`）
+- 默认分类常量（`src/db/defaults.ts`）：与后端 DefaultCategories 保持一致
+- 用户数据库初始化（`src/db/userDb.ts`）：建表 + 默认数据拷贝
+- Pinia stores 重构：`getUserDb()` 替代 `getDb()`，`getDb()` 变为同步方法
+- API 层动态 baseUrl（`setBaseUrl()`），支持多服务端切换
+- bcryptjs 本地密码哈希
+
+### Phase 4-C：Onboarding 引导流程（已完成）
+- WelcomePage：首次启动创建本地账户（昵称 + 密码）
+- 路由守卫：无用户 → `/welcome`，未登录 → `/login`
+
+### Phase 4-D：本地→在线数据迁移（已完成）
+- 迁移服务（`src/services/migration.ts`）：本地 ledger_id → 服务端 ledger_id
+- BindSyncPage：配置 API 地址 + 登录/注册在线账号 + 首次全量同步
+- RegisterPage 重定向到 WelcomePage
+
+### Phase 4-E/F：登录页 + 我的页更新（已完成）
+- LoginPage：改为手动输入用户名（本地账户登录）
+- MePage：显示在线/本地模式状态，配置在线同步入口，登出功能
 
 ## 路由
 
@@ -49,6 +66,9 @@
 | `/accounts/:id` | TransactionList | 账户详情（余额 + 流水，自动过滤） |
 | `/accounts/:id/edit` | AccountEdit | 账户编辑页 |
 | `/reports` | ReportsPage | 报表页（占位） |
-| `/me` | MePage | 我的页（占位） |
+| `/me` | MePage | 我的页：用户信息/同步状态/团队管理/登出 |
+| `/login` | LoginPage | 本地账户登录（用户名+密码） |
+| `/welcome` | WelcomePage | 首次启动创建本地账户 |
+| `/bind-sync` | BindSyncPage | 配置在线同步（API地址+登录/注册） |
 | `/transactions` | → `/` | 旧路由重定向 |
 | `/settings` | SettingsPage | 设置页（开发中） |

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { getDb } from "@/db";
+import { getUserDb } from "@/db/userDb";
 import type { Account, AccountType } from "@/types";
 
 const BALANCE_QUERY = `
@@ -51,7 +51,8 @@ export const useAccountStore = defineStore("account", () => {
   const netAssets = computed(() => assetsTotal.value + liabilitiesTotal.value);
 
   async function fetchAll(ledgerId: string): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const rows = await db.select<(Account & { is_deleted: number | boolean })[]>(
       BALANCE_QUERY,
       [ledgerId]
@@ -73,7 +74,8 @@ export const useAccountStore = defineStore("account", () => {
     repayment_day?: number;
     color: string;
   }): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     const id = generateId();
     await db.execute(
@@ -101,7 +103,8 @@ export const useAccountStore = defineStore("account", () => {
     id: string,
     data: Partial<Pick<Account, "name" | "type" | "category" | "initial_balance" | "credit_limit" | "repayment_day" | "color">>
   ): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const sets: string[] = [];
     const values: (string | number | null)[] = [];
 
@@ -151,7 +154,8 @@ export const useAccountStore = defineStore("account", () => {
   }
 
   async function remove(id: string): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     await db.execute(
       "UPDATE accounts SET is_deleted = 1, updated_at = ? WHERE id = ?",

@@ -24,6 +24,7 @@ async function handleSync(): Promise<void> {
 
 function handleLogout(): void {
   auth.logout();
+  router.replace('/login');
 }
 </script>
 
@@ -36,19 +37,19 @@ function handleLogout(): void {
     <!-- Not logged in -->
     <div v-if="!auth.isAuthenticated" class="flex flex-1 flex-col items-center justify-center gap-4 p-6">
       <p class="text-5xl">👤</p>
-      <p class="text-text-secondary">登录后可同步数据到云端</p>
+      <p class="text-text-secondary">创建本地账户或登录</p>
       <div class="flex gap-3">
         <button
           class="rounded-lg bg-primary px-6 py-2.5 text-white font-medium"
-          @click="router.push('/login')"
+          @click="router.push('/welcome')"
         >
-          登录
+          创建账户
         </button>
         <button
           class="rounded-lg border border-primary px-6 py-2.5 text-primary font-medium"
-          @click="router.push('/register')"
+          @click="router.push('/login')"
         >
-          注册
+          登录
         </button>
       </div>
     </div>
@@ -58,16 +59,41 @@ function handleLogout(): void {
       <!-- User info -->
       <div class="flex items-center gap-3 bg-surface px-4 py-4">
         <div class="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-lg text-white">
-          {{ auth.user?.nickname?.charAt(0) || "?" }}
+          {{ auth.currentLocalUser?.nickname?.charAt(0) || "?" }}
         </div>
         <div class="flex-1">
-          <p class="font-medium text-text">{{ auth.user?.nickname }}</p>
-          <p class="text-sm text-text-secondary">{{ auth.user?.email }}</p>
+          <p class="font-medium text-text">{{ auth.currentLocalUser?.nickname }}</p>
+          <p class="text-sm text-text-secondary">
+            {{ auth.isOnline ? '在线模式' : '本地模式' }}
+          </p>
         </div>
       </div>
 
-      <!-- Sync status -->
+      <!-- Sync binding status -->
+      <div class="bg-surface px-4 py-3 border-b border-gray-100">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm font-medium">
+              <span v-if="auth.isOnline" class="text-green-500">● 已绑定在线同步</span>
+              <span v-else class="text-gray-400">○ 纯本地模式</span>
+            </p>
+            <p v-if="auth.isOnline && auth.currentLocalUser?.api_url" class="text-xs text-gray-400 mt-1">
+              {{ auth.currentLocalUser.api_url }}
+            </p>
+          </div>
+          <button
+            v-if="!auth.isOnline"
+            class="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white"
+            @click="router.push('/bind-sync')"
+          >
+            配置在线同步
+          </button>
+        </div>
+      </div>
+
+      <!-- Sync status (online only) -->
       <button
+        v-if="auth.isOnline"
         class="flex items-center gap-2 bg-surface px-4 py-3 border-b border-gray-100"
         :disabled="auth.isSyncing"
         @click="handleSync"

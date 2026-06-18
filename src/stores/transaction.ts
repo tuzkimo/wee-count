@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import { getDb } from "@/db";
+import { getUserDb } from "@/db/userDb";
 import { useAccountStore } from "@/stores/account";
 import type { Transaction, TransactionType } from "@/types";
 import { enqueueSync } from "@/services/sync";
@@ -152,7 +152,8 @@ export const useTransactionStore = defineStore("transaction", () => {
     }
   ): Promise<void> {
     _ledgerId = ledgerId;
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     let sql = QUERY;
     const params: string[] = [ledgerId];
 
@@ -199,7 +200,8 @@ export const useTransactionStore = defineStore("transaction", () => {
     occurred_at: string;
     tag_ids: string[];
   }): Promise<string> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     const id = generateId();
 
@@ -250,7 +252,8 @@ export const useTransactionStore = defineStore("transaction", () => {
       tag_ids: string[];
     }>
   ): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const sets: string[] = [];
     const values: (string | number | null)[] = [];
 
@@ -299,7 +302,8 @@ export const useTransactionStore = defineStore("transaction", () => {
   }
 
   async function remove(id: string): Promise<void> {
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     await db.execute(
       "UPDATE transactions SET is_deleted = 1, updated_at = ? WHERE id = ?",
@@ -325,7 +329,8 @@ export const useTransactionStore = defineStore("transaction", () => {
 
   async function batchRemove(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    const db = await getDb();
+    const db = getUserDb();
+    if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
     const placeholders = ids.map(() => "?").join(",");
     await db.execute(

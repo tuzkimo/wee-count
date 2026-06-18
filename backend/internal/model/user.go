@@ -28,6 +28,7 @@ type AuthResponse struct {
 	User         User   `json:"user"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	LedgerID     string `json:"ledger_id"`
 }
 
 type RefreshRequest struct {
