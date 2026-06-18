@@ -974,17 +974,21 @@ Expected: PASS
 
 ```typescript
 // src/services/api.ts
-let baseUrl: string = import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1'
+let baseUrl: string | null = null
 
 export function setBaseUrl(url: string): void {
   baseUrl = url.replace(/\/$/, '') // 去掉末尾斜杠
 }
 
 export function getBaseUrl(): string {
+  if (!baseUrl) throw new Error('API base URL not configured')
   return baseUrl
 }
 
-// 所有 `${BASE_URL}` 引用改为 `${baseUrl}`
+// 所有 fetch 调用前检查 baseUrl
+function buildUrl(path: string): string {
+  return `${getBaseUrl()}${path}`
+}
 ```
 
 - [ ] **Step 2: 添加 tryRestoreSession**
@@ -1398,7 +1402,7 @@ import { migrateLocalDataToServer, firstFullSync } from '@/services/migration'
 const router = useRouter()
 const auth = useAuthStore()
 
-const apiUrl = ref('http://localhost:8080/api/v1')
+const apiUrl = ref('')
 const error = ref('')
 const loginLoading = ref(false)
 const regLoading = ref(false)
