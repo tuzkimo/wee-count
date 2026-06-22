@@ -12,3 +12,22 @@
 }
 
 /* safe-area-inset-top 由各页面自行处理（AppHeader 等组件已包含） */
+
+/* 底部弹出面板过渡动画 */
+.sheet-fade-enter-active,
+.sheet-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.sheet-fade-enter-from,
+.sheet-fade-leave-to {
+  opacity: 0;
+}
+
+.sheet-slide-up-enter-active,
+.sheet-slide-up-leave-active {
+  transition: transform 0.25s ease;
+}
+.sheet-slide-up-enter-from,
+.sheet-slide-up-leave-to {
+  transform: translateY(100%);
+}

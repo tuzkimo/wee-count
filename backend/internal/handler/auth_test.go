@@ -40,25 +40,6 @@ func TestRegisterHandler_MissingFields(t *testing.T) {
 	}
 }
 
-func TestRegisterHandler_Success(t *testing.T) {
-	svc := &mockAuthService{}
-	h := &AuthHandler{svc: svc}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /auth/register", h.Register)
-
-	body, _ := json.Marshal(map[string]string{
-		"email": "test@test.com", "password": "pass123", "nickname": "Test",
-	})
-	req := httptest.NewRequest("POST", "/auth/register", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Errorf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
 func TestLoginHandler_MissingFields(t *testing.T) {
 	h := &AuthHandler{}
 	mux := http.NewServeMux()

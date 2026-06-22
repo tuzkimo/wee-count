@@ -16,7 +16,7 @@ defineEmits<{
 
 <template>
   <Teleport to="body">
-    <Transition name="fade">
+    <Transition name="sheet-fade">
       <div
         v-if="visible"
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
@@ -54,15 +54,6 @@ defineEmits<{
 </template>
 
 <style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-
 .scale-enter-active,
 .scale-leave-active {
   transition: all 0.2s ease;

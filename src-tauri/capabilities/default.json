@@ -9,8 +9,6 @@
     "sql:default",
     "sql:allow-load",
     "sql:allow-execute",
-    "sql:allow-select",
-    "haptics:default",
-    "haptics:allow-vibrate"
+    "sql:allow-select"
   ]
 }

@@ -94,7 +94,7 @@ function handleSubmit() {
 <template>
   <Teleport to="body">
     <!-- 遮罩 -->
-    <Transition name="fade">
+    <Transition name="sheet-fade">
       <div
         v-if="visible"
         class="fixed inset-0 z-40 bg-black/40"
@@ -102,7 +102,7 @@ function handleSubmit() {
       />
     </Transition>
     <!-- 面板 -->
-    <Transition name="slide-up">
+    <Transition name="sheet-slide-up">
       <div
         v-if="visible"
         class="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-xl max-h-[90vh] overflow-y-auto"
@@ -246,23 +246,3 @@ function handleSubmit() {
     </Transition>
   </Teleport>
 </template>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-
-.slide-up-enter-active,
-.slide-up-leave-active {
-  transition: transform 0.25s ease;
-}
-.slide-up-enter-from,
-.slide-up-leave-to {
-  transform: translateY(100%);
-}
-</style>

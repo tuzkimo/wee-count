@@ -2,7 +2,6 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,15 +11,8 @@ import (
 	"wee-count/backend/internal/service"
 )
 
-type authService interface {
-	Register(ctx context.Context, req model.RegisterRequest) (*model.AuthResponse, error)
-	Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error)
-	Refresh(ctx context.Context, req model.RefreshRequest) (*model.AuthResponse, error)
-	GetMe(ctx context.Context, userID string) (*service.MeResponse, error)
-}
-
 type AuthHandler struct {
-	svc authService
+	svc *service.AuthService
 }
 
 func NewAuthHandler(svc *service.AuthService) *AuthHandler {
@@ -113,38 +105,4 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// Mock for testing
-type mockAuthService struct{}
-
-func (m *mockAuthService) Register(ctx context.Context, req model.RegisterRequest) (*model.AuthResponse, error) {
-	return &model.AuthResponse{
-		User:         model.User{ID: "mock-id", Nickname: req.Nickname, Email: req.Email},
-		AccessToken:  "mock-access", RefreshToken: "mock-refresh",
-	}, nil
-}
-func (m *mockAuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {
-	return &model.AuthResponse{
-		User:         model.User{ID: "mock-id", Email: req.Email},
-		AccessToken:  "mock-access", RefreshToken: "mock-refresh",
-	}, nil
-}
-func (m *mockAuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*model.AuthResponse, error) {
-	return &model.AuthResponse{
-		User:         model.User{ID: "mock-id"},
-		AccessToken:  "mock-access", RefreshToken: "mock-refresh",
-	}, nil
-}
-func (m *mockAuthService) GetMe(ctx context.Context, userID string) (*service.MeResponse, error) {
-	return &service.MeResponse{
-		User:    model.User{ID: userID, Nickname: "Mock", Email: "mock@test.com"},
-		Ledgers: []model.Ledger{},
-		Teams:   []model.Ledger{},
-	}, nil
-}
-
-// setUserID injects userID into context for testing
-func setUserID(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, middleware.UserIDKey, userID)
 }

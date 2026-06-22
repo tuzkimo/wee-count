@@ -233,13 +233,13 @@ function onClose() {
 
 <template>
   <Teleport to="body">
-    <Transition name="picker-fade">
+    <Transition name="sheet-fade">
       <div
         v-show="visible"
         class="fixed inset-0 z-50 flex flex-col justify-end bg-black/40"
         @click.self="onClose"
       >
-        <Transition name="picker-slide">
+        <Transition name="sheet-slide-up">
           <div
             v-show="visible"
             class="flex flex-col rounded-t-2xl bg-surface shadow-xl"
@@ -379,23 +379,5 @@ function onClose() {
 }
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
-}
-
-.picker-fade-enter-active,
-.picker-fade-leave-active {
-  transition: opacity 0.25s ease;
-}
-.picker-fade-enter-from,
-.picker-fade-leave-to {
-  opacity: 0;
-}
-
-.picker-slide-enter-active,
-.picker-slide-leave-active {
-  transition: transform 0.25s ease;
-}
-.picker-slide-enter-from,
-.picker-slide-leave-to {
-  transform: translateY(100%);
 }
 </style>

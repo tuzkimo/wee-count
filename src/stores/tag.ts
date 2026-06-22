@@ -3,9 +3,6 @@ import { ref } from "vue";
 import { getUserDb } from "@/db/userDb";
 import type { Tag } from "@/types";
 
-function generateId(): string {
-  return crypto.randomUUID();
-}
 
 export const useTagStore = defineStore("tag", () => {
   const tags = ref<Tag[]>([]);
@@ -30,7 +27,7 @@ export const useTagStore = defineStore("tag", () => {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
-    const id = generateId();
+    const id = crypto.randomUUID();
     await db.execute(
       "INSERT INTO tags (id, ledger_id, name, updated_at) VALUES (?, ?, ?, ?)",
       [id, ledgerId, name, now]

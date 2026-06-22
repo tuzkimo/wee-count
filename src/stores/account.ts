@@ -25,9 +25,6 @@ const BALANCE_QUERY = `
   ORDER BY a.created_at DESC
 `;
 
-function generateId(): string {
-  return crypto.randomUUID();
-}
 
 export const useAccountStore = defineStore("account", () => {
   const accounts = ref<Account[]>([]);
@@ -77,7 +74,7 @@ export const useAccountStore = defineStore("account", () => {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
-    const id = generateId();
+    const id = crypto.randomUUID();
     await db.execute(
       `INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -6,9 +6,6 @@ import type { Transaction, TransactionType } from "@/types";
 import { enqueueSync } from "@/services/sync";
 import { useAuthStore } from "@/stores/auth";
 
-function generateId(): string {
-  return crypto.randomUUID();
-}
 
 interface TransactionRow {
   id: string;
@@ -203,7 +200,7 @@ export const useTransactionStore = defineStore("transaction", () => {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
-    const id = generateId();
+    const id = crypto.randomUUID();
 
     await db.execute(
       `INSERT INTO transactions (id, ledger_id, user_id, type, amount, category_id, from_account_id, to_account_id, occurred_at, created_at, updated_at)
