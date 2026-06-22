@@ -14,6 +14,7 @@ import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
 import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
+import { getCurrentUserId } from "@/db/userDb";
 import type { Account, Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
@@ -205,7 +206,7 @@ async function doSave(): Promise<boolean> {
   try {
     const data = {
       ledger_id: ledgerId,
-      user_id: "local-user-1",
+      user_id: getCurrentUserId()!,
       type: txType.value,
       amount: amt,
       category_id: txType.value === "transfer" ? null : categoryId.value,

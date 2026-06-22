@@ -10,15 +10,23 @@ export async function migrateLocalDataToServer(
   const db = getUserDb()
   if (!db) throw new Error('User DB not opened')
 
-  // 更新本地 ledger id 为服务端 id
-  const ledgers = await db.select<{ id: string }[]>(
-    'SELECT id FROM ledgers WHERE is_deleted = 0 LIMIT 1'
+  // 替换本地 ledger_id 为服务端 ID。
+  // 外键约束要求先有父行再改子行，因此用"插入新行 → 更新子表 → 删除旧行"三步走
+  const oldRows = await db.select<{ id: string; name: string; type: string; owner_id: string; team_id: string | null; created_at: string; updated_at: string; is_deleted: number }[]>(
+    'SELECT * FROM ledgers WHERE is_deleted = 0 LIMIT 1'
   )
-  if (ledgers.length === 0) return
+  if (oldRows.length === 0) return
 
-  const oldLedgerId = ledgers[0].id
+  const oldLedgerId = oldRows[0].id
 
-  // 更新各表的 ledger_id
+  // 1. 插入服务端 ID 的新行，owner_id 用服务端用户 ID
+  await db.execute(
+    `INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [serverLedgerId, oldRows[0].name, oldRows[0].type, serverUserId, oldRows[0].team_id, oldRows[0].created_at, oldRows[0].updated_at, oldRows[0].is_deleted]
+  )
+
+  // 2. 更新所有子表的 ledger_id
   const tables = ['accounts', 'categories', 'tags', 'transactions']
   for (const table of tables) {
     await db.execute(
@@ -27,13 +35,11 @@ export async function migrateLocalDataToServer(
     )
   }
 
-  // 更新 ledgers 表
-  await db.execute(
-    `UPDATE ledgers SET id = $1 WHERE id = $2`,
-    [serverLedgerId, oldLedgerId]
-  )
+  // 3. 删除旧账本行（已经没有子行引用它）
+  await db.execute('DELETE FROM ledgers WHERE id = $1', [oldLedgerId])
 
-  // 更新 transactions 的 user_id
+  // 4. 更新 accounts.owner_id 和 transactions.user_id 为服务端用户 ID
+  await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
   await db.execute(
     `UPDATE transactions SET user_id = $1 WHERE user_id = (
       SELECT owner_id FROM ledgers WHERE id = $2 LIMIT 1
@@ -48,13 +54,19 @@ export async function firstFullSync(): Promise<void> {
   if (!db) throw new Error('User DB not opened')
 
   // 拉取所有本地数据
-  const accounts = await db.select('SELECT * FROM accounts WHERE is_deleted = 0')
-  const categories = await db.select('SELECT * FROM categories WHERE is_deleted = 0')
-  const tags = await db.select('SELECT * FROM tags WHERE is_deleted = 0')
-  const transactions = await db.select('SELECT * FROM transactions WHERE is_deleted = 0')
+  const rawAccounts = await db.select<Record<string, unknown>[]>('SELECT * FROM accounts WHERE is_deleted = 0')
+  const rawCategories = await db.select<Record<string, unknown>[]>('SELECT * FROM categories WHERE is_deleted = 0')
+  const rawTags = await db.select<Record<string, unknown>[]>('SELECT * FROM tags WHERE is_deleted = 0')
+  const rawTransactions = await db.select<Record<string, unknown>[]>('SELECT * FROM transactions WHERE is_deleted = 0')
 
-  // 以本地数据为准，全量推送到服务端
-  await apiFetch('/sync', {
+  // SQLite 中 is_deleted 存的是 INTEGER 0/1，后端期望 bool
+  const toBool = (v: unknown): boolean => v === 1 || v === true
+  const accounts = rawAccounts.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
+  const categories = rawCategories.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
+  const tags = rawTags.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
+  const transactions = rawTransactions.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
+
+  const resp = await apiFetch('/sync', {
     method: 'POST',
     body: JSON.stringify({
       last_synced_at: '1970-01-01T00:00:00Z',
@@ -66,4 +78,8 @@ export async function firstFullSync(): Promise<void> {
       },
     }),
   })
+
+  if (!resp.ok) {
+    throw new Error(resp.error || '首次同步失败')
+  }
 }

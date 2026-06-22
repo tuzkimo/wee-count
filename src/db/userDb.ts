@@ -1,6 +1,6 @@
 // src/db/userDb.ts
 import Database from '@tauri-apps/plugin-sql'
-import { DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS } from './defaults'
+import { DEFAULT_CATEGORIES } from './defaults'
 
 // 当前活跃用户的 db 连接
 let userDb: Database | null = null
@@ -174,15 +174,6 @@ async function ensureUserDefaults(db: Database, userId: string): Promise<void> {
       `INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [crypto.randomUUID(), ledgerId, c.name, c.type, c.icon, c.sortOrder, now]
-    )
-  }
-
-  // 拷贝默认账户
-  for (const a of DEFAULT_ACCOUNTS) {
-    await db.execute(
-      `INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'asset', 0, $6, $7)`,
-      [crypto.randomUUID(), ledgerId, userId, a.name, a.type, now, now]
     )
   }
 }

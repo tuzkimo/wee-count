@@ -23,14 +23,3 @@ export const DEFAULT_CATEGORIES: DefaultCategory[] = [
   { name: '报销', type: 'income', icon: '🧾', sortOrder: 5 },
   { name: '其他收入', type: 'income', icon: '📥', sortOrder: 99 },
 ]
-
-export interface DefaultAccount {
-  name: string
-  type: string
-}
-
-export const DEFAULT_ACCOUNTS: DefaultAccount[] = [
-  { name: '现金', type: 'cash' },
-  { name: '银行卡', type: 'bank' },
-  { name: '电子钱包', type: 'digital' },
-]

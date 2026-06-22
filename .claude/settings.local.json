@@ -20,7 +20,8 @@
       "Bash(git diff-tree *)",
       "Bash(GOPROXY=https://goproxy.cn,direct go build *)",
       "Bash(GOPROXY=https://goproxy.cn,direct go test *)",
-      "Bash(go test *)"
+      "Bash(go test *)",
+      "Bash(go build *)"
     ]
   }
 }

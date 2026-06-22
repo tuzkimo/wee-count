@@ -206,11 +206,11 @@ export const useTransactionStore = defineStore("transaction", () => {
     const id = generateId();
 
     await db.execute(
-      `INSERT INTO transactions (id, ledger_id, user_id, type, amount, category_id, from_account_id, to_account_id, occurred_at, transacted_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO transactions (id, ledger_id, user_id, type, amount, category_id, from_account_id, to_account_id, occurred_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, data.ledger_id, data.user_id, data.type, data.amount, data.category_id,
-        data.from_account_id, data.to_account_id, data.occurred_at, data.occurred_at, now, now,
+        data.from_account_id, data.to_account_id, data.occurred_at, now, now,
       ]
     );
 

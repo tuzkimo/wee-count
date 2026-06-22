@@ -21,7 +21,9 @@ export const useLedgerStore = defineStore("ledger", () => {
     );
     ledgers.value = rows;
 
-    if (rows.length > 0 && !currentLedgerId.value) {
+    // 如果之前选的账本已不存在（如迁移后旧 ID 被替换），改用第一个
+    const stillExists = currentLedgerId.value && rows.some((l) => l.id === currentLedgerId.value);
+    if (rows.length > 0 && !stillExists) {
       currentLedgerId.value = rows[0].id;
     }
   }

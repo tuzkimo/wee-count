@@ -79,12 +79,19 @@ async function handleLogin(): Promise<void> {
     const resp = await api.login(email.value, loginPassword.value)
     await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
     await auth.bindOnline(apiUrl.value, resp)
-    await firstFullSync()
     router.replace('/')
   } catch (e: unknown) {
+    console.error("BindSync login failed:", e)
     error.value = (e as Error)?.message || '登录失败'
   } finally {
     loginLoading.value = false
+  }
+
+  // 后台执行首次同步，失败不阻塞
+  try {
+    await firstFullSync()
+  } catch (e) {
+    console.warn("[BindSync] firstFullSync failed (non-fatal):", e)
   }
 }
 
@@ -96,12 +103,19 @@ async function handleRegister(): Promise<void> {
     const resp = await api.register(regEmail.value, regPassword.value, regNickname.value)
     await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
     await auth.bindOnline(apiUrl.value, resp)
-    await firstFullSync()
     router.replace('/')
   } catch (e: unknown) {
+    console.error("BindSync register failed:", e)
     error.value = (e as Error)?.message || '注册失败'
   } finally {
     regLoading.value = false
+  }
+
+  // 后台执行首次同步，失败不阻塞
+  try {
+    await firstFullSync()
+  } catch (e) {
+    console.warn("[BindSync] firstFullSync failed (non-fatal):", e)
   }
 }
 </script>

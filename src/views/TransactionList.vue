@@ -105,7 +105,7 @@ watch(
   async () => {
     if (isLoading.value) return;
     const ledgerId = ledgerStore.currentLedger?.id;
-    if (!ledgerId) return;
+    if (!ledgerId) { isLoading.value = false; return; }
 
     const qAccount = route.query.account as string | undefined;
     filterAccountId.value = qAccount || "";

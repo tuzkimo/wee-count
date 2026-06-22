@@ -100,7 +100,7 @@ async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
   const db = getUserDb();
   if (!db) return;
 
-  for (const account of remote.accounts) {
+  for (const account of (remote.accounts || [])) {
     const local = await db.select<{ updated_at: string }[]>(
       "SELECT updated_at FROM accounts WHERE id = ?",
       [account.id]
@@ -122,7 +122,7 @@ async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
     }
   }
 
-  for (const tag of remote.tags) {
+  for (const tag of (remote.tags || [])) {
     const local = await db.select<{ updated_at: string }[]>(
       "SELECT updated_at FROM tags WHERE id = ?", [tag.id]
     );
@@ -139,7 +139,7 @@ async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
     }
   }
 
-  for (const cat of remote.categories) {
+  for (const cat of (remote.categories || [])) {
     const local = await db.select<{ updated_at: string }[]>(
       "SELECT updated_at FROM categories WHERE id = ?", [cat.id]
     );
@@ -156,7 +156,7 @@ async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
     }
   }
 
-  for (const tx of remote.transactions) {
+  for (const tx of (remote.transactions || [])) {
     const local = await db.select<{ updated_at: string }[]>(
       "SELECT updated_at FROM transactions WHERE id = ?", [tx.id]
     );

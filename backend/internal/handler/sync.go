@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"wee-count/backend/internal/middleware"
@@ -32,6 +33,7 @@ func (h *SyncHandler) Sync(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.svc.Sync(r.Context(), userID, req)
 	if err != nil {
+		log.Printf("sync error for user %s: %v", userID, err)
 		writeError(w, http.StatusInternalServerError, "sync failed")
 		return
 	}
