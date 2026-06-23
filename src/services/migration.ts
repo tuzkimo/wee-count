@@ -18,6 +18,7 @@ export async function migrateLocalDataToServer(
   if (oldRows.length === 0) return
 
   const oldLedgerId = oldRows[0].id
+  const oldOwnerId = oldRows[0].owner_id
 
   // 1. 插入服务端 ID 的新行，owner_id 用服务端用户 ID
   await db.execute(
@@ -41,10 +42,8 @@ export async function migrateLocalDataToServer(
   // 4. 更新 accounts.owner_id 和 transactions.user_id 为服务端用户 ID
   await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
   await db.execute(
-    `UPDATE transactions SET user_id = $1 WHERE user_id = (
-      SELECT owner_id FROM ledgers WHERE id = $2 LIMIT 1
-    )`,
-    [serverUserId, serverLedgerId]
+    'UPDATE transactions SET user_id = $1 WHERE user_id = $2',
+    [serverUserId, oldOwnerId]
   )
 }
 
