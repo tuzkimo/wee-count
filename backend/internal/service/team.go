@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -118,11 +119,11 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 		return nil, fmt.Errorf("redis get: %w", err)
 	}
 
-	var teamID, createdBy string
-	_, err = fmt.Sscanf(val, "%s:%s", &teamID, &createdBy)
-	if err != nil {
+	parts := strings.SplitN(val, ":", 2)
+	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid invite data")
 	}
+	teamID := parts[0]
 
 	// delete invite code (one-time use)
 	s.redis.Del(ctx, key)
