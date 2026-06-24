@@ -118,8 +118,8 @@ function handleLogout(): void {
         </div>
       </div>
 
-      <!-- Team management -->
-      <div class="mt-3">
+      <!-- Team management (online only) -->
+      <div v-if="auth.isOnline" class="mt-3">
         <p class="px-4 py-2 text-xs font-medium text-text-secondary uppercase">团队管理</p>
         <div class="border-y border-gray-100 bg-surface">
           <button class="flex w-full items-center gap-3 px-4 py-3" @click="router.push('/teams/create')">

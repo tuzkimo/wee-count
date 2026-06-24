@@ -20,6 +20,16 @@ export async function migrateLocalDataToServer(
   const oldLedgerId = oldRows[0].id
   const oldOwnerId = oldRows[0].owner_id
 
+  // 重新绑定同一账号时，本地账本 ID 已是服务端 ID，跳过迁移
+  if (oldLedgerId === serverLedgerId) {
+    await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
+    await db.execute(
+      'UPDATE transactions SET user_id = $1 WHERE user_id = $2',
+      [serverUserId, oldOwnerId]
+    )
+    return
+  }
+
   // 1. 插入服务端 ID 的新行，owner_id 用服务端用户 ID
   await db.execute(
     `INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)

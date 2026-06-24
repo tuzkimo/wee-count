@@ -35,7 +35,7 @@ export const useAuthStore = defineStore("auth", () => {
     // 打开用户 db
     await openUserDb(user.id);
     currentLocalUser.value = user;
-    mode.value = user.server_user_id ? 'online' : 'local';
+    mode.value = 'local';
 
     // 如果绑定了服务端，尝试恢复在线会话
     if (user.server_user_id && user.api_url) {

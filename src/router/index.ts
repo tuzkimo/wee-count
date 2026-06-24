@@ -120,6 +120,12 @@ router.beforeEach(async (to) => {
     return { path: '/login', replace: true }
   }
 
+  // 团队功能需要在线模式
+  const onlineOnlyPages = ['/teams/create', '/teams/join']
+  if (onlineOnlyPages.includes(to.path) && !auth.isOnline) {
+    return { path: '/me', replace: true }
+  }
+
   return true
 })
 

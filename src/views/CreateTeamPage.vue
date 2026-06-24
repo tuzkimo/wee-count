@@ -9,6 +9,12 @@ const router = useRouter();
 const name = ref("");
 const error = ref("");
 const loading = ref(false);
+const createdCode = ref("");
+
+interface CreateTeamData {
+  team: { id: string; name: string };
+  shared_ledger: { id: string };
+}
 
 async function handleCreate(): Promise<void> {
   error.value = "";
@@ -17,7 +23,7 @@ async function handleCreate(): Promise<void> {
     return;
   }
   loading.value = true;
-  const res = await apiFetch("/teams", {
+  const res = await apiFetch<CreateTeamData>("/teams", {
     method: "POST",
     body: JSON.stringify({ name: name.value.trim() }),
   });
@@ -28,21 +34,63 @@ async function handleCreate(): Promise<void> {
     return;
   }
 
-  // Trigger sync to pull team ledger after creation
+  // Generate invite code
+  const teamId = res.data!.team.id;
+  const inviteRes = await apiFetch<{ invite_code: string }>(
+    `/teams/${teamId}/invite`,
+    { method: "POST" },
+  );
+
+  if (!inviteRes.ok) {
+    error.value = inviteRes.error || "生成邀请码失败";
+    return;
+  }
+
   await performSync();
-  router.replace("/me");
+  createdCode.value = inviteRes.data!.invite_code;
+}
+
+async function handleCopy(): Promise<void> {
+  await navigator.clipboard.writeText(createdCode.value);
 }
 </script>
 
 <template>
   <div class="flex h-full flex-col bg-bg">
     <div class="flex min-h-14 items-center border-b border-gray-200 bg-surface px-4 py-2">
-      <button class="text-primary" @click="router.back()">取消</button>
-      <h1 class="flex-1 text-center text-lg font-semibold text-text">创建团队</h1>
+      <button class="text-primary" @click="router.replace('/me')">返回</button>
+      <h1 class="flex-1 text-center text-lg font-semibold text-text">
+        {{ createdCode ? "团队已创建" : "创建团队" }}
+      </h1>
       <div class="w-10" />
     </div>
 
-    <form class="flex flex-col gap-4 p-6" @submit.prevent="handleCreate">
+    <!-- 创建成功，展示邀请码 -->
+    <div v-if="createdCode" class="flex flex-col items-center gap-6 p-6">
+      <div class="mt-8 text-center">
+        <p class="text-sm text-text-secondary">将邀请码发送给团队成员</p>
+        <p class="mt-2 text-4xl font-bold tracking-[0.3em] text-primary">
+          {{ createdCode }}
+        </p>
+        <p class="mt-2 text-xs text-text-secondary">邀请码 24 小时内有效</p>
+      </div>
+
+      <button
+        class="w-full rounded-lg bg-primary py-3 text-white font-medium"
+        @click="handleCopy"
+      >
+        复制邀请码
+      </button>
+      <button
+        class="w-full rounded-lg border border-gray-200 bg-surface py-3 text-text font-medium"
+        @click="router.replace('/me')"
+      >
+        完成
+      </button>
+    </div>
+
+    <!-- 创建表单 -->
+    <form v-else class="flex flex-col gap-4 p-6" @submit.prevent="handleCreate">
       <div>
         <label class="mb-1 block text-sm text-text-secondary">团队名称</label>
         <input
