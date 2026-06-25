@@ -66,6 +66,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
   if (row.tag_ids && row.tag_names) {
     const ids = row.tag_ids.split(",");
     const names = row.tag_names.split(",");
+    tx.tag_ids = ids;
     tx.tags = ids.map((id, i) => ({ id, name: names[i] ?? "", ledger_id: "", updated_at: "", is_deleted: false }));
   } else {
     tx.tags = [];

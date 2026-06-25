@@ -19,6 +19,7 @@ const transactionStore = useTransactionStore();
 
 const filterAccountId = ref<string>("");
 const isLoading = ref(true);
+const showLedgerSwitcher = ref(false);
 
 // 多选模式（仅账户详情模式）
 const isMultiSelectMode = ref(false);
@@ -97,7 +98,31 @@ onMounted(async () => {
   const opts = buildFetchOpts();
   await transactionStore.fetchAll(ledgerId, opts);
   isLoading.value = false;
+
+  // 点击外部关闭账本切换下拉
+  document.addEventListener("click", () => {
+    showLedgerSwitcher.value = false;
+  });
 });
+
+function switchLedger(id: string) {
+  ledgerStore.setCurrentLedger(id);
+  showLedgerSwitcher.value = false;
+}
+
+// 切换账本后重新加载数据
+watch(
+  () => ledgerStore.currentLedgerId,
+  async (newId) => {
+    if (!newId || isLoading.value) return;
+    isLoading.value = true;
+    filterAccountId.value = "";
+    await accountStore.fetchAll(newId);
+    await tagStore.fetchAll(newId);
+    await transactionStore.fetchAll(newId, buildFetchOpts());
+    isLoading.value = false;
+  },
+);
 
 // 监听路由 query 变化，重新获取数据
 watch(
@@ -311,10 +336,34 @@ function goRecord(txId: string) {
     <!-- Header：首页模式 -->
     <AppHeader v-else title="">
       <template #title>
-        <button class="flex flex-1 items-center gap-1 text-lg font-semibold text-text">
-          我的账本
-          <ChevronDown :size="16" class="text-text-secondary" />
-        </button>
+        <div class="relative flex-1">
+          <button
+            class="flex items-center gap-1 text-lg font-semibold text-text"
+            @click.stop="showLedgerSwitcher = !showLedgerSwitcher"
+          >
+            {{ ledgerStore.currentLedger?.name || '我的账本' }}
+            <ChevronDown
+              :size="16"
+              class="text-text-secondary transition-transform"
+              :class="{ 'rotate-180': showLedgerSwitcher }"
+            />
+          </button>
+          <div
+            v-if="showLedgerSwitcher"
+            class="absolute top-full left-0 mt-1 w-44 rounded-lg bg-surface shadow-lg border border-gray-200 z-50 overflow-hidden"
+          >
+            <button
+              v-for="l in ledgerStore.ledgers"
+              :key="l.id"
+              class="flex w-full items-center gap-2 px-4 py-2.5 text-sm hover:bg-gray-50"
+              :class="l.id === ledgerStore.currentLedgerId ? 'text-primary font-medium' : 'text-text'"
+              @click.stop="switchLedger(l.id)"
+            >
+              <span class="truncate">{{ l.name }}</span>
+              <span class="shrink-0 text-xs text-text-secondary">{{ l.type === 'team' ? '团队' : '个人' }}</span>
+            </button>
+          </div>
+        </div>
       </template>
       <template #action>
         <button

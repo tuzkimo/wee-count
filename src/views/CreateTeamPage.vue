@@ -4,8 +4,11 @@ import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { apiFetch } from "@/services/api";
 import { performSync } from "@/services/sync";
+import { useLedgerStore } from "@/stores/ledger";
+import type { Ledger } from "@/types";
 
 const router = useRouter();
+const ledgerStore = useLedgerStore();
 const name = ref("");
 const error = ref("");
 const loading = ref(false);
@@ -13,7 +16,7 @@ const createdCode = ref("");
 
 interface CreateTeamData {
   team: { id: string; name: string };
-  shared_ledger: { id: string };
+  shared_ledger: Ledger;
 }
 
 async function handleCreate(): Promise<void> {
@@ -46,6 +49,9 @@ async function handleCreate(): Promise<void> {
     return;
   }
 
+  if (res.data?.shared_ledger) {
+    await ledgerStore.addLedger(res.data.shared_ledger);
+  }
   await performSync();
   createdCode.value = inviteRes.data!.invite_code;
 }

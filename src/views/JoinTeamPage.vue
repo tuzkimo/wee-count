@@ -4,8 +4,11 @@ import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { apiFetch } from "@/services/api";
 import { performSync } from "@/services/sync";
+import { useLedgerStore } from "@/stores/ledger";
+import type { Ledger } from "@/types";
 
 const router = useRouter();
+const ledgerStore = useLedgerStore();
 const inviteCode = ref("");
 const error = ref("");
 const loading = ref(false);
@@ -21,7 +24,7 @@ async function handleJoin(): Promise<void> {
     return;
   }
   loading.value = true;
-  const res = await apiFetch("/teams/join", {
+  const res = await apiFetch<{ team: { id: string; name: string }; shared_ledger: Ledger }>("/teams/join", {
     method: "POST",
     body: JSON.stringify({ invite_code: inviteCode.value.trim() }),
   });
@@ -32,8 +35,11 @@ async function handleJoin(): Promise<void> {
     return;
   }
 
+  if (res.data?.shared_ledger) {
+    await ledgerStore.addLedger(res.data.shared_ledger);
+  }
   await performSync();
-  router.replace("/me");
+  router.replace("/");
 }
 </script>
 

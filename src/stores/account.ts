@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { getUserDb } from "@/db/userDb";
+import { enqueueSync } from "@/services/sync";
 import type { Account, AccountType } from "@/types";
 
 const BALANCE_QUERY = `
@@ -94,6 +95,26 @@ export const useAccountStore = defineStore("account", () => {
       ]
     );
     await fetchAll(input.ledger_id);
+    enqueueSync({
+      accounts: [{
+        id,
+        ledger_id: input.ledger_id,
+        owner_id: input.owner_id,
+        name: input.name,
+        type: input.type,
+        category: input.category as Account["category"],
+        initial_balance: input.initial_balance,
+        credit_limit: input.credit_limit ?? undefined,
+        repayment_day: input.repayment_day ?? undefined,
+        color: input.color,
+        created_at: now,
+        updated_at: now,
+        is_deleted: false,
+      }],
+      tags: [],
+      categories: [],
+      transactions: [],
+    });
   }
 
   async function update(

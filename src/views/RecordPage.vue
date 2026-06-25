@@ -15,11 +15,13 @@ import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
 import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
 import { getCurrentUserId } from "@/db/userDb";
+import { useAuthStore } from "@/stores/auth";
 import type { Account, Category, Tag, TransactionType } from "@/types";
 
 const route = useRoute();
 const router = useRouter();
 const ledgerStore = useLedgerStore();
+const auth = useAuthStore();
 const accountStore = useAccountStore();
 const categoryStore = useCategoryStore();
 const tagStore = useTagStore();
@@ -206,7 +208,7 @@ async function doSave(): Promise<boolean> {
   try {
     const data = {
       ledger_id: ledgerId,
-      user_id: getCurrentUserId()!,
+      user_id: auth.currentLocalUser?.server_user_id || getCurrentUserId()!,
       type: txType.value,
       amount: amt,
       category_id: txType.value === "transfer" ? null : categoryId.value,

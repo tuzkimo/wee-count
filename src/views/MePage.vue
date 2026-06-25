@@ -113,7 +113,7 @@ function handleLogout(): void {
         <div class="border-y border-gray-100 bg-surface">
           <div class="flex items-center px-4 py-3">
             <span class="flex-1 text-text">{{ ledger.currentLedger?.name || "个人账本" }}</span>
-            <span class="text-xs text-text-secondary">个人</span>
+            <span class="text-xs text-text-secondary">{{ ledger.currentLedger?.type === 'team' ? '团队' : '个人' }}</span>
           </div>
         </div>
       </div>

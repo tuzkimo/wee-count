@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { getUserDb } from "@/db/userDb";
+import { enqueueSync } from "@/services/sync";
 import type { Tag } from "@/types";
 
 
@@ -40,6 +41,12 @@ export const useTagStore = defineStore("tag", () => {
       is_deleted: false,
     };
     tags.value.push(newTag);
+    enqueueSync({
+      accounts: [],
+      tags: [newTag],
+      categories: [],
+      transactions: [],
+    });
     return newTag;
   }
 
