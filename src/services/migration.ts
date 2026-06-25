@@ -68,14 +68,31 @@ export async function firstFullSync(): Promise<void> {
   const rawTags = await db.select<Record<string, unknown>[]>('SELECT * FROM tags WHERE is_deleted = 0')
   const rawTransactions = await db.select<Record<string, unknown>[]>('SELECT * FROM transactions WHERE is_deleted = 0')
 
+  // 查询 transaction_tags，按 transaction_id 分组
+  const tagRows = await db.select<{ transaction_id: string; tag_id: string }[]>(
+    `SELECT tg.transaction_id, tg.tag_id
+     FROM transaction_tags tg
+     JOIN transactions t ON t.id = tg.transaction_id
+     WHERE t.is_deleted = 0`
+  )
+  const tagMap: Record<string, string[]> = {}
+  for (const row of tagRows) {
+    if (!tagMap[row.transaction_id]) tagMap[row.transaction_id] = []
+    tagMap[row.transaction_id].push(row.tag_id)
+  }
+
   // SQLite 中 is_deleted 存的是 INTEGER 0/1，后端期望 bool
   const toBool = (v: unknown): boolean => v === 1 || v === true
   const accounts = rawAccounts.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
   const categories = rawCategories.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
   const tags = rawTags.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
-  const transactions = rawTransactions.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
+  const transactions = rawTransactions.map(r => ({
+    ...r,
+    is_deleted: toBool(r.is_deleted),
+    tag_ids: tagMap[r.id as string] ?? [],
+  }))
 
-  const resp = await apiFetch('/sync', {
+  const resp = await apiFetch<{ server_time: string; remote_changes: { accounts: unknown[]; tags: unknown[]; categories: unknown[]; transactions: unknown[] } }>('/sync', {
     method: 'POST',
     body: JSON.stringify({
       last_synced_at: '1970-01-01T00:00:00Z',
@@ -90,5 +107,13 @@ export async function firstFullSync(): Promise<void> {
 
   if (!resp.ok) {
     throw new Error(resp.error || '首次同步失败')
+  }
+
+  // 应用服务端返回的远程变更
+  if (resp.data?.remote_changes) {
+    const { applyRemoteChanges } = await import('@/services/sync')
+    await applyRemoteChanges(resp.data.remote_changes as { accounts: never[]; tags: never[]; categories: never[]; transactions: never[] })
+    const { setLastSyncedAt } = await import('@/services/sync')
+    setLastSyncedAt(resp.data.server_time)
   }
 }

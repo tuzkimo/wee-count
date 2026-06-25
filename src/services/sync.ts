@@ -96,7 +96,7 @@ export async function performSync(): Promise<void> {
 /**
  * Apply remote changes to local SQLite (LWW merge)
  */
-async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
+export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
   const db = getUserDb();
   if (!db) return;
 

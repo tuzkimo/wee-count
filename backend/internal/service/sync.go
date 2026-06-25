@@ -179,6 +179,24 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx pgx.Tx, c model.C
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM categories WHERE id = $1", c.ID).Scan(&remoteUpdatedAt)
 	if err != nil {
+		// 检查同账本下是否已有同名同类型分类（客户端清数据重绑会重新生成 UUID）
+		var dupID string
+		var dupUpdatedAt time.Time
+		dupErr := tx.QueryRow(ctx,
+			`SELECT id, updated_at FROM categories WHERE ledger_id = $1 AND name = $2 AND type = $3 AND is_deleted = FALSE LIMIT 1`,
+			c.LedgerID, c.Name, c.Type,
+		).Scan(&dupID, &dupUpdatedAt)
+		if dupErr == nil {
+			// 已有同名同类型分类，更新而非插入
+			if c.UpdatedAt.After(dupUpdatedAt) {
+				_, err = tx.Exec(ctx,
+					`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
+					c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted, dupID,
+				)
+			}
+			return err
+		}
+		// 无重复，正常插入
 		_, err = tx.Exec(ctx,
 			`INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 			c.ID, c.LedgerID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
