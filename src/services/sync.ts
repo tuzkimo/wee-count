@@ -144,6 +144,16 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
       "SELECT updated_at FROM categories WHERE id = ?", [cat.id]
     );
     if (local.length === 0) {
+      // 检查本地是否已有同名同类型分类（清数据重绑会产生不同 UUID）
+      const dup = await db.select<{ id: string }[]>(
+        "SELECT id FROM categories WHERE ledger_id = ? AND name = ? AND type = ? AND is_deleted = 0 LIMIT 1",
+        [cat.ledger_id, cat.name, cat.type]
+      );
+      if (dup.length > 0) {
+        // 替换本地重复分类，更新关联交易的 category_id
+        await db.execute("UPDATE transactions SET category_id = ? WHERE category_id = ?", [cat.id, dup[0].id]);
+        await db.execute("DELETE FROM categories WHERE id = ?", [dup[0].id]);
+      }
       await db.execute(
         "INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [cat.id, cat.ledger_id, cat.name, cat.type, cat.icon, cat.sort_order, cat.updated_at, cat.is_deleted ? 1 : 0]
