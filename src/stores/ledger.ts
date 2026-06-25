@@ -1,9 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { getUserDb } from "@/db/userDb";
-import { DEFAULT_CATEGORIES } from "@/db/defaults";
-import { enqueueSync } from "@/services/sync";
-import type { Ledger, Category } from "@/types";
+import type { Ledger } from "@/types";
 
 export const useLedgerStore = defineStore("ledger", () => {
   const ledgers = ref<Ledger[]>([]);
@@ -46,35 +44,6 @@ export const useLedgerStore = defineStore("ledger", () => {
       ledgers.value.push(ledger);
     }
     currentLedgerId.value = ledger.id;
-
-    // 确保新账本有默认分类（团队账本创建时没有）
-    const catRows = await db.select<{ cnt: number }[]>(
-      "SELECT COUNT(*) as cnt FROM categories WHERE ledger_id = $1",
-      [ledger.id],
-    );
-    if ((catRows[0]?.cnt ?? 0) === 0) {
-      const now = new Date().toISOString();
-      const newCategories: Category[] = [];
-      for (const c of DEFAULT_CATEGORIES) {
-        const catId = crypto.randomUUID();
-        await db.execute(
-          `INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [catId, ledger.id, c.name, c.type, c.icon, c.sortOrder, now],
-        );
-        newCategories.push({
-          id: catId,
-          ledger_id: ledger.id,
-          name: c.name,
-          type: c.type,
-          icon: c.icon,
-          sort_order: c.sortOrder,
-          updated_at: now,
-          is_deleted: false,
-        });
-      }
-      enqueueSync({ accounts: [], tags: [], categories: newCategories, transactions: [] });
-    }
   }
 
   return { ledgers, currentLedgerId, currentLedger, init, setCurrentLedger, addLedger };
