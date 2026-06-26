@@ -13,6 +13,7 @@ import TagSheet from "@/components/TagSheet.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
+import CategorySheet from "@/components/CategorySheet.vue";
 import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
 import { getCurrentUserId } from "@/db/userDb";
 import { useAuthStore } from "@/stores/auth";
@@ -43,6 +44,8 @@ const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
 const accountPickerVisible = ref(false);
 const accountPickerTarget = ref<"from" | "to">("from");
+const categorySheetVisible = ref(false);
+const saveError = ref("");
 const isSaving = ref(false);
 const isReady = ref(false);
 const datePickerVisible = ref(false);
@@ -197,10 +200,14 @@ async function doSave(): Promise<boolean> {
   const ledgerId = ledgerStore.currentLedger?.id;
   if (!ledgerId || isSaving.value || !isValid.value) return false;
 
+  saveError.value = "";
   const amt = calcResult.value!;
 
   // 基础校验
-  if (txType.value !== "transfer" && !categoryId.value) return false;
+  if (txType.value !== "transfer" && !categoryId.value) {
+    saveError.value = "请选择分类";
+    return false;
+  }
   if (!fromAccountId.value) return false;
   if (txType.value !== "expense" && !toAccountId.value) return false;
 
@@ -342,6 +349,13 @@ function goBack() {
 
       <!-- 3. 分类网格（转账时隐藏） -->
       <div v-if="txType !== 'transfer'" class="mb-4">
+        <div class="mb-2 flex items-center justify-between">
+          <label class="text-xs text-text-secondary">分类</label>
+          <button
+            class="text-xs text-primary hover:underline"
+            @click="categorySheetVisible = true"
+          >管理</button>
+        </div>
         <div class="grid grid-cols-4 gap-2">
           <button
             v-for="cat in filteredCategories"
@@ -354,6 +368,7 @@ function goBack() {
             <span>{{ cat.name }}</span>
           </button>
         </div>
+        <p v-if="saveError" class="mb-2 text-sm text-expense">{{ saveError }}</p>
       </div>
 
       <!-- 4. 账户 -->
@@ -492,6 +507,12 @@ function goBack() {
       :model-value="occurredAt"
       @confirm="onDateTimeConfirm"
       @close="datePickerVisible = false"
+    />
+
+    <!-- 分类管理 Sheet -->
+    <CategorySheet
+      :visible="categorySheetVisible"
+      @close="categorySheetVisible = false"
     />
   </div>
 </template>
