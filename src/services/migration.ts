@@ -63,6 +63,7 @@ export async function firstFullSync(): Promise<void> {
   if (!db) throw new Error('User DB not opened')
 
   // 拉取所有本地数据
+  const rawLedgers = await db.select<Record<string, unknown>[]>('SELECT * FROM ledgers WHERE is_deleted = 0')
   const rawAccounts = await db.select<Record<string, unknown>[]>('SELECT * FROM accounts WHERE is_deleted = 0')
   const rawCategories = await db.select<Record<string, unknown>[]>('SELECT * FROM categories WHERE is_deleted = 0')
   const rawTags = await db.select<Record<string, unknown>[]>('SELECT * FROM tags WHERE is_deleted = 0')
@@ -83,6 +84,7 @@ export async function firstFullSync(): Promise<void> {
 
   // SQLite 中 is_deleted 存的是 INTEGER 0/1，后端期望 bool
   const toBool = (v: unknown): boolean => v === 1 || v === true
+  const ledgers = rawLedgers.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
   const accounts = rawAccounts.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
   const categories = rawCategories.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
   const tags = rawTags.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
@@ -92,11 +94,12 @@ export async function firstFullSync(): Promise<void> {
     tag_ids: tagMap[r.id as string] ?? [],
   }))
 
-  const resp = await apiFetch<{ server_time: string; remote_changes: { accounts: unknown[]; tags: unknown[]; categories: unknown[]; transactions: unknown[] } }>('/sync', {
+  const resp = await apiFetch<{ server_time: string; remote_changes: { ledgers: unknown[]; accounts: unknown[]; tags: unknown[]; categories: unknown[]; transactions: unknown[] } }>('/sync', {
     method: 'POST',
     body: JSON.stringify({
       last_synced_at: '1970-01-01T00:00:00Z',
       local_changes: {
+        ledgers,
         accounts,
         categories,
         tags,
@@ -112,7 +115,7 @@ export async function firstFullSync(): Promise<void> {
   // 应用服务端返回的远程变更
   if (resp.data?.remote_changes) {
     const { applyRemoteChanges } = await import('@/services/sync')
-    await applyRemoteChanges(resp.data.remote_changes as { accounts: never[]; tags: never[]; categories: never[]; transactions: never[] })
+    await applyRemoteChanges(resp.data.remote_changes as import('@/services/sync').SyncPayload)
     const { setLastSyncedAt } = await import('@/services/sync')
     setLastSyncedAt(resp.data.server_time)
   }

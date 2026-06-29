@@ -101,7 +101,7 @@ describe("categoryStore", () => {
       expect(enqueueSync).toHaveBeenCalledOnce();
       const syncPayload = vi.mocked(enqueueSync).mock.calls[0][0];
       expect(syncPayload.categories).toHaveLength(1);
-      expect(syncPayload.categories[0]).toMatchObject({
+      expect(syncPayload.categories![0]).toMatchObject({
         name: "购物",
         type: "expense",
         icon: "🛒",
@@ -147,7 +147,7 @@ describe("categoryStore", () => {
       // Verify enqueueSync was called with updated data
       expect(enqueueSync).toHaveBeenCalledOnce();
       const syncPayload = vi.mocked(enqueueSync).mock.calls[0][0];
-      expect(syncPayload.categories[0]).toMatchObject({
+      expect(syncPayload.categories![0]).toMatchObject({
         name: "美食",
         icon: "🍜",
       });
@@ -176,7 +176,7 @@ describe("categoryStore", () => {
       // Verify enqueueSync was called with is_deleted: true
       expect(enqueueSync).toHaveBeenCalledOnce();
       const syncPayload = vi.mocked(enqueueSync).mock.calls[0][0];
-      expect(syncPayload.categories[0].is_deleted).toBe(true);
+      expect(syncPayload.categories![0].is_deleted).toBe(true);
     });
 
     it("should throw error when category has related transactions", async () => {

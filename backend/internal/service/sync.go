@@ -88,6 +88,16 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string,
 	}
 	defer tx.Rollback(ctx)
 
+	// ledgers
+	for _, l := range changes.Ledgers {
+		if !ledgerSet[l.ID] {
+			continue
+		}
+		if err := s.lwwMergeLedger(ctx, tx, l); err != nil {
+			return err
+		}
+	}
+
 	// accounts
 	for _, a := range changes.Accounts {
 		if !ledgerSet[a.LedgerID] {
@@ -129,6 +139,27 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string,
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (s *SyncService) lwwMergeLedger(ctx context.Context, tx pgx.Tx, l model.Ledger) error {
+	var remoteUpdatedAt time.Time
+	err := tx.QueryRow(ctx, "SELECT updated_at FROM ledgers WHERE id = $1", l.ID).Scan(&remoteUpdatedAt)
+	if err != nil {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			l.ID, l.Name, l.Type, l.OwnerID, l.TeamID, l.CreatedAt, l.UpdatedAt, l.IsDeleted,
+		)
+		return err
+	}
+	if !l.UpdatedAt.After(remoteUpdatedAt) {
+		return nil
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE ledgers SET name=$1, type=$2, owner_id=$3, team_id=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
+		l.Name, l.Type, l.OwnerID, l.TeamID, l.UpdatedAt, l.IsDeleted, l.ID,
+	)
+	return err
 }
 
 func (s *SyncService) lwwMergeAccount(ctx context.Context, tx pgx.Tx, a model.Account) error {
@@ -266,6 +297,13 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, 
 
 	payload := model.SyncPayload{}
 
+	// ledgers
+	ledgers, err := s.queryLedgers(ctx, ledgerIDs, since)
+	if err != nil {
+		return payload, err
+	}
+	payload.Ledgers = ledgers
+
 	// accounts
 	accounts, err := s.queryAccounts(ctx, ledgerIDs, since)
 	if err != nil {
@@ -295,6 +333,28 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, 
 	payload.Transactions = transactions
 
 	return payload, nil
+}
+
+func (s *SyncService) queryLedgers(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Ledger, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, type, owner_id, team_id, created_at, updated_at, is_deleted
+		 FROM ledgers WHERE id = ANY($1) AND updated_at > $2`,
+		ledgerIDs, since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ledgers []model.Ledger
+	for rows.Next() {
+		var l model.Ledger
+		if err := rows.Scan(&l.ID, &l.Name, &l.Type, &l.OwnerID, &l.TeamID, &l.CreatedAt, &l.UpdatedAt, &l.IsDeleted); err != nil {
+			return nil, err
+		}
+		ledgers = append(ledgers, l)
+	}
+	return ledgers, rows.Err()
 }
 
 func (s *SyncService) queryAccounts(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Account, error) {

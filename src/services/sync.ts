@@ -1,9 +1,10 @@
 // src/services/sync.ts
 import { apiFetch, hasBaseUrl } from "./api";
 import { getUserDb } from "@/db/userDb";
-import type { Account, Transaction, Category, Tag } from "@/types";
+import type { Account, Transaction, Category, Tag, Ledger } from "@/types";
 
-interface SyncPayload {
+export interface SyncPayload {
+  ledgers: Ledger[];
   accounts: Account[];
   tags: Tag[];
   categories: Category[];
@@ -22,6 +23,7 @@ interface SyncResponse {
 
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingChanges: SyncPayload = {
+  ledgers: [],
   accounts: [],
   tags: [],
   categories: [],
@@ -39,7 +41,7 @@ export function setLastSyncedAt(time: string): void {
 /**
  * Enqueue local changes into sync queue, debounced 3 seconds
  */
-export function enqueueSync(changes: SyncPayload): void {
+export function enqueueSync(changes: Partial<SyncPayload>): void {
   // ponytail: skip sync in local mode, no server configured
   if (!hasBaseUrl()) return;
 
@@ -53,10 +55,11 @@ export function enqueueSync(changes: SyncPayload): void {
   }, 3000);
 }
 
-function mergeChanges(target: SyncPayload, source: SyncPayload): void {
-  for (const key of ["accounts", "tags", "categories", "transactions"] as const) {
+function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
+  for (const key of ["ledgers", "accounts", "tags", "categories", "transactions"] as const) {
     const targetArr = target[key] as Array<{ id: string; updated_at: string }>;
-    const sourceArr = source[key] as Array<{ id: string; updated_at: string }>;
+    const sourceArr = source[key] as Array<{ id: string; updated_at: string }> | undefined;
+    if (!sourceArr) continue;
     for (const item of sourceArr) {
       const idx = targetArr.findIndex((t) => t.id === item.id);
       if (idx >= 0) {
@@ -77,7 +80,7 @@ export async function performSync(): Promise<void> {
   const lastSyncedAt = getLastSyncedAt() || "1970-01-01T00:00:00Z";
 
   const changes = { ...pendingChanges };
-  pendingChanges = { accounts: [], tags: [], categories: [], transactions: [] };
+  pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [] };
 
   const res = await apiFetch<SyncResponse>("/sync", {
     method: "POST",
@@ -88,6 +91,7 @@ export async function performSync(): Promise<void> {
   });
 
   if (!res.ok || !res.data) {
+    console.warn("[sync] performSync failed:", res.status, res.error);
     mergeChanges(pendingChanges, changes);
     return;
   }
@@ -102,6 +106,27 @@ export async function performSync(): Promise<void> {
 export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
   const db = getUserDb();
   if (!db) return;
+
+  for (const ledger of (remote.ledgers || [])) {
+    const local = await db.select<{ updated_at: string }[]>(
+      "SELECT updated_at FROM ledgers WHERE id = ?",
+      [ledger.id]
+    );
+    if (local.length === 0) {
+      await db.execute(
+        `INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [ledger.id, ledger.name, ledger.type, ledger.owner_id ?? null, ledger.team_id ?? null,
+         ledger.created_at, ledger.updated_at, ledger.is_deleted ? 1 : 0]
+      );
+    } else if (ledger.updated_at > local[0].updated_at) {
+      await db.execute(
+        `UPDATE ledgers SET name=?, type=?, owner_id=?, team_id=?, updated_at=?, is_deleted=? WHERE id=?`,
+        [ledger.name, ledger.type, ledger.owner_id ?? null, ledger.team_id ?? null,
+         ledger.updated_at, ledger.is_deleted ? 1 : 0, ledger.id]
+      );
+    }
+  }
 
   for (const account of (remote.accounts || [])) {
     const local = await db.select<{ updated_at: string }[]>(

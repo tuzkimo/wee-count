@@ -18,8 +18,11 @@ onMounted(async () => {
 
 async function handleSync(): Promise<void> {
   auth.isSyncing = true;
-  await performSync();
-  auth.isSyncing = false;
+  try {
+    await performSync();
+  } finally {
+    auth.isSyncing = false;
+  }
 }
 
 function handleLogout(): void {

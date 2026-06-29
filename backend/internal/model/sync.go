@@ -13,6 +13,7 @@ type SyncResponse struct {
 }
 
 type SyncPayload struct {
+	Ledgers      []Ledger      `json:"ledgers"`
 	Accounts     []Account     `json:"accounts"`
 	Tags         []Tag         `json:"tags"`
 	Categories   []Category    `json:"categories"`
