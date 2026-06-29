@@ -1,5 +1,5 @@
 // src/services/sync.ts
-import { apiFetch } from "./api";
+import { apiFetch, hasBaseUrl } from "./api";
 import { getUserDb } from "@/db/userDb";
 import type { Account, Transaction, Category, Tag } from "@/types";
 
@@ -40,6 +40,9 @@ export function setLastSyncedAt(time: string): void {
  * Enqueue local changes into sync queue, debounced 3 seconds
  */
 export function enqueueSync(changes: SyncPayload): void {
+  // ponytail: skip sync in local mode, no server configured
+  if (!hasBaseUrl()) return;
+
   mergeChanges(pendingChanges, changes);
 
   if (syncTimer) {

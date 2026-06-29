@@ -356,7 +356,13 @@ function goBack() {
             @click="categorySheetVisible = true"
           >管理</button>
         </div>
-        <div class="grid grid-cols-4 gap-2">
+        <div
+          v-if="filteredCategories.length === 0"
+          class="rounded-lg bg-gray-50 py-8 text-center text-sm text-text-secondary"
+        >
+          暂无分类，点击<button class="text-primary underline" @click="categorySheetVisible = true">管理</button>添加
+        </div>
+        <div v-else class="grid grid-cols-4 gap-2">
           <button
             v-for="cat in filteredCategories"
             :key="cat.id"
@@ -512,6 +518,7 @@ function goBack() {
     <!-- 分类管理 Sheet -->
     <CategorySheet
       :visible="categorySheetVisible"
+      :initial-tab="txType === 'transfer' ? 'expense' : txType"
       @close="categorySheetVisible = false"
     />
   </div>

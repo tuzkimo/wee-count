@@ -13,6 +13,10 @@ export function getBaseUrl(): string {
   return baseUrl
 }
 
+export function hasBaseUrl(): boolean {
+  return baseUrl !== null
+}
+
 export function setTokens(access: string, refresh: string): void {
   accessToken = access
   refreshToken = refresh
