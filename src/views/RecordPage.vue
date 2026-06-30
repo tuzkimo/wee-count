@@ -84,6 +84,14 @@ const calcResult = computed<number | null>(() => {
 
 const isValid = computed(() => calcResult.value !== null);
 
+const isOwner = computed(() => {
+  if (!isEdit.value || !editId.value) return true;
+  const tx = transactionStore.transactions.find((t) => t.id === editId.value);
+  if (!tx) return true;
+  const currentUserId = auth.currentLocalUser?.server_user_id || getCurrentUserId();
+  return tx.user_id === currentUserId;
+});
+
 onMounted(async () => {
   await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -198,7 +206,7 @@ function onKeypadInput(key: string) {
 // 保存逻辑
 async function doSave(): Promise<boolean> {
   const ledgerId = ledgerStore.currentLedger?.id;
-  if (!ledgerId || isSaving.value || !isValid.value) return false;
+  if (!isOwner.value || !ledgerId || isSaving.value || !isValid.value) return false;
 
   saveError.value = "";
   const amt = calcResult.value!;
@@ -304,11 +312,13 @@ function goBack() {
     >
       <template v-if="isEdit" #action>
         <button
+          v-if="isOwner"
           class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
           @click="deleteDialogVisible = true"
         >
           <Trash2 :size="18" class="text-expense" />
         </button>
+        <span v-else class="text-xs text-text-secondary">他人记录</span>
       </template>
     </AppHeader>
 

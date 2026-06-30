@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
+import { useCategoryStore } from "@/stores/category";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
@@ -15,12 +16,14 @@ const router = useRouter();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const tagStore = useTagStore();
+const categoryStore = useCategoryStore();
 
 const selectedAccountId = ref("");
 const selectedAccountName = ref("全部账户");
 const dateFrom = ref("");
 const dateTo = ref("");
 const selectedTagIds = ref<string[]>([]);
+const selectedCategoryIds = ref<string[]>([]);
 
 const accountPickerVisible = ref(false);
 const datePickerVisible = ref(false);
@@ -37,6 +40,7 @@ onMounted(async () => {
   await Promise.all([
     accountStore.fetchAll(ledgerId),
     tagStore.fetchAll(ledgerId),
+    categoryStore.fetchAll(ledgerId),
   ]);
 
   // 从 query 恢复筛选状态
@@ -49,6 +53,9 @@ onMounted(async () => {
   if (route.query.dateTo) dateTo.value = route.query.dateTo as string;
   if (route.query.tags) {
     selectedTagIds.value = (route.query.tags as string).split(",").filter(Boolean);
+  }
+  if (route.query.categories) {
+    selectedCategoryIds.value = (route.query.categories as string).split(",").filter(Boolean);
   }
 });
 
@@ -73,12 +80,22 @@ function toggleTag(tagId: string) {
   }
 }
 
+function toggleCategory(catId: string) {
+  const idx = selectedCategoryIds.value.indexOf(catId);
+  if (idx >= 0) {
+    selectedCategoryIds.value.splice(idx, 1);
+  } else {
+    selectedCategoryIds.value.push(catId);
+  }
+}
+
 function apply() {
   const query: Record<string, string> = {};
   if (selectedAccountId.value) query.account = selectedAccountId.value;
   if (dateFrom.value) query.dateFrom = dateFrom.value;
   if (dateTo.value) query.dateTo = dateTo.value;
   if (selectedTagIds.value.length > 0) query.tags = selectedTagIds.value.join(",");
+  if (selectedCategoryIds.value.length > 0) query.categories = selectedCategoryIds.value.join(",");
   router.push({ path: "/", query });
 }
 
@@ -88,6 +105,7 @@ function reset() {
   dateFrom.value = "";
   dateTo.value = "";
   selectedTagIds.value = [];
+  selectedCategoryIds.value = [];
 }
 
 function onDateTimeConfirm(value: string) {
@@ -164,6 +182,26 @@ function goBack() {
             {{ selectedTagIds.includes(tag.id) ? '☑' : '☐' }} {{ tag.name }}
           </button>
           <p v-if="tagStore.tags.length === 0" class="text-xs text-text-secondary">暂无标签</p>
+        </div>
+      </div>
+
+      <!-- 分类（多选） -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">📂 分类</label>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="cat in categoryStore.categories"
+            :key="cat.id"
+            class="rounded-full px-3 py-1.5 text-xs transition-colors"
+            :class="selectedCategoryIds.includes(cat.id)
+              ? 'bg-primary text-white'
+              : 'bg-gray-100 text-text-secondary'"
+            @click="toggleCategory(cat.id)"
+          >
+            <span>{{ cat.icon }}</span>
+            {{ cat.name }}
+          </button>
+          <p v-if="categoryStore.categories.length === 0" class="text-xs text-text-secondary">暂无分类</p>
         </div>
       </div>
 

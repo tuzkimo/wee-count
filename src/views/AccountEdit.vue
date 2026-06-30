@@ -13,17 +13,26 @@ import {
 import type { AccountType } from "@/types";
 import { ACCOUNT_CATEGORY, ACCOUNT_TYPE_LABELS } from "@/types";
 import { useAccountStore } from "@/stores/account";
+import { useAuthStore } from "@/stores/auth";
+import { getCurrentUserId } from "@/db/userDb";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 const route = useRoute();
 const router = useRouter();
 const accountStore = useAccountStore();
+const auth = useAuthStore();
 
 const accountId = computed(() => route.params.id as string);
 const account = computed(() =>
   accountStore.accounts.find((a) => a.id === accountId.value)
 );
+
+const isOwner = computed(() => {
+  if (!account.value) return true;
+  const currentUserId = auth.currentLocalUser?.server_user_id || getCurrentUserId();
+  return account.value.owner_id === currentUserId;
+});
 
 const name = ref("");
 const categoryTab = ref<"asset" | "liability">("asset");
@@ -109,11 +118,13 @@ async function handleDelete() {
     >
       <template #action>
         <button
+          v-if="isOwner"
           class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
           @click="deleteDialogVisible = true"
         >
           <Trash2 :size="18" class="text-expense" />
         </button>
+        <span v-else class="text-xs text-text-secondary">他人账户</span>
       </template>
     </AppHeader>
 
@@ -244,7 +255,7 @@ async function handleDelete() {
     <div v-if="account" class="bg-surface border-t border-gray-200 px-4 py-3">
       <button
         class="w-full rounded-xl bg-primary py-3 text-center text-base font-semibold text-white transition-colors hover:bg-primary-dark disabled:opacity-50"
-        :disabled="!name.trim() || saving"
+        :disabled="!name.trim() || saving || !isOwner"
         @click="handleSave"
       >
         {{ saving ? "保存中..." : "保存" }}

@@ -147,6 +147,8 @@ export const useTransactionStore = defineStore("transaction", () => {
       dateFrom?: string;
       dateTo?: string;
       tagIds?: string[];
+      categoryIds?: string[];
+      memberIds?: string[];
     }
   ): Promise<void> {
     _ledgerId = ledgerId;
@@ -179,6 +181,18 @@ export const useTransactionStore = defineStore("transaction", () => {
         sql += " AND t.id IN (SELECT transaction_id FROM transaction_tags WHERE tag_id = ?)";
         params.push(tagId);
       }
+    }
+
+    if (opts?.categoryIds && opts.categoryIds.length > 0) {
+      const placeholders = opts.categoryIds.map(() => "?").join(",");
+      sql += ` AND t.category_id IN (${placeholders})`;
+      params.push(...opts.categoryIds);
+    }
+
+    if (opts?.memberIds && opts.memberIds.length > 0) {
+      const placeholders = opts.memberIds.map(() => "?").join(",");
+      sql += ` AND t.user_id IN (${placeholders})`;
+      params.push(...opts.memberIds);
     }
 
     sql += " GROUP BY t.id ORDER BY t.occurred_at DESC, t.created_at DESC";

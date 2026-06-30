@@ -146,11 +146,13 @@ function buildFetchOpts() {
   const qDateFrom = route.query.dateFrom as string | undefined;
   const qDateTo = route.query.dateTo as string | undefined;
   const qTags = route.query.tags as string | undefined;
+  const qCategories = route.query.categories as string | undefined;
+  const qMembers = route.query.members as string | undefined;
 
   // 首页模式无任何筛选参数时，默认查当月
   let dateFrom = qDateFrom;
   let dateTo = qDateTo;
-  if (!isAccountMode.value && !qDateFrom && !qDateTo && !qTags && !accId) {
+  if (!isAccountMode.value && !qDateFrom && !qDateTo && !qTags && !qCategories && !qMembers && !accId) {
     const now = new Date();
     dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01T00:00`;
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -162,6 +164,8 @@ function buildFetchOpts() {
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     tagIds: qTags ? qTags.split(",").filter(Boolean) : undefined,
+    categoryIds: qCategories ? qCategories.split(",").filter(Boolean) : undefined,
+    memberIds: qMembers ? qMembers.split(",").filter(Boolean) : undefined,
   };
 }
 
@@ -201,6 +205,20 @@ const filterSummary = computed(() => {
     }
   } else {
     parts.push("🏷️ 全部标签");
+  }
+
+  // 分类筛选摘要
+  if (q.categories) {
+    const catIds = (q.categories as string).split(",").filter(Boolean);
+    parts.push(`📂 ${catIds.length}个分类`);
+  } else {
+    parts.push("📂 全部分类");
+  }
+
+  // 成员筛选摘要
+  if (q.members) {
+    const memIds = (q.members as string).split(",").filter(Boolean);
+    parts.push(`👥 ${memIds.length}个成员`);
   }
 
   return parts.join(" · ");
@@ -341,7 +359,9 @@ function goRecord(txId: string) {
             class="flex items-center gap-1 text-lg font-semibold text-text"
             @click.stop="showLedgerSwitcher = !showLedgerSwitcher"
           >
-            {{ ledgerStore.currentLedger?.name || '我的账本' }}
+            {{ ledgerStore.currentLedger?.type === 'team'
+              ? (ledgerStore.currentLedger?.name || '团队') + '的账本'
+              : (ledgerStore.currentLedger?.name || '我的账本') }}
             <ChevronDown
               :size="16"
               class="text-text-secondary transition-transform"
@@ -359,7 +379,7 @@ function goRecord(txId: string) {
               :class="l.id === ledgerStore.currentLedgerId ? 'text-primary font-medium' : 'text-text'"
               @click.stop="switchLedger(l.id)"
             >
-              <span class="truncate">{{ l.name }}</span>
+              <span class="truncate">{{ l.type === 'team' ? l.name + '的账本' : (l.name || '个人账本') }}</span>
               <span class="shrink-0 text-xs text-text-secondary">{{ l.type === 'team' ? '团队' : '个人' }}</span>
             </button>
           </div>
