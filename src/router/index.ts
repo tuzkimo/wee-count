@@ -60,12 +60,6 @@ const router = createRouter({
       meta: { hideTab: true },
     },
     {
-      path: "/register",
-      name: "register",
-      component: () => import("@/views/RegisterPage.vue"),
-      meta: { hideTab: true },
-    },
-    {
       path: "/welcome",
       name: "welcome",
       component: () => import("@/views/WelcomePage.vue"),

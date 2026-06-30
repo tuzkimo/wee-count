@@ -73,6 +73,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(mw.AuthMiddleware(cfg.JWTSecret))
 			r.Get("/me", authH.Me)
+			r.Put("/auth/profile", authH.UpdateProfile)
 			r.Post("/sync", syncH.Sync)
 			r.Post("/teams", teamH.Create)
 			r.Post("/teams/{id}/invite", teamH.Invite)

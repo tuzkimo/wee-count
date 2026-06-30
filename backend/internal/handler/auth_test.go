@@ -29,7 +29,7 @@ func TestRegisterHandler_MissingFields(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", h.Register)
 
-	body, _ := json.Marshal(map[string]string{"email": "test@test.com"})
+	body, _ := json.Marshal(map[string]string{"username": "testuser"})
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -45,7 +45,7 @@ func TestLoginHandler_MissingFields(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/login", h.Login)
 
-	body, _ := json.Marshal(map[string]string{"email": "test@test.com"})
+	body, _ := json.Marshal(map[string]string{"username": "testuser"})
 	req := httptest.NewRequest("POST", "/auth/login", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

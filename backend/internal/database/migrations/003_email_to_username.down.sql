@@ -1,0 +1,4 @@
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_unique;
+ALTER TABLE users DROP COLUMN IF EXISTS username;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);

@@ -25,14 +25,14 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Email == "" || req.Password == "" || req.Nickname == "" {
-		writeError(w, http.StatusBadRequest, "email, password, and nickname are required")
+	if req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
 
 	resp, err := h.svc.Register(r.Context(), req)
-	if errors.Is(err, service.ErrEmailTaken) {
-		writeError(w, http.StatusConflict, "email already registered")
+	if errors.Is(err, service.ErrUsernameTaken) {
+		writeError(w, http.StatusConflict, "username already registered")
 		return
 	}
 	if err != nil {
@@ -49,14 +49,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "email and password are required")
+	if req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
 
 	resp, err := h.svc.Login(r.Context(), req)
 	if errors.Is(err, service.ErrInvalidLogin) {
-		writeError(w, http.StatusUnauthorized, "invalid email or password")
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
 	if err != nil {
@@ -105,4 +105,19 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r.Context())
+	var req model.UpdateProfileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	user, err := h.svc.UpdateProfile(r.Context(), userID, req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
 }

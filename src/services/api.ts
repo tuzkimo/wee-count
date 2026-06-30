@@ -96,8 +96,8 @@ export function isLoggedIn(): boolean {
 
 export interface User {
   id: string
+  username: string
   nickname: string
-  email: string
   avatar_url: string | null
   created_at: string
   updated_at: string
@@ -110,11 +110,11 @@ export interface AuthResponse {
   ledger_id: string
 }
 
-export async function login(email: string, password: string): Promise<AuthResponse> {
+export async function login(username: string, password: string): Promise<AuthResponse> {
   const res = await fetch(`${getBaseUrl()}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ username, password }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
@@ -126,14 +126,14 @@ export async function login(email: string, password: string): Promise<AuthRespon
 }
 
 export async function register(
-  email: string,
+  username: string,
   password: string,
-  nickname: string
+  nickname?: string
 ): Promise<AuthResponse> {
   const res = await fetch(`${getBaseUrl()}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, nickname }),
+    body: JSON.stringify({ username, password, nickname }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
@@ -142,6 +142,22 @@ export async function register(
   const data: AuthResponse = await res.json()
   setTokens(data.access_token, data.refresh_token)
   return data
+}
+
+export interface UpdateProfileRequest {
+  nickname?: string
+  avatar_url?: string | null
+}
+
+export async function updateProfile(data: UpdateProfileRequest): Promise<User> {
+  const res = await apiFetch<User>("/auth/profile", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  })
+  if (!res.ok || !res.data) {
+    throw new Error(res.error || "更新失败")
+  }
+  return res.data
 }
 
 export async function tryRestoreSession(): Promise<User | null> {

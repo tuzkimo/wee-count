@@ -2,7 +2,7 @@
 <template>
   <div class="min-h-screen flex flex-col items-center justify-center px-6 bg-white">
     <div class="w-full max-w-sm">
-      <h1 class="text-2xl font-bold text-center mb-8">配置在线同步</h1>
+      <h1 class="text-2xl font-bold text-center mb-6">配置在线同步</h1>
 
       <!-- API 地址 -->
       <div class="mb-4">
@@ -15,31 +15,47 @@
         />
       </div>
 
-      <p v-if="error" class="text-red-500 text-sm mb-3">{{ error }}</p>
-
-      <!-- 登录已有账号 -->
-      <div class="border-t pt-4 mb-4">
-        <h2 class="text-sm font-medium text-gray-700 mb-3">已有在线账号</h2>
-        <div class="space-y-3">
-          <input v-model="email" type="email" placeholder="邮箱" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
-          <input v-model="loginPassword" type="password" placeholder="密码" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
-          <button :disabled="loginLoading" class="w-full py-3 rounded-xl bg-blue-500 text-white font-medium" @click="handleLogin">
-            {{ loginLoading ? '登录中...' : '登录并同步' }}
-          </button>
-        </div>
+      <!-- Tab 切换 -->
+      <div class="mb-4 flex rounded-lg bg-gray-100 p-0.5">
+        <button
+          class="flex-1 rounded-md py-2 text-sm font-medium transition-colors"
+          :class="activeTab === 'login' ? 'bg-surface text-text shadow-sm' : 'text-text-secondary'"
+          @click="activeTab = 'login'"
+        >登录</button>
+        <button
+          class="flex-1 rounded-md py-2 text-sm font-medium transition-colors"
+          :class="activeTab === 'register' ? 'bg-surface text-text shadow-sm' : 'text-text-secondary'"
+          @click="activeTab = 'register'"
+        >注册</button>
       </div>
 
-      <!-- 注册新账号 -->
-      <div class="border-t pt-4">
-        <h2 class="text-sm font-medium text-gray-700 mb-3">没有账号</h2>
-        <div class="space-y-3">
-          <input v-model="regNickname" type="text" placeholder="昵称" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
-          <input v-model="regEmail" type="email" placeholder="邮箱" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
-          <input v-model="regPassword" type="password" placeholder="密码" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
-          <button :disabled="regLoading" class="w-full py-3 rounded-xl bg-blue-500 text-white font-medium" @click="handleRegister">
-            {{ regLoading ? '注册中...' : '注册并同步' }}
-          </button>
-        </div>
+      <p v-if="error" class="text-red-500 text-sm mb-3">{{ error }}</p>
+
+      <!-- 登录表单 -->
+      <div v-if="activeTab === 'login'" class="space-y-3">
+        <input v-model="loginUsername" type="text" placeholder="用户名" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
+        <input v-model="loginPassword" type="password" placeholder="密码" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
+        <button
+          :disabled="loginLoading || !apiUrl || !loginUsername || !loginPassword"
+          class="w-full py-3 rounded-xl bg-blue-500 text-white font-medium disabled:opacity-50"
+          @click="handleLogin"
+        >
+          {{ loginLoading ? '登录中...' : '登录并同步' }}
+        </button>
+      </div>
+
+      <!-- 注册表单 -->
+      <div v-if="activeTab === 'register'" class="space-y-3">
+        <input v-model="regUsername" type="text" placeholder="用户名" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
+        <input v-model="regPassword" type="password" placeholder="密码" class="w-full px-4 py-3 rounded-xl border border-gray-300" />
+        <p class="text-xs text-gray-400">注册后昵称默认与用户名相同，可在设置中修改</p>
+        <button
+          :disabled="regLoading || !apiUrl || !regUsername || !regPassword"
+          class="w-full py-3 rounded-xl bg-blue-500 text-white font-medium disabled:opacity-50"
+          @click="handleRegister"
+        >
+          {{ regLoading ? '注册中...' : '注册并同步' }}
+        </button>
       </div>
 
       <p class="text-center text-gray-400 text-sm mt-4">
@@ -51,47 +67,48 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import * as api from '@/services/api'
 import { migrateLocalDataToServer, firstFullSync } from '@/services/migration'
 
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-const apiUrl = ref('')
+const activeTab = ref<'login' | 'register'>('login')
+const apiUrl = ref((route.query.apiUrl as string) || '')
 const error = ref('')
 const loginLoading = ref(false)
 const regLoading = ref(false)
 
-const email = ref('')
+const loginUsername = ref('')
 const loginPassword = ref('')
 
-const regNickname = ref('')
-const regEmail = ref('')
+const regUsername = ref('')
 const regPassword = ref('')
+
+async function doAfterBind(resp: api.AuthResponse): Promise<void> {
+  await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
+  await auth.bindOnline(apiUrl.value, resp)
+  router.replace('/')
+  // 后台执行首次同步
+  try { await firstFullSync() } catch (e) {
+    console.warn("[BindSync] firstFullSync failed (non-fatal):", e)
+  }
+}
 
 async function handleLogin(): Promise<void> {
   loginLoading.value = true
   error.value = ''
   try {
     api.setBaseUrl(apiUrl.value)
-    const resp = await api.login(email.value, loginPassword.value)
-    await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
-    await auth.bindOnline(apiUrl.value, resp)
-    router.replace('/')
+    const resp = await api.login(loginUsername.value, loginPassword.value)
+    await doAfterBind(resp)
   } catch (e: unknown) {
-    console.error("BindSync login failed:", e)
     error.value = (e as Error)?.message || '登录失败'
   } finally {
     loginLoading.value = false
-  }
-
-  // 后台执行首次同步，失败不阻塞
-  try {
-    await firstFullSync()
-  } catch (e) {
-    console.warn("[BindSync] firstFullSync failed (non-fatal):", e)
   }
 }
 
@@ -100,22 +117,12 @@ async function handleRegister(): Promise<void> {
   error.value = ''
   try {
     api.setBaseUrl(apiUrl.value)
-    const resp = await api.register(regEmail.value, regPassword.value, regNickname.value)
-    await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
-    await auth.bindOnline(apiUrl.value, resp)
-    router.replace('/')
+    const resp = await api.register(regUsername.value, regPassword.value)
+    await doAfterBind(resp)
   } catch (e: unknown) {
-    console.error("BindSync register failed:", e)
     error.value = (e as Error)?.message || '注册失败'
   } finally {
     regLoading.value = false
-  }
-
-  // 后台执行首次同步，失败不阻塞
-  try {
-    await firstFullSync()
-  } catch (e) {
-    console.warn("[BindSync] firstFullSync failed (non-fatal):", e)
   }
 }
 </script>

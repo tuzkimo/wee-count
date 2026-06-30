@@ -17,10 +17,10 @@ import (
 )
 
 var (
-	ErrEmailTaken   = errors.New("email already registered")
-	ErrInvalidLogin = errors.New("invalid email or password")
-	ErrInvalidToken = errors.New("invalid or expired refresh token")
-	ErrUserNotFound = errors.New("user not found")
+	ErrUsernameTaken = errors.New("username already registered")
+	ErrInvalidLogin  = errors.New("invalid username or password")
+	ErrInvalidToken  = errors.New("invalid or expired refresh token")
+	ErrUserNotFound  = errors.New("user not found")
 )
 
 type AuthService struct {
@@ -33,19 +33,24 @@ func NewAuthService(pool *pgxpool.Pool, jwtSecret string) *AuthService {
 }
 
 func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (*model.AuthResponse, error) {
-	// check duplicate email
+	// check duplicate username
 	var exists bool
-	err := s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", req.Email).Scan(&exists)
+	err := s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)", req.Username).Scan(&exists)
 	if err != nil {
-		return nil, fmt.Errorf("check email: %w", err)
+		return nil, fmt.Errorf("check username: %w", err)
 	}
 	if exists {
-		return nil, ErrEmailTaken
+		return nil, ErrUsernameTaken
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
+	}
+
+	nickname := req.Nickname
+	if nickname == "" {
+		nickname = req.Username
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -59,16 +64,16 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 	now := time.Now().UTC()
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO users (id, nickname, email, password_hash, created_at, updated_at)
+		`INSERT INTO users (id, username, nickname, password_hash, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		userID, req.Nickname, req.Email, string(hash), now, now,
+		userID, req.Username, nickname, string(hash), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
 
 	// 创建账本（含默认分类和账户）
-	ledgerName := req.Nickname + "的账本"
+	ledgerName := nickname + "的账本"
 	if err := CreateLedger(ctx, tx, ledgerID, userID, ledgerName, "personal"); err != nil {
 		return nil, fmt.Errorf("create ledger: %w", err)
 	}
@@ -85,8 +90,8 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 	return &model.AuthResponse{
 		User: model.User{
 			ID:        userID,
-			Nickname:  req.Nickname,
-			Email:     req.Email,
+			Username:  req.Username,
+			Nickname:  nickname,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
@@ -105,9 +110,9 @@ type MeResponse struct {
 func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, error) {
 	var user model.User
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, nickname, email, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
+		`SELECT id, username, nickname, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
 		userID,
-	).Scan(&user.ID, &user.Nickname, &user.Email, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("query user: %w", err)
 	}
@@ -144,9 +149,9 @@ func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, er
 func (s *AuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {
 	var user model.User
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, nickname, email, password_hash, avatar_url, created_at, updated_at
-		 FROM users WHERE email = $1`, req.Email,
-	).Scan(&user.ID, &user.Nickname, &user.Email, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+		`SELECT id, username, nickname, password_hash, avatar_url, created_at, updated_at
+		 FROM users WHERE username = $1`, req.Username,
+	).Scan(&user.ID, &user.Username, &user.Nickname, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrInvalidLogin
 	}
@@ -204,9 +209,9 @@ func (s *AuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*m
 
 	var user model.User
 	err = s.pool.QueryRow(ctx,
-		`SELECT id, nickname, email, avatar_url, created_at, updated_at
+		`SELECT id, username, nickname, avatar_url, created_at, updated_at
 		 FROM users WHERE id = $1`, userID,
-	).Scan(&user.ID, &user.Nickname, &user.Email, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -224,6 +229,33 @@ func (s *AuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*m
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	}, nil
+}
+
+func (s *AuthService) UpdateProfile(ctx context.Context, userID string, req model.UpdateProfileRequest) (*model.User, error) {
+	if req.Nickname != nil {
+		_, err := s.pool.Exec(ctx, "UPDATE users SET nickname = $1, updated_at = $2 WHERE id = $3",
+			*req.Nickname, time.Now().UTC(), userID)
+		if err != nil {
+			return nil, fmt.Errorf("update nickname: %w", err)
+		}
+	}
+	if req.AvatarURL != nil {
+		_, err := s.pool.Exec(ctx, "UPDATE users SET avatar_url = $1, updated_at = $2 WHERE id = $3",
+			*req.AvatarURL, time.Now().UTC(), userID)
+		if err != nil {
+			return nil, fmt.Errorf("update avatar_url: %w", err)
+		}
+	}
+
+	var user model.User
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, username, nickname, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
+		userID,
+	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("query user: %w", err)
+	}
+	return &user, nil
 }
 
 func (s *AuthService) generateTokens(userID string) (string, string, error) {

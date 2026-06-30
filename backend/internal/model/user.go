@@ -5,8 +5,8 @@ import "time"
 
 type User struct {
 	ID           string    `json:"id"`
+	Username     string    `json:"username"`
 	Nickname     string    `json:"nickname"`
-	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"`
 	AvatarURL    *string   `json:"avatar_url"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -14,14 +14,19 @@ type User struct {
 }
 
 type RegisterRequest struct {
-	Email    string `json:"email"`
+	Username string `json:"username"`
 	Password string `json:"password"`
-	Nickname string `json:"nickname"`
+	Nickname string `json:"nickname,omitempty"`
 }
 
 type LoginRequest struct {
-	Email    string `json:"email"`
+	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type UpdateProfileRequest struct {
+	Nickname  *string `json:"nickname,omitempty"`
+	AvatarURL *string `json:"avatar_url,omitempty"`
 }
 
 type AuthResponse struct {
