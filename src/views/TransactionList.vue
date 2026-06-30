@@ -168,6 +168,18 @@ watch(
   }
 );
 
+// 在线同步完成后自动刷新
+watch(
+  () => authStore.syncVersion,
+  async () => {
+    const ledgerId = ledgerStore.currentLedger?.id;
+    if (!ledgerId) return;
+    await accountStore.fetchAll(ledgerId);
+    await tagStore.fetchAll(ledgerId);
+    await transactionStore.fetchAll(ledgerId, buildFetchOpts());
+  }
+);
+
 function buildFetchOpts() {
   const accId = isAccountMode.value ? accountId.value : (route.query.account as string | undefined);
   const qDateFrom = route.query.dateFrom as string | undefined;

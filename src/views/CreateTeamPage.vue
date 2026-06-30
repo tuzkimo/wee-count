@@ -13,6 +13,7 @@ const name = ref("");
 const error = ref("");
 const loading = ref(false);
 const createdCode = ref("");
+const copied = ref(false);
 
 interface CreateTeamData {
   team: { id: string; name: string };
@@ -58,6 +59,8 @@ async function handleCreate(): Promise<void> {
 
 async function handleCopy(): Promise<void> {
   await navigator.clipboard.writeText(createdCode.value);
+  copied.value = true;
+  setTimeout(() => { copied.value = false; }, 1500);
 }
 </script>
 
@@ -82,10 +85,11 @@ async function handleCopy(): Promise<void> {
       </div>
 
       <button
-        class="w-full rounded-lg bg-primary py-3 text-white font-medium"
+        class="w-full rounded-lg py-3 text-white font-medium transition-colors"
+        :class="copied ? 'bg-green-500' : 'bg-primary'"
         @click="handleCopy"
       >
-        复制邀请码
+        {{ copied ? '已复制 ✓' : '复制邀请码' }}
       </button>
       <button
         class="w-full rounded-lg border border-gray-200 bg-surface py-3 text-text font-medium"

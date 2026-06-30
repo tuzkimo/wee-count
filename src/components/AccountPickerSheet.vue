@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { X } from "lucide-vue-next";
+import { X, Plus } from "lucide-vue-next";
 import { useAccountStore } from "@/stores/account";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAuthStore } from "@/stores/auth";
@@ -16,6 +16,7 @@ const emit = defineEmits<{
   close: [];
   select: [account: Account];
   selectAll: [];
+  create: [];
 }>();
 
 const accountStore = useAccountStore();
@@ -93,6 +94,14 @@ function select(acc: Account) {
           <div v-if="availableAccounts.length === 0" class="py-8 text-center text-sm text-text-secondary">
             暂无可用账户
           </div>
+
+          <button
+            class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-gray-300 py-3 text-sm text-text-secondary transition-colors hover:border-primary hover:text-primary"
+            @click="$emit('create')"
+          >
+            <Plus :size="16" />
+            <span>新建账户</span>
+          </button>
         </div>
       </div>
     </Transition>

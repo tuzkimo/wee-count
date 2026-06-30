@@ -107,6 +107,10 @@ export async function performSync(): Promise<void> {
 
   await applyRemoteChanges(res.data.remote_changes);
   setLastSyncedAt(res.data.server_time);
+
+  // 通知 TransactionList 刷新
+  const { useAuthStore } = await import("@/stores/auth");
+  useAuthStore().notifySyncComplete();
 }
 
 /**

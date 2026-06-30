@@ -19,6 +19,7 @@ export const useAuthStore = defineStore("auth", () => {
   const isInitialized = ref(false);
   const isSyncing = ref(false);
   const lastSyncedAt = ref<string | null>(null);
+  const syncVersion = ref(0);
 
   const isAuthenticated = computed(() => mode.value !== 'none');
   const isOnline = computed(() => mode.value === 'online');
@@ -164,6 +165,10 @@ export const useAuthStore = defineStore("auth", () => {
     isInitialized.value = true;
   }
 
+  function notifySyncComplete(): void {
+    syncVersion.value++;
+  }
+
   async function updateProfile(data: { nickname?: string; avatar_url?: string | null }): Promise<void> {
     if (mode.value === 'online') {
       const { updateProfile: apiUpdateProfile } = await import("@/services/api");
@@ -183,6 +188,7 @@ export const useAuthStore = defineStore("auth", () => {
     isInitialized,
     isSyncing,
     lastSyncedAt,
+    syncVersion,
     isAuthenticated,
     isOnline,
     localLogin,
@@ -190,6 +196,7 @@ export const useAuthStore = defineStore("auth", () => {
     bindOnline,
     logout,
     unbindOnline,
+    notifySyncComplete,
     updateProfile,
     init,
   };

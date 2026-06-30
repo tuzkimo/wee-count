@@ -297,6 +297,11 @@ function onDateTimeConfirm(value: string) {
   datePickerVisible.value = false;
 }
 
+function handleCreateAccount(): void {
+  accountPickerVisible.value = false;
+  router.push('/accounts');
+}
+
 function goBack() {
   router.back();
 }
@@ -504,6 +509,7 @@ function goBack() {
       :visible="accountPickerVisible"
       @close="accountPickerVisible = false"
       @select="onAccountSelect"
+      @create="handleCreateAccount"
     />
 
     <!-- 删除确认 -->

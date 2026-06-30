@@ -119,4 +119,8 @@ export async function firstFullSync(): Promise<void> {
     const { setLastSyncedAt } = await import('@/services/sync')
     setLastSyncedAt(resp.data.server_time)
   }
+
+  // 通知 TransactionList 刷新
+  const { useAuthStore } = await import("@/stores/auth");
+  useAuthStore().notifySyncComplete();
 }
