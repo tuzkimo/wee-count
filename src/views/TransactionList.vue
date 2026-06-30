@@ -6,6 +6,9 @@ import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import { useTransactionStore } from "@/stores/transaction";
+import { useAuthStore } from "@/stores/auth";
+import { getCurrentUserId } from "@/db/userDb";
+import { getMemberAliases, type MemberAlias } from "@/db/meta";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import type { Transaction } from "@/types";
@@ -16,6 +19,22 @@ const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const tagStore = useTagStore();
 const transactionStore = useTransactionStore();
+const authStore = useAuthStore();
+
+const memberAliases = ref<MemberAlias[]>([]);
+const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
+
+// 获取用户显示名（别名 > 昵称 > 用户名）
+function getUserDisplayName(userId: string): string {
+  const currentUserId = authStore.currentLocalUser?.server_user_id || getCurrentUserId();
+  if (userId === currentUserId) return "我";
+  const alias = memberAliases.value.find(
+    (a) => a.setter_user_id === currentUserId && a.target_user_id === userId
+  );
+  if (alias) return alias.alias_name;
+  // fallback: 显示 user_id 前 8 位
+  return userId.slice(0, 8);
+}
 
 const filterAccountId = ref<string>("");
 const isLoading = ref(true);
@@ -86,6 +105,11 @@ onMounted(async () => {
   await accountStore.fetchAll(ledgerId);
   await tagStore.fetchAll(ledgerId);
 
+  // 加载成员别名
+  if (isTeamLedger.value) {
+    memberAliases.value = await getMemberAliases();
+  }
+
   // 从 route params 判断模式
   if (isAccountMode.value && accountId.value) {
     filterAccountId.value = accountId.value;
@@ -120,6 +144,9 @@ watch(
     await accountStore.fetchAll(newId);
     await tagStore.fetchAll(newId);
     await transactionStore.fetchAll(newId, buildFetchOpts());
+    if (isTeamLedger.value) {
+      memberAliases.value = await getMemberAliases();
+    }
     isLoading.value = false;
   },
 );
@@ -491,6 +518,9 @@ function goRecord(txId: string) {
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium text-text">{{ getTxCategoryName(tx) }}</p>
                 <p class="text-xs text-text-secondary">{{ getTxDescription(tx) }}</p>
+                <p v-if="isTeamLedger && tx.user_id" class="text-[10px] text-text-secondary">
+                  👤 {{ getUserDisplayName(tx.user_id) }}
+                </p>
                 <p v-if="tx.tags && tx.tags.length > 0" class="mt-0.5 flex gap-1">
                   <span
                     v-for="tag in tx.tags"

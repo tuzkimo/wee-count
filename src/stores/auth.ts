@@ -164,6 +164,18 @@ export const useAuthStore = defineStore("auth", () => {
     isInitialized.value = true;
   }
 
+  async function updateProfile(data: { nickname?: string; avatar_url?: string | null }): Promise<void> {
+    if (mode.value === 'online') {
+      const { updateProfile: apiUpdateProfile } = await import("@/services/api");
+      const updated = await apiUpdateProfile(data);
+      onlineUser.value = updated;
+    }
+    // 本地模式下仅更新 currentLocalUser
+    if (data.nickname && currentLocalUser.value) {
+      currentLocalUser.value = { ...currentLocalUser.value, nickname: data.nickname };
+    }
+  }
+
   return {
     currentLocalUser,
     onlineUser,
@@ -178,6 +190,7 @@ export const useAuthStore = defineStore("auth", () => {
     bindOnline,
     logout,
     unbindOnline,
+    updateProfile,
     init,
   };
 });

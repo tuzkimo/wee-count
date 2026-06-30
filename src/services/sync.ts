@@ -3,12 +3,20 @@ import { apiFetch, hasBaseUrl } from "./api";
 import { getUserDb } from "@/db/userDb";
 import type { Account, Transaction, Category, Tag, Ledger } from "@/types";
 
+export interface MemberAliasPayload {
+  setter_user_id: string;
+  target_user_id: string;
+  alias_name: string;
+  updated_at: string;
+}
+
 export interface SyncPayload {
   ledgers: Ledger[];
   accounts: Account[];
   tags: Tag[];
   categories: Category[];
   transactions: Transaction[];
+  member_aliases: MemberAliasPayload[];
 }
 
 interface SyncRequest {
@@ -28,6 +36,7 @@ let pendingChanges: SyncPayload = {
   tags: [],
   categories: [],
   transactions: [],
+  member_aliases: [],
 };
 
 export function getLastSyncedAt(): string | null {
@@ -56,7 +65,7 @@ export function enqueueSync(changes: Partial<SyncPayload>): void {
 }
 
 function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
-  for (const key of ["ledgers", "accounts", "tags", "categories", "transactions"] as const) {
+  for (const key of ["ledgers", "accounts", "tags", "categories", "transactions", "member_aliases"] as const) {
     const targetArr = target[key] as Array<{ id: string; updated_at: string }>;
     const sourceArr = source[key] as Array<{ id: string; updated_at: string }> | undefined;
     if (!sourceArr) continue;
@@ -80,7 +89,7 @@ export async function performSync(): Promise<void> {
   const lastSyncedAt = getLastSyncedAt() || "1970-01-01T00:00:00Z";
 
   const changes = { ...pendingChanges };
-  pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [] };
+  pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
 
   const res = await apiFetch<SyncResponse>("/sync", {
     method: "POST",
@@ -221,6 +230,27 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
           [tx.id, tagID]
         );
       }
+    }
+  }
+
+  // ponytail: member_aliases stored in meta.db, access via getMetaDb()
+  for (const alias of (remote.member_aliases || [])) {
+    const { getMetaDb } = await import("@/db/meta");
+    const meta = await getMetaDb();
+    const local = await meta.select<{ updated_at: string }[]>(
+      "SELECT updated_at FROM member_aliases WHERE setter_user_id = ? AND target_user_id = ?",
+      [alias.setter_user_id, alias.target_user_id]
+    );
+    if (local.length === 0) {
+      await meta.execute(
+        "INSERT INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at) VALUES (?, ?, ?, ?)",
+        [alias.setter_user_id, alias.target_user_id, alias.alias_name, alias.updated_at]
+      );
+    } else if (alias.updated_at > local[0].updated_at) {
+      await meta.execute(
+        "UPDATE member_aliases SET alias_name = ?, updated_at = ? WHERE setter_user_id = ? AND target_user_id = ?",
+        [alias.alias_name, alias.updated_at, alias.setter_user_id, alias.target_user_id]
+      );
     }
   }
 }

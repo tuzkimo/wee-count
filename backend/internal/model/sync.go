@@ -12,10 +12,18 @@ type SyncResponse struct {
 	RemoteChanges SyncPayload `json:"remote_changes"`
 }
 
+type MemberAlias struct {
+	SetterUserID string    `json:"setter_user_id"`
+	TargetUserID string    `json:"target_user_id"`
+	AliasName    string    `json:"alias_name"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type SyncPayload struct {
-	Ledgers      []Ledger      `json:"ledgers"`
-	Accounts     []Account     `json:"accounts"`
-	Tags         []Tag         `json:"tags"`
-	Categories   []Category    `json:"categories"`
-	Transactions []Transaction `json:"transactions"`
+	Ledgers       []Ledger       `json:"ledgers"`
+	Accounts      []Account      `json:"accounts"`
+	Tags          []Tag          `json:"tags"`
+	Categories    []Category     `json:"categories"`
+	Transactions  []Transaction  `json:"transactions"`
+	MemberAliases []MemberAlias  `json:"member_aliases"`
 }

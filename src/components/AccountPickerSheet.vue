@@ -2,6 +2,9 @@
 import { computed } from "vue";
 import { X } from "lucide-vue-next";
 import { useAccountStore } from "@/stores/account";
+import { useLedgerStore } from "@/stores/ledger";
+import { useAuthStore } from "@/stores/auth";
+import { getCurrentUserId } from "@/db/userDb";
 import type { Account } from "@/types";
 
 defineProps<{
@@ -16,6 +19,17 @@ const emit = defineEmits<{
 }>();
 
 const accountStore = useAccountStore();
+const ledgerStore = useLedgerStore();
+const auth = useAuthStore();
+
+const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
+const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || '');
+
+// ponytail: simple owner display — show "我" for self, owner_id prefix otherwise
+function ownerLabel(ownerId: string): string {
+  if (ownerId === currentUserId.value) return '我';
+  return ownerId.slice(0, 8);
+}
 
 const availableAccounts = computed(() =>
   accountStore.accounts.filter((a) => !a.is_deleted)
@@ -71,6 +85,9 @@ function select(acc: Account) {
               :style="{ backgroundColor: acc.color || '#3b82f6' }"
             />
             <span class="text-text">{{ acc.name }}</span>
+            <span v-if="isTeamLedger && acc.owner_id" class="text-[10px] text-text-secondary">
+              ({{ ownerLabel(acc.owner_id) }})
+            </span>
           </button>
 
           <div v-if="availableAccounts.length === 0" class="py-8 text-center text-sm text-text-secondary">

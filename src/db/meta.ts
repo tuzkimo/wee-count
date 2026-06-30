@@ -24,6 +24,15 @@ async function initMetaTables(): Promise<void> {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS member_aliases (
+      setter_user_id TEXT NOT NULL,
+      target_user_id TEXT NOT NULL,
+      alias_name TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (setter_user_id, target_user_id)
+    )
+  `)
 }
 
 export interface LocalUser {
@@ -83,6 +92,33 @@ export async function updateLocalUserBinding(
     `UPDATE local_users SET api_url = $1, server_user_id = $2, updated_at = datetime('now') WHERE id = $3`,
     [apiUrl, serverUserId, id]
   )
+}
+
+export interface MemberAlias {
+  setter_user_id: string;
+  target_user_id: string;
+  alias_name: string;
+  updated_at: string;
+}
+
+export async function getMemberAliases(): Promise<MemberAlias[]> {
+  const db = await getMetaDb();
+  return db.select<MemberAlias[]>(
+    'SELECT setter_user_id, target_user_id, alias_name, updated_at FROM member_aliases'
+  );
+}
+
+export async function setMemberAlias(
+  setterUserId: string,
+  targetUserId: string,
+  aliasName: string
+): Promise<void> {
+  const db = await getMetaDb();
+  await db.execute(
+    `INSERT OR REPLACE INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at)
+     VALUES ($1, $2, $3, datetime('now'))`,
+    [setterUserId, targetUserId, aliasName]
+  );
 }
 
 export function closeMetaDb(): void {

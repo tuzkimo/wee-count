@@ -138,6 +138,13 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string,
 		}
 	}
 
+	// member_aliases (global, not ledger-scoped)
+	for _, ma := range changes.MemberAliases {
+		if err := s.lwwMergeMemberAlias(ctx, tx, ma); err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit(ctx)
 }
 
@@ -332,6 +339,13 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, 
 	}
 	payload.Transactions = transactions
 
+	// member_aliases (global, not ledger-scoped)
+	aliases, err := s.queryMemberAliases(ctx, since)
+	if err != nil {
+		return payload, err
+	}
+	payload.MemberAliases = aliases
+
 	return payload, nil
 }
 
@@ -445,4 +459,48 @@ func (s *SyncService) queryTransactions(ctx context.Context, ledgerIDs []string,
 		transactions = append(transactions, t)
 	}
 	return transactions, rows.Err()
+}
+
+func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx pgx.Tx, ma model.MemberAlias) error {
+	var remoteUpdatedAt time.Time
+	err := tx.QueryRow(ctx,
+		"SELECT updated_at FROM member_aliases WHERE setter_user_id = $1 AND target_user_id = $2",
+		ma.SetterUserID, ma.TargetUserID,
+	).Scan(&remoteUpdatedAt)
+	if err != nil {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at) VALUES ($1,$2,$3,$4)`,
+			ma.SetterUserID, ma.TargetUserID, ma.AliasName, ma.UpdatedAt,
+		)
+		return err
+	}
+	if !ma.UpdatedAt.After(remoteUpdatedAt) {
+		return nil
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE member_aliases SET alias_name=$1, updated_at=$2 WHERE setter_user_id=$3 AND target_user_id=$4`,
+		ma.AliasName, ma.UpdatedAt, ma.SetterUserID, ma.TargetUserID,
+	)
+	return err
+}
+
+func (s *SyncService) queryMemberAliases(ctx context.Context, since time.Time) ([]model.MemberAlias, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT setter_user_id, target_user_id, alias_name, updated_at FROM member_aliases WHERE updated_at > $1`,
+		since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var aliases []model.MemberAlias
+	for rows.Next() {
+		var ma model.MemberAlias
+		if err := rows.Scan(&ma.SetterUserID, &ma.TargetUserID, &ma.AliasName, &ma.UpdatedAt); err != nil {
+			return nil, err
+		}
+		aliases = append(aliases, ma)
+	}
+	return aliases, rows.Err()
 }
