@@ -103,7 +103,7 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   // 公共页面 (不需要登录)
-  const publicPages = ['/welcome', '/login']
+  const publicPages = ['/welcome', '/login', '/bind-sync']
   if (publicPages.includes(to.path)) return true
 
   // 检查是否有本地用户
@@ -115,18 +115,22 @@ router.beforeEach(async (to) => {
   }
 
   const auth = useAuthStore()
-  if (!auth.isAuthenticated) {
-    // 有用户但未登录 → 跳转登录页
-    return { path: '/login', replace: true }
+
+  // 尝试自动恢复会话
+  await auth.init()
+
+  // 如果 init 已自动恢复会话，直接放行
+  if (auth.isAuthenticated) {
+    // 团队功能需要在线模式
+    const onlineOnlyPages = ['/teams/create', '/teams/join']
+    if (onlineOnlyPages.includes(to.path) && !auth.isOnline) {
+      return { path: '/me', replace: true }
+    }
+    return true
   }
 
-  // 团队功能需要在线模式
-  const onlineOnlyPages = ['/teams/create', '/teams/join']
-  if (onlineOnlyPages.includes(to.path) && !auth.isOnline) {
-    return { path: '/me', replace: true }
-  }
-
-  return true
+  // 有用户但未登录 → 跳转登录页
+  return { path: '/login', replace: true }
 })
 
 export default router;

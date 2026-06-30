@@ -25,6 +25,10 @@ async function handleSync(): Promise<void> {
   }
 }
 
+async function handleUnbindOnline(): Promise<void> {
+  await auth.unbindOnline();
+}
+
 function handleLogout(): void {
   auth.logout();
   router.replace('/login');
@@ -146,6 +150,16 @@ function handleLogout(): void {
             <ChevronRight :size="16" class="text-text-secondary" />
           </button>
         </div>
+      </div>
+
+      <!-- 退出在线同步 (仅在线模式) -->
+      <div v-if="auth.isOnline" class="mt-6 px-4">
+        <button
+          class="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 py-3 text-text-secondary"
+          @click="handleUnbindOnline"
+        >
+          <span>退出在线同步</span>
+        </button>
       </div>
 
       <!-- Logout -->
