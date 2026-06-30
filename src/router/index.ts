@@ -66,6 +66,12 @@ const router = createRouter({
       meta: { hideTab: true },
     },
     {
+      path: "/welcome/local",
+      name: "welcome-local",
+      component: () => import("@/views/LocalSetupPage.vue"),
+      meta: { hideTab: true },
+    },
+    {
       path: "/bind-sync",
       name: "bind-sync",
       component: () => import("@/views/BindSyncPage.vue"),
@@ -97,7 +103,7 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   // 公共页面 (不需要登录)
-  const publicPages = ['/welcome', '/login', '/bind-sync']
+  const publicPages = ['/welcome', '/welcome/local', '/login', '/bind-sync']
   if (publicPages.includes(to.path)) return true
 
   // 检查是否有本地用户

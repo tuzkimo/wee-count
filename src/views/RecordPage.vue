@@ -11,6 +11,7 @@ import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import TagSheet from "@/components/TagSheet.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
+import AccountCreateSheet from "@/components/AccountCreateSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
 import CategorySheet from "@/components/CategorySheet.vue";
@@ -43,6 +44,7 @@ const selectedTagIds = ref<string[]>([]);
 const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
 const accountPickerVisible = ref(false);
+const accountCreateSheetVisible = ref(false);
 const accountPickerTarget = ref<"from" | "to">("from");
 const categorySheetVisible = ref(false);
 const saveError = ref("");
@@ -299,7 +301,22 @@ function onDateTimeConfirm(value: string) {
 
 function handleCreateAccount(): void {
   accountPickerVisible.value = false;
-  router.push('/accounts');
+  accountCreateSheetVisible.value = true;
+}
+
+function onAccountCreated(accountId: string) {
+  accountCreateSheetVisible.value = false;
+  // 刷新账户列表后自动选中新账户
+  const ledgerId = ledgerStore.currentLedger?.id;
+  if (ledgerId) {
+    accountStore.fetchAll(ledgerId).then(() => {
+      if (accountPickerTarget.value === "from") {
+        fromAccountId.value = accountId;
+      } else {
+        toAccountId.value = accountId;
+      }
+    });
+  }
 }
 
 function goBack() {
@@ -510,6 +527,13 @@ function goBack() {
       @close="accountPickerVisible = false"
       @select="onAccountSelect"
       @create="handleCreateAccount"
+    />
+
+    <!-- 新建账户 Sheet -->
+    <AccountCreateSheet
+      :visible="accountCreateSheetVisible"
+      @close="accountCreateSheetVisible = false"
+      @created="onAccountCreated"
     />
 
     <!-- 删除确认 -->
