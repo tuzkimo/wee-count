@@ -8,9 +8,7 @@ export async function migrateLocalDataToServer(
   serverUserId: string
 ): Promise<void> {
   const db = getUserDb()
-  if (!db) throw new Error('User DB not opened')
-
-  // 替换本地 ledger_id 为服务端 ID。
+  if (!db) return // ponytail: no local session, nothing to migrate
   // 外键约束要求先有父行再改子行，因此用"插入新行 → 更新子表 → 删除旧行"三步走
   const oldRows = await db.select<{ id: string; name: string; type: string; owner_id: string; team_id: string | null; created_at: string; updated_at: string; is_deleted: number }[]>(
     'SELECT * FROM ledgers WHERE is_deleted = 0 LIMIT 1'
@@ -60,9 +58,7 @@ export async function migrateLocalDataToServer(
 // 首次全量上传
 export async function firstFullSync(): Promise<void> {
   const db = getUserDb()
-  if (!db) throw new Error('User DB not opened')
-
-  // 拉取所有本地数据
+  if (!db) return // ponytail: no local session, nothing to sync
   const rawLedgers = await db.select<Record<string, unknown>[]>('SELECT * FROM ledgers WHERE is_deleted = 0')
   const rawAccounts = await db.select<Record<string, unknown>[]>('SELECT * FROM accounts WHERE is_deleted = 0')
   const rawCategories = await db.select<Record<string, unknown>[]>('SELECT * FROM categories WHERE is_deleted = 0')

@@ -13,7 +13,7 @@ export function getUserDb(): Database | null {
   return userDb
 }
 
-export async function openUserDb(userId: string): Promise<Database> {
+export async function openUserDb(userId: string, nickname?: string): Promise<Database> {
   if (userDb && currentUserId === userId) {
     return userDb
   }
@@ -24,7 +24,7 @@ export async function openUserDb(userId: string): Promise<Database> {
   await initUserTables(db)
 
   // 确保默认数据存在
-  await ensureUserDefaults(db, userId)
+  await ensureUserDefaults(db, userId, nickname)
 
   userDb = db
   currentUserId = userId
@@ -149,7 +149,7 @@ async function migrateUserTables(db: Database): Promise<void> {
   }
 }
 
-async function ensureUserDefaults(db: Database, userId: string): Promise<void> {
+async function ensureUserDefaults(db: Database, userId: string, nickname?: string): Promise<void> {
   // 检查是否已有账本
   const ledgers = await db.select<{ count: number }[]>(
     'SELECT COUNT(*) as count FROM ledgers'
@@ -159,12 +159,12 @@ async function ensureUserDefaults(db: Database, userId: string): Promise<void> {
 
   const ledgerId = crypto.randomUUID()
   const now = new Date().toISOString()
+  const ledgerName = nickname ? `${nickname}的账本` : '我的账本'
 
-  // 创建默认个人账本
   await db.execute(
     `INSERT INTO ledgers (id, name, type, owner_id, created_at, updated_at)
      VALUES ($1, $2, 'personal', $3, $4, $5)`,
-    [ledgerId, '个人账本', userId, now, now]
+    [ledgerId, ledgerName, userId, now, now]
   )
 }
 

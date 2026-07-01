@@ -34,7 +34,7 @@ export const useAuthStore = defineStore("auth", () => {
     if (!valid) return false;
 
     // 打开用户 db
-    await openUserDb(user.id);
+    await openUserDb(user.id, user.nickname);
     currentLocalUser.value = user;
     mode.value = 'local';
     localStorage.setItem("current_user_id", user.id);
@@ -60,7 +60,7 @@ export const useAuthStore = defineStore("auth", () => {
     const id = crypto.randomUUID();
     const hash = await hashPassword(password);
     await createLocalUser(id, nickname, hash);
-    await openUserDb(id);
+    await openUserDb(id, nickname);
     currentLocalUser.value = {
       id,
       nickname,
@@ -148,7 +148,7 @@ export const useAuthStore = defineStore("auth", () => {
     }
 
     // 打开用户 db
-    await openUserDb(user.id);
+    await openUserDb(user.id, user.nickname);
     currentLocalUser.value = user;
     mode.value = 'local';
 

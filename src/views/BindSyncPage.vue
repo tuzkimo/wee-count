@@ -88,7 +88,11 @@ const loginPassword = ref('')
 const regUsername = ref('')
 const regPassword = ref('')
 
-async function doAfterBind(resp: api.AuthResponse): Promise<void> {
+async function doAfterBind(resp: api.AuthResponse, password: string): Promise<void> {
+  // 无本地账户时（如从 WelcomePage 直达），先创建本地账户
+  if (!auth.currentLocalUser) {
+    await auth.createLocalAccount(resp.user.username, password)
+  }
   await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
   await auth.bindOnline(apiUrl.value, resp)
   router.replace('/')
@@ -104,7 +108,7 @@ async function handleLogin(): Promise<void> {
   try {
     api.setBaseUrl(apiUrl.value)
     const resp = await api.login(loginUsername.value, loginPassword.value)
-    await doAfterBind(resp)
+    await doAfterBind(resp, loginPassword.value)
   } catch (e: unknown) {
     error.value = (e as Error)?.message || '登录失败'
   } finally {
@@ -118,7 +122,7 @@ async function handleRegister(): Promise<void> {
   try {
     api.setBaseUrl(apiUrl.value)
     const resp = await api.register(regUsername.value, regPassword.value)
-    await doAfterBind(resp)
+    await doAfterBind(resp, regPassword.value)
   } catch (e: unknown) {
     error.value = (e as Error)?.message || '注册失败'
   } finally {
