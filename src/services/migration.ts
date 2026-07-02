@@ -47,8 +47,9 @@ export async function migrateLocalDataToServer(
   // 3. 删除旧账本行（已经没有子行引用它）
   await db.execute('DELETE FROM ledgers WHERE id = $1', [oldLedgerId])
 
-  // 4. 更新 accounts.owner_id 和 transactions.user_id 为服务端用户 ID
+  // 4. 更新所有 owner_id / user_id 为服务端用户 ID
   await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
+  await db.execute('UPDATE categories SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
   await db.execute(
     'UPDATE transactions SET user_id = $1 WHERE user_id = $2',
     [serverUserId, oldOwnerId]

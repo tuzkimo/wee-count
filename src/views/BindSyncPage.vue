@@ -89,7 +89,9 @@ const regUsername = ref('')
 const regPassword = ref('')
 
 async function doAfterBind(resp: api.AuthResponse, password: string): Promise<void> {
-  // 无本地账户时（如从 WelcomePage 直达），先创建本地账户
+  // 确保已初始化会话（处理从 WelcomePage 直达时 currentLocalUser 为 null 的情况）
+  await auth.init()
+  // 无本地账户时（如首次使用），先创建本地账户
   if (!auth.currentLocalUser) {
     await auth.createLocalAccount(resp.user.username, password)
   }

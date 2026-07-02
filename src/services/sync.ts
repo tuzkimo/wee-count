@@ -86,7 +86,14 @@ function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
  * Execute sync: send local changes to server, receive and merge remote changes
  */
 export async function performSync(): Promise<void> {
-  const lastSyncedAt = getLastSyncedAt() || "1970-01-01T00:00:00Z";
+  const lastSyncedAt = getLastSyncedAt();
+
+  // 从未同步成功过，做全量上传
+  if (!lastSyncedAt) {
+    const { firstFullSync } = await import('./migration')
+    try { await firstFullSync() } catch (e) { console.warn('[sync] firstFullSync failed:', e) }
+    return
+  }
 
   const changes = { ...pendingChanges };
   pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
