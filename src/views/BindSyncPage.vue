@@ -91,18 +91,29 @@ const regPassword = ref('')
 async function doAfterBind(resp: api.AuthResponse, password: string): Promise<void> {
   // 确保已初始化会话（处理从 WelcomePage 直达时 currentLocalUser 为 null 的情况）
   await auth.init()
-  // 无本地账户时（如首次使用），先创建本地账户
+  const hadLocalUser = !!auth.currentLocalUser
+  // 无本地账户时（如登录已有账号），用服务端 profile 创建本地账户
   if (!auth.currentLocalUser) {
-    await auth.createLocalAccount(resp.user.username, password)
+    await auth.createLocalAccount(resp.user.nickname || resp.user.username, password)
   }
   await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
   await auth.bindOnline(apiUrl.value, resp)
-  // 将本地 profile（昵称、头像）同步到服务端
-  const localNickname = auth.currentLocalUser?.nickname
-  const localAvatar = auth.currentLocalUser?.avatar_url
-  if ((localNickname && localNickname !== resp.user.nickname) || localAvatar) {
-    try { await auth.updateProfile({ nickname: localNickname, avatar_url: localAvatar }) } catch (e) {
-      console.warn('[BindSync] profile sync failed:', e)
+  // 同步 profile：已有本地用户时推送到服务端，否则从服务端拉取
+  if (hadLocalUser) {
+    const localNickname = auth.currentLocalUser?.nickname
+    const localAvatar = auth.currentLocalUser?.avatar_url
+    if ((localNickname && localNickname !== resp.user.nickname) || localAvatar) {
+      try { await auth.updateProfile({ nickname: localNickname, avatar_url: localAvatar }) } catch (e) {
+        console.warn('[BindSync] profile sync failed:', e)
+      }
+    }
+  } else if (auth.currentLocalUser) {
+    // 登录场景：将服务端存储的 profile 写入本地
+    if (resp.user.avatar_url || resp.user.nickname !== resp.user.username) {
+      const { updateLocalUserProfile } = await import('@/db/meta')
+      const nickname = resp.user.nickname || resp.user.username
+      await updateLocalUserProfile(auth.currentLocalUser.id, nickname, resp.user.avatar_url || null)
+      auth.currentLocalUser = { ...auth.currentLocalUser, nickname, avatar_url: resp.user.avatar_url || null }
     }
   }
   router.replace('/')
