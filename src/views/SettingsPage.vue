@@ -5,8 +5,12 @@ import { useAuthStore } from "@/stores/auth";
 
 const auth = useAuthStore();
 
+const currentAvatar = computed(() =>
+  auth.onlineUser?.avatar_url || auth.currentLocalUser?.avatar_url || ""
+);
+
 const nickname = ref(auth.currentLocalUser?.nickname || "");
-const selectedEmoji = ref(auth.onlineUser?.avatar_url || "");
+const selectedEmoji = ref(currentAvatar.value);
 
 // emoji 头像选项
 const avatarOptions = ["😀", "🐱", "🐶", "🦊", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦", "🐤", "🦄", "🐌", "🐛", "🦋"];
@@ -33,7 +37,7 @@ async function handleSave(): Promise<void> {
 
 const hasChanges = computed(() =>
   nickname.value.trim() !== (auth.currentLocalUser?.nickname || "") ||
-  selectedEmoji.value !== (auth.onlineUser?.avatar_url || "")
+  selectedEmoji.value !== currentAvatar.value
 );
 </script>
 

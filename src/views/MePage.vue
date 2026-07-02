@@ -66,7 +66,8 @@ function handleLogout(): void {
       <!-- User info -->
       <div class="flex items-center gap-3 bg-surface px-4 py-4">
         <div class="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-lg text-white">
-          {{ auth.currentLocalUser?.nickname?.charAt(0) || "?" }}
+          <span v-if="auth.currentLocalUser?.avatar_url">{{ auth.currentLocalUser.avatar_url }}</span>
+          <span v-else>{{ auth.currentLocalUser?.nickname?.charAt(0) || "?" }}</span>
         </div>
         <div class="flex-1">
           <p class="font-medium text-text">{{ auth.currentLocalUser?.nickname }}</p>

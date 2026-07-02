@@ -20,10 +20,16 @@ async function initMetaTables(): Promise<void> {
       password_hash TEXT NOT NULL,
       api_url TEXT,
       server_user_id TEXT,
+      avatar_url TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `)
+  // 迁移：旧表补充 avatar_url 列
+  const info = await db.select<{ name: string }[]>("PRAGMA table_info(local_users)")
+  if (!info.some(col => col.name === 'avatar_url')) {
+    await db.execute("ALTER TABLE local_users ADD COLUMN avatar_url TEXT")
+  }
   await db.execute(`
     CREATE TABLE IF NOT EXISTS member_aliases (
       setter_user_id TEXT NOT NULL,
@@ -41,21 +47,34 @@ export interface LocalUser {
   password_hash: string
   api_url: string | null
   server_user_id: string | null
+  avatar_url: string | null
   created_at: string
   updated_at: string
+}
+
+export async function updateLocalUserProfile(
+  id: string,
+  nickname: string,
+  avatarUrl: string | null
+): Promise<void> {
+  const db = await getMetaDb()
+  await db.execute(
+    `UPDATE local_users SET nickname = $1, avatar_url = $2, updated_at = datetime('now') WHERE id = $3`,
+    [nickname, avatarUrl, id]
+  )
 }
 
 export async function getLocalUsers(): Promise<LocalUser[]> {
   const db = await getMetaDb()
   return db.select<LocalUser[]>(
-    'SELECT id, nickname, password_hash, api_url, server_user_id, created_at, updated_at FROM local_users ORDER BY created_at ASC'
+    'SELECT id, nickname, password_hash, api_url, server_user_id, avatar_url, created_at, updated_at FROM local_users ORDER BY created_at ASC'
   )
 }
 
 export async function getLocalUser(id: string): Promise<LocalUser | null> {
   const db = await getMetaDb()
   const rows = await db.select<LocalUser[]>(
-    'SELECT id, nickname, password_hash, api_url, server_user_id, created_at, updated_at FROM local_users WHERE id = $1',
+    'SELECT id, nickname, password_hash, api_url, server_user_id, avatar_url, created_at, updated_at FROM local_users WHERE id = $1',
     [id]
   )
   return rows.length > 0 ? rows[0] : null
@@ -64,7 +83,7 @@ export async function getLocalUser(id: string): Promise<LocalUser | null> {
 export async function getLocalUserByNickname(nickname: string): Promise<LocalUser | null> {
   const db = await getMetaDb()
   const rows = await db.select<LocalUser[]>(
-    'SELECT id, nickname, password_hash, api_url, server_user_id, created_at, updated_at FROM local_users WHERE nickname = $1',
+    'SELECT id, nickname, password_hash, api_url, server_user_id, avatar_url, created_at, updated_at FROM local_users WHERE nickname = $1',
     [nickname]
   )
   return rows.length > 0 ? rows[0] : null

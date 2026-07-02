@@ -5,6 +5,7 @@ import {
   getLocalUserByNickname,
   createLocalUser,
   updateLocalUserBinding,
+  updateLocalUserProfile,
   type LocalUser,
 } from "@/db/meta";
 import { openUserDb, closeUserDb } from "@/db/userDb";
@@ -67,6 +68,7 @@ export const useAuthStore = defineStore("auth", () => {
       password_hash: hash,
       api_url: null,
       server_user_id: null,
+      avatar_url: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -170,14 +172,22 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   async function updateProfile(data: { nickname?: string; avatar_url?: string | null }): Promise<void> {
+    // 在线模式：先同步到服务端
     if (mode.value === 'online') {
       const { updateProfile: apiUpdateProfile } = await import("@/services/api");
       const updated = await apiUpdateProfile(data);
       onlineUser.value = updated;
     }
-    // 本地模式下仅更新 currentLocalUser
-    if (data.nickname && currentLocalUser.value) {
-      currentLocalUser.value = { ...currentLocalUser.value, nickname: data.nickname };
+    // 更新本地记录（两种模式都要）
+    if (currentLocalUser.value) {
+      const newNickname = data.nickname ?? currentLocalUser.value.nickname
+      const newAvatar = data.avatar_url !== undefined ? data.avatar_url : currentLocalUser.value.avatar_url
+      await updateLocalUserProfile(currentLocalUser.value.id, newNickname, newAvatar)
+      currentLocalUser.value = {
+        ...currentLocalUser.value,
+        nickname: newNickname,
+        avatar_url: newAvatar,
+      }
     }
   }
 

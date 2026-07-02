@@ -97,6 +97,14 @@ async function doAfterBind(resp: api.AuthResponse, password: string): Promise<vo
   }
   await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
   await auth.bindOnline(apiUrl.value, resp)
+  // 将本地 profile（昵称、头像）同步到服务端
+  const localNickname = auth.currentLocalUser?.nickname
+  const localAvatar = auth.currentLocalUser?.avatar_url
+  if ((localNickname && localNickname !== resp.user.nickname) || localAvatar) {
+    try { await auth.updateProfile({ nickname: localNickname, avatar_url: localAvatar }) } catch (e) {
+      console.warn('[BindSync] profile sync failed:', e)
+    }
+  }
   router.replace('/')
   // 后台执行首次同步
   try { await firstFullSync() } catch (e) {
@@ -123,7 +131,7 @@ async function handleRegister(): Promise<void> {
   error.value = ''
   try {
     api.setBaseUrl(apiUrl.value)
-    const resp = await api.register(regUsername.value, regPassword.value)
+    const resp = await api.register(regUsername.value, regPassword.value, auth.currentLocalUser?.nickname)
     await doAfterBind(resp, regPassword.value)
   } catch (e: unknown) {
     error.value = (e as Error)?.message || '注册失败'
