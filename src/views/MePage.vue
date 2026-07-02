@@ -64,7 +64,10 @@ function handleLogout(): void {
     <!-- Logged in -->
     <div v-else class="flex flex-1 flex-col">
       <!-- User info -->
-      <div class="flex items-center gap-3 bg-surface px-4 py-4">
+      <div
+        class="flex items-center gap-3 bg-surface px-4 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
+        @click="router.push('/profile')"
+      >
         <div class="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-lg text-white">
           <span v-if="auth.currentLocalUser?.avatar_url">{{ auth.currentLocalUser.avatar_url }}</span>
           <span v-else>{{ auth.currentLocalUser?.nickname?.charAt(0) || "?" }}</span>
@@ -75,6 +78,7 @@ function handleLogout(): void {
             {{ auth.isOnline ? '在线模式' : '本地模式' }}
           </p>
         </div>
+        <ChevronRight :size="16" class="text-text-secondary" />
       </div>
 
       <!-- Sync binding status -->

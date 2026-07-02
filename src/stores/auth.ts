@@ -8,7 +8,7 @@ import {
   updateLocalUserProfile,
   type LocalUser,
 } from "@/db/meta";
-import { openUserDb, closeUserDb } from "@/db/userDb";
+import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
 import * as api from "@/services/api";
 
 export type AuthMode = 'none' | 'local' | 'online'
@@ -180,13 +180,27 @@ export const useAuthStore = defineStore("auth", () => {
     }
     // 更新本地记录（两种模式都要）
     if (currentLocalUser.value) {
-      const newNickname = data.nickname ?? currentLocalUser.value.nickname
+      const oldNickname = currentLocalUser.value.nickname
+      const newNickname = data.nickname ?? oldNickname
       const newAvatar = data.avatar_url !== undefined ? data.avatar_url : currentLocalUser.value.avatar_url
       await updateLocalUserProfile(currentLocalUser.value.id, newNickname, newAvatar)
       currentLocalUser.value = {
         ...currentLocalUser.value,
         nickname: newNickname,
         avatar_url: newAvatar,
+      }
+      // 昵称变更时同步更新个人账本名称
+      if (data.nickname && data.nickname !== oldNickname) {
+        const db = getUserDb()
+        if (db) {
+          const oldName = `${oldNickname}的账本`
+          const newName = `${data.nickname}的账本`
+          const now = new Date().toISOString()
+          await db.execute(
+            "UPDATE ledgers SET name = $1, updated_at = $2 WHERE name = $3 AND type = 'personal'",
+            [newName, now, oldName]
+          )
+        }
       }
     }
   }

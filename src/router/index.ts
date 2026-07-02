@@ -95,6 +95,12 @@ const router = createRouter({
       redirect: "/",
     },
     {
+      path: "/profile",
+      name: "profile",
+      component: () => import("@/views/ProfilePage.vue"),
+      meta: { hideTab: true },
+    },
+    {
       path: "/settings",
       component: () => import("@/views/SettingsPage.vue"),
     },
