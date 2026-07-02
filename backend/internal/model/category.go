@@ -6,6 +6,7 @@ import "time"
 type Category struct {
 	ID        string    `json:"id"`
 	LedgerID  string    `json:"ledger_id"`
+	OwnerID   string    `json:"owner_id"`
 	Name      string    `json:"name"`
 	Type      string    `json:"type"`
 	Icon      *string   `json:"icon"`

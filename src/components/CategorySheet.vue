@@ -15,12 +15,15 @@ const categoryStore = useCategoryStore();
 const ledgerStore = useLedgerStore();
 const auth = useAuthStore();
 
-const canManage = computed(() => {
+const currentUserId = computed(() =>
+  auth.currentLocalUser?.server_user_id || getCurrentUserId(),
+);
+
+function canEdit(category: Category): boolean {
   const ledger = ledgerStore.currentLedger;
   if (!ledger || ledger.type !== 'team') return true;
-  const currentUserId = auth.currentLocalUser?.server_user_id || getCurrentUserId();
-  return ledger.owner_id === currentUserId;
-});
+  return category.owner_id === currentUserId.value;
+}
 
 // ---- emoji 库 ----
 const emojiGroups: Record<string, { keywords: string[]; emojis: string[] }> = {
@@ -263,14 +266,14 @@ async function handleSubmit() {
               <span class="text-lg">{{ cat.icon || "📁" }}</span>
               <span class="flex-1 text-sm text-text">{{ cat.name }}</span>
               <button
-                v-if="canManage"
+                v-if="canEdit(cat)"
                 class="rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-gray-200"
                 @click="openEdit(cat)"
               >
                 编辑
               </button>
               <button
-                v-if="canManage"
+                v-if="canEdit(cat)"
                 class="rounded px-2 py-1 text-xs text-expense transition-colors hover:bg-expense/10"
                 @click="handleDelete(cat)"
               >
@@ -281,7 +284,6 @@ async function handleSubmit() {
 
           <!-- 底部新建按钮 -->
           <button
-            v-if="canManage"
             class="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-semibold text-white transition-colors"
             :class="listTab === 'expense' ? 'bg-expense hover:bg-expense/90' : 'bg-income hover:bg-income/90'"
             @click="openNew(listTab)"

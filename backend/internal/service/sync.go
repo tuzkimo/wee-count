@@ -236,8 +236,8 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx pgx.Tx, c model.C
 		}
 		// 无重复，正常插入
 		_, err = tx.Exec(ctx,
-			`INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-			c.ID, c.LedgerID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
+			`INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			c.ID, c.LedgerID, c.OwnerID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
 		)
 		return err
 	}
@@ -414,7 +414,7 @@ func (s *SyncService) queryTags(ctx context.Context, ledgerIDs []string, since t
 
 func (s *SyncService) queryCategories(ctx context.Context, since time.Time, ledgerIDs []string) ([]model.Category, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE updated_at > $1 AND ledger_id = ANY($2)`,
+		`SELECT id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE updated_at > $1 AND ledger_id = ANY($2)`,
 		since, ledgerIDs,
 	)
 	if err != nil {
@@ -425,7 +425,7 @@ func (s *SyncService) queryCategories(ctx context.Context, since time.Time, ledg
 	var categories []model.Category
 	for rows.Next() {
 		var c model.Category
-		if err := rows.Scan(&c.ID, &c.LedgerID, &c.Name, &c.Type, &c.Icon, &c.SortOrder, &c.UpdatedAt, &c.IsDeleted); err != nil {
+		if err := rows.Scan(&c.ID, &c.LedgerID, &c.OwnerID, &c.Name, &c.Type, &c.Icon, &c.SortOrder, &c.UpdatedAt, &c.IsDeleted); err != nil {
 			return nil, err
 		}
 		categories = append(categories, c)

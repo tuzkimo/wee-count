@@ -9,6 +9,7 @@ export type TransactionType = "income" | "expense" | "transfer";
 export interface Category {
   id: string;
   ledger_id: string | null;
+  owner_id: string;
   name: string;
   type: CategoryType;
   icon: string | null;

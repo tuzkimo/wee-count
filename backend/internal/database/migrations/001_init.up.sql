@@ -57,6 +57,7 @@ CREATE TABLE accounts (
 CREATE TABLE categories (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     ledger_id UUID REFERENCES ledgers(id),
+    owner_id UUID NOT NULL REFERENCES users(id),
     name VARCHAR(50) NOT NULL,
     type VARCHAR(20) NOT NULL,
     icon VARCHAR(50),

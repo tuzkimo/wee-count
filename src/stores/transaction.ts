@@ -23,6 +23,7 @@ interface TransactionRow {
   category_name: string | null;
   category_type: string | null;
   category_icon: string | null;
+  category_owner_id: string | null;
   category_sort_order: number | null;
   tag_ids: string | null;
   tag_names: string | null;
@@ -54,6 +55,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
     tx.category = {
       id: row.category_id,
       ledger_id: null,
+      owner_id: row.category_owner_id ?? "",
       name: row.category_name,
       type: row.category_type as "income" | "expense",
       icon: row.category_icon,
@@ -110,7 +112,7 @@ const QUERY = `
     t.id, t.ledger_id, t.user_id, t.amount, t.type,
     t.from_account_id, t.to_account_id, t.category_id,
     t.occurred_at, t.created_at, t.updated_at, t.is_deleted,
-    c.name AS category_name, c.type AS category_type, c.icon AS category_icon, c.sort_order AS category_sort_order,
+    c.name AS category_name, c.type AS category_type, c.icon AS category_icon, c.owner_id AS category_owner_id, c.sort_order AS category_sort_order,
     GROUP_CONCAT(DISTINCT tg.tag_id) AS tag_ids,
     GROUP_CONCAT(DISTINCT tags.name) AS tag_names,
     fa.name AS from_account_name, fa.type AS from_account_type, fa.color AS from_account_color,

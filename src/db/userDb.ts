@@ -67,6 +67,7 @@ async function initUserTables(db: Database): Promise<void> {
     CREATE TABLE IF NOT EXISTS categories (
       id TEXT PRIMARY KEY,
       ledger_id TEXT NOT NULL REFERENCES ledgers(id),
+      owner_id TEXT NOT NULL,
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       icon TEXT,

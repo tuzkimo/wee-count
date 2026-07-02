@@ -25,6 +25,7 @@ function makeCategory(overrides: Partial<Category> = {}): Category {
   return {
     id: "cat-1",
     ledger_id: "ledger-1",
+    owner_id: "user-1",
     name: "餐饮",
     type: "expense",
     icon: "🍔",

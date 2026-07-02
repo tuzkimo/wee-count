@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { getUserDb } from "@/db/userDb";
+import { getUserDb, getCurrentUserId } from "@/db/userDb";
+import { useAuthStore } from "@/stores/auth";
 import { enqueueSync } from "@/services/sync";
 import type { Category } from "@/types";
 
@@ -11,7 +12,7 @@ export const useCategoryStore = defineStore("category", () => {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     const rows = await db.select<(Category & { is_deleted: number | boolean })[]>(
-      `SELECT id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted
+      `SELECT id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted
        FROM categories
        WHERE ledger_id = $1 AND is_deleted = 0
        ORDER BY sort_order ASC, name ASC`,
@@ -42,6 +43,8 @@ export const useCategoryStore = defineStore("category", () => {
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const auth = useAuthStore();
+    const ownerId = auth.currentLocalUser?.server_user_id || getCurrentUserId()!;
 
     const result = await db.select<{ max_sort: number | null }[]>(
       "SELECT MAX(sort_order) AS max_sort FROM categories WHERE ledger_id = $1 AND type = $2 AND is_deleted = 0",
@@ -50,9 +53,9 @@ export const useCategoryStore = defineStore("category", () => {
     const sortOrder = (result[0]?.max_sort ?? -1) + 1;
 
     await db.execute(
-      `INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 0)`,
-      [id, ledgerId, name, type, icon, sortOrder, now],
+      `INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)`,
+      [id, ledgerId, ownerId, name, type, icon, sortOrder, now],
     );
 
     await fetchAll(ledgerId);
@@ -60,7 +63,7 @@ export const useCategoryStore = defineStore("category", () => {
       accounts: [],
       tags: [],
       categories: [
-        { id, ledger_id: ledgerId, name, type, icon, sort_order: sortOrder, updated_at: now, is_deleted: false },
+        { id, ledger_id: ledgerId, owner_id: ownerId, name, type, icon, sort_order: sortOrder, updated_at: now, is_deleted: false },
       ],
       transactions: [],
     });

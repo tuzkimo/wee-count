@@ -196,8 +196,8 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
         await db.execute("DELETE FROM categories WHERE id = ?", [dup[0].id]);
       }
       await db.execute(
-        "INSERT INTO categories (id, ledger_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [cat.id, cat.ledger_id, cat.name, cat.type, cat.icon, cat.sort_order, cat.updated_at, cat.is_deleted ? 1 : 0]
+        "INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [cat.id, cat.ledger_id, cat.owner_id, cat.name, cat.type, cat.icon, cat.sort_order, cat.updated_at, cat.is_deleted ? 1 : 0]
       );
     } else if (cat.updated_at > local[0].updated_at) {
       await db.execute(
