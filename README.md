@@ -40,6 +40,7 @@
 - Pinia stores 重构：`getUserDb()` 替代 `getDb()`，`getDb()` 变为同步方法
 - API 层动态 baseUrl（`setBaseUrl()`），支持多服务端切换
 - bcryptjs 本地密码哈希
+- 同步游标按本地用户隔离（`last_synced_at:<user_id>`），避免多用户共用游标导致团队账本里别人的数据被跳过；在线会话恢复后自动后台拉取一次远程变更
 
 ### Phase 4-C：Onboarding 引导流程（已完成）
 - WelcomePage：首次启动创建本地账户（昵称 + 密码）

@@ -1,6 +1,6 @@
 // src/services/sync.ts
 import { apiFetch, hasBaseUrl } from "./api";
-import { getUserDb } from "@/db/userDb";
+import { getUserDb, getCurrentUserId } from "@/db/userDb";
 import type { Account, Transaction, Category, Tag, Ledger } from "@/types";
 
 export interface MemberAliasPayload {
@@ -39,12 +39,20 @@ let pendingChanges: SyncPayload = {
   member_aliases: [],
 };
 
+// 游标按本地用户隔离：每个用户有独立 SQLite（{userId}.db），各自数据进度不同，
+// 不能共享一个 last_synced_at，否则 A 同步推进游标后，B 切回来按新游标增量同步，
+// 会跳过 B 本地从未拉取过的数据（团队账本里别人加的数据就是典型场景）。
+function cursorKey(): string {
+  const uid = getCurrentUserId();
+  return uid ? `last_synced_at:${uid}` : "last_synced_at";
+}
+
 export function getLastSyncedAt(): string | null {
-  return localStorage.getItem("last_synced_at");
+  return localStorage.getItem(cursorKey());
 }
 
 export function setLastSyncedAt(time: string): void {
-  localStorage.setItem("last_synced_at", time);
+  localStorage.setItem(cursorKey(), time);
 }
 
 /**

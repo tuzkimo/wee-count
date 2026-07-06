@@ -12,6 +12,7 @@ import {
 } from "@/db/meta";
 import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
 import * as api from "@/services/api";
+import { performSync } from "@/services/sync";
 import type { Ledger } from "@/types";
 
 export type AuthMode = 'none' | 'local' | 'online'
@@ -51,6 +52,7 @@ export const useAuthStore = defineStore("auth", () => {
           mode.value = 'online';
         }
       }
+      triggerOnlineSync();
       return true;
     }
 
@@ -71,6 +73,7 @@ export const useAuthStore = defineStore("auth", () => {
       onlineUser.value = resp.user;
       mode.value = 'online';
       localStorage.setItem("current_user_id", c.id);
+      triggerOnlineSync();
       return true;
     }
 
@@ -193,10 +196,19 @@ export const useAuthStore = defineStore("auth", () => {
     }
 
     isInitialized.value = true;
+    triggerOnlineSync();
   }
 
   function notifySyncComplete(): void {
     syncVersion.value++;
+  }
+
+  // 在线会话恢复/登录后，后台拉取一次远程变更（团队账本里别人加的数据靠这进来）。
+  // fire-and-forget：不阻塞登录返回；同步完成会 notifySyncComplete() 触发列表刷新。
+  // 必须在 mode='online' 后调用——performSync 依赖 baseUrl 与已恢复的 token。
+  function triggerOnlineSync(): void {
+    if (mode.value !== 'online') return;
+    void performSync().catch(() => { /* performSync 内部已 console.warn，吞掉即可 */ });
   }
 
   async function updateProfile(data: { nickname?: string; avatar_url?: string | null }): Promise<void> {
