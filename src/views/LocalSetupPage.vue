@@ -55,7 +55,7 @@ async function handleCreate(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    await auth.createLocalAccount(nickname.value.trim(), password.value)
+    await auth.createLocalAccount(nickname.value.trim(), nickname.value.trim(), password.value)
     router.replace('/')
   } catch {
     error.value = '创建失败，请重试'

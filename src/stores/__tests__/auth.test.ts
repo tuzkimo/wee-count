@@ -22,9 +22,11 @@ vi.mock("@/db/meta", () => ({
   getMetaDb: vi.fn(),
   getLocalUsers: vi.fn(() => []),
   getLocalUser: vi.fn(),
-  getLocalUserByNickname: vi.fn(() => null),
+  getLocalUserByUsername: vi.fn(() => null),
   createLocalUser: vi.fn(),
   updateLocalUserBinding: vi.fn(),
+  updateLocalUserProfile: vi.fn(),
+  updateLocalUsername: vi.fn(),
   closeMetaDb: vi.fn(),
 }));
 
@@ -52,5 +54,15 @@ describe("useAuthStore", () => {
   it("初始状态 isInitialized 为 false", () => {
     const store = useAuthStore();
     expect(store.isInitialized).toBe(false);
+  });
+
+  it("localLogin 按不可变 username 查询本地用户，而非可变 nickname", async () => {
+    // 回归：在线模式改昵称后 local_users.nickname 漂移，登录若按 nickname 查会查不到。
+    const { getLocalUserByUsername } = await import("@/db/meta");
+    (getLocalUserByUsername as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    const store = useAuthStore();
+    const ok = await store.localLogin("alice", "pw");
+    expect(ok).toBe(false);
+    expect(getLocalUserByUsername).toHaveBeenCalledWith("alice");
   });
 });

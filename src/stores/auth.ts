@@ -2,10 +2,12 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import {
-  getLocalUserByNickname,
+  getLocalUserByUsername,
+  getLocalUsers,
   createLocalUser,
   updateLocalUserBinding,
   updateLocalUserProfile,
+  updateLocalUsername,
   type LocalUser,
 } from "@/db/meta";
 import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
@@ -26,45 +28,70 @@ export const useAuthStore = defineStore("auth", () => {
   const isAuthenticated = computed(() => mode.value !== 'none');
   const isOnline = computed(() => mode.value === 'online');
 
-  // 本地登录
-  async function localLogin(nickname: string, password: string): Promise<boolean> {
-    const user = await getLocalUserByNickname(nickname);
-    if (!user) return false;
+  // 本地登录（按不可变 username 查，与可变 nickname 解耦）
+  async function localLogin(username: string, password: string): Promise<boolean> {
+    const user = await getLocalUserByUsername(username);
+    if (user) {
+      // 验证密码 (bcrypt compare)
+      const valid = await verifyPassword(password, user.password_hash);
+      if (!valid) return false;
 
-    // 验证密码 (bcrypt compare)
-    const valid = await verifyPassword(password, user.password_hash);
-    if (!valid) return false;
+      // 打开用户 db
+      await openUserDb(user.id, user.nickname);
+      currentLocalUser.value = user;
+      mode.value = 'local';
+      localStorage.setItem("current_user_id", user.id);
 
-    // 打开用户 db
-    await openUserDb(user.id, user.nickname);
-    currentLocalUser.value = user;
-    mode.value = 'local';
-    localStorage.setItem("current_user_id", user.id);
-
-    // 如果绑定了服务端，尝试恢复在线会话
-    if (user.server_user_id && user.api_url) {
-      api.setBaseUrl(user.api_url);
-      const restored = await api.tryRestoreSession();
-      if (restored) {
-        onlineUser.value = restored;
-        mode.value = 'online';
+      // 如果绑定了服务端，尝试恢复在线会话
+      if (user.server_user_id && user.api_url) {
+        api.setBaseUrl(user.api_url);
+        const restored = await api.tryRestoreSession();
+        if (restored) {
+          onlineUser.value = restored;
+          mode.value = 'online';
+        }
       }
+      return true;
     }
 
-    return true;
+    // fallback：历史在线账户改过昵称致本地 username 列漂移，按服务端 username/password
+    // 验证，命中即修复本地 username 列（一次性，下次直接命中本地查询）
+    const onlineCandidates = (await getLocalUsers()).filter(u => u.server_user_id && u.api_url);
+    for (const c of onlineCandidates) {
+      api.setBaseUrl(c.api_url!);
+      let resp: api.AuthResponse;
+      try {
+        resp = await api.login(username, password);
+      } catch {
+        continue;
+      }
+      await updateLocalUsername(c.id, username);
+      await openUserDb(c.id, c.nickname);
+      currentLocalUser.value = { ...c, username };
+      onlineUser.value = resp.user;
+      mode.value = 'online';
+      localStorage.setItem("current_user_id", c.id);
+      return true;
+    }
+
+    return false;
   }
 
   // 创建本地账户
+  // username：不可变登录键（在线账户=服务端 username，纯本地账户=初始 nickname）
+  // nickname：可变显示名
   async function createLocalAccount(
+    username: string,
     nickname: string,
     password: string
   ): Promise<string> {
     const id = crypto.randomUUID();
     const hash = await hashPassword(password);
-    await createLocalUser(id, nickname, hash);
+    await createLocalUser(id, username, nickname, hash);
     await openUserDb(id, nickname);
     currentLocalUser.value = {
       id,
+      username,
       nickname,
       password_hash: hash,
       api_url: null,

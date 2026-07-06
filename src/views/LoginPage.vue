@@ -9,7 +9,7 @@
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
           <input
-            v-model="nickname"
+            v-model="username"
             type="text"
             class="w-full px-4 py-3 rounded-xl border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="输入用户名"
@@ -53,19 +53,19 @@ import { useAuthStore } from '@/stores/auth'
 const router = useRouter()
 const auth = useAuthStore()
 
-const nickname = ref('')
+const username = ref('')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
 
-const valid = computed(() => nickname.value.trim().length > 0 && password.value.length > 0)
+const valid = computed(() => username.value.trim().length > 0 && password.value.length > 0)
 
 async function handleLogin(): Promise<void> {
   if (!valid.value) return
   loading.value = true
   error.value = ''
   try {
-    const ok = await auth.localLogin(nickname.value.trim(), password.value)
+    const ok = await auth.localLogin(username.value.trim(), password.value)
     if (!ok) {
       error.value = '用户名或密码错误'
       return

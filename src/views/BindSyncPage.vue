@@ -93,8 +93,9 @@ async function doAfterBind(resp: api.AuthResponse, password: string): Promise<vo
   await auth.init()
   const hadLocalUser = !!auth.currentLocalUser
   // 无本地账户时（如登录已有账号），用服务端 profile 创建本地账户
+  // username 取服务端不可变 username，nickname 取服务端 nickname（可能 ≠ username）
   if (!auth.currentLocalUser) {
-    await auth.createLocalAccount(resp.user.nickname || resp.user.username, password)
+    await auth.createLocalAccount(resp.user.username, resp.user.nickname || resp.user.username, password)
   }
   await migrateLocalDataToServer(resp.ledger_id, resp.user.id)
   await auth.bindOnline(apiUrl.value, resp)
