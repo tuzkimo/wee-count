@@ -127,6 +127,9 @@ async function handleLogin(): Promise<void> {
   loginLoading.value = true
   error.value = ''
   try {
+    // 先恢复本地会话：/bind-sync 属 publicPages，路由守卫不调 init，
+    // 重载后直达此页时 currentLocalUser 为 null，会导致登录拿不到本地昵称
+    await auth.init()
     api.setBaseUrl(apiUrl.value)
     const resp = await api.login(loginUsername.value, loginPassword.value)
     await doAfterBind(resp, loginPassword.value)
@@ -141,6 +144,10 @@ async function handleRegister(): Promise<void> {
   regLoading.value = true
   error.value = ''
   try {
+    // 先恢复本地会话，确保 currentLocalUser?.nickname（修改后的昵称）可用，
+    // 否则重载后直达此页时 currentLocalUser 为 null，register 不带昵称，
+    // 后端会用 username 建账本，同步后覆盖本地「修改后昵称的账本」
+    await auth.init()
     api.setBaseUrl(apiUrl.value)
     const resp = await api.register(regUsername.value, regPassword.value, auth.currentLocalUser?.nickname)
     await doAfterBind(resp, regPassword.value)

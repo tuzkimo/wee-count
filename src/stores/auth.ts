@@ -10,6 +10,7 @@ import {
 } from "@/db/meta";
 import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
 import * as api from "@/services/api";
+import type { Ledger } from "@/types";
 
 export type AuthMode = 'none' | 'local' | 'online'
 
@@ -200,6 +201,18 @@ export const useAuthStore = defineStore("auth", () => {
             "UPDATE ledgers SET name = $1, updated_at = $2 WHERE name = $3 AND type = 'personal'",
             [newName, now, oldName]
           )
+          // 在线模式：把改名的个人账本入队同步，让服务端 ledgers.name 跟随昵称更新，
+          // 否则其他设备只能看到旧昵称的账本名
+          if (mode.value === 'online') {
+            const { enqueueSync } = await import("@/services/sync")
+            const rows = await db.select<(Omit<Ledger, "is_deleted"> & { is_deleted: number })[]>(
+              "SELECT id, name, type, owner_id, team_id, created_at, updated_at, is_deleted FROM ledgers WHERE name = $1 AND type = 'personal'",
+              [newName]
+            )
+            if (rows.length > 0) {
+              enqueueSync({ ledgers: rows.map((r) => ({ ...r, is_deleted: !!r.is_deleted })) })
+            }
+          }
         }
       }
     }
