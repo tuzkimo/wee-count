@@ -12,6 +12,7 @@ type Transaction struct {
 	FromAccountID *string   `json:"from_account_id"`
 	ToAccountID   *string   `json:"to_account_id"`
 	CategoryID    *string   `json:"category_id"`
+	Note          *string   `json:"note"`
 	OccurredAt    time.Time `json:"occurred_at"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`

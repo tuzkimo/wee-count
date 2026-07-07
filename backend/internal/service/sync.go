@@ -256,10 +256,10 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx pgx.Tx, t mode
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM transactions WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
 	if err != nil {
 		_, err = tx.Exec(ctx,
-			`INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, occurred_at, created_at, updated_at, is_deleted)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			`INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, note, occurred_at, created_at, updated_at, is_deleted)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 			t.ID, t.LedgerID, t.UserID, t.Amount, t.Type, t.FromAccountID, t.ToAccountID,
-			t.CategoryID, t.OccurredAt, t.CreatedAt, t.UpdatedAt, t.IsDeleted,
+			t.CategoryID, t.Note, t.OccurredAt, t.CreatedAt, t.UpdatedAt, t.IsDeleted,
 		)
 		if err != nil {
 			return err
@@ -269,8 +269,8 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx pgx.Tx, t mode
 			return nil
 		}
 		_, err = tx.Exec(ctx,
-			`UPDATE transactions SET amount=$1, type=$2, from_account_id=$3, to_account_id=$4, category_id=$5, occurred_at=$6, updated_at=$7, is_deleted=$8 WHERE id=$9`,
-			t.Amount, t.Type, t.FromAccountID, t.ToAccountID, t.CategoryID, t.OccurredAt, t.UpdatedAt, t.IsDeleted, t.ID,
+			`UPDATE transactions SET amount=$1, type=$2, from_account_id=$3, to_account_id=$4, category_id=$5, note=$6, occurred_at=$7, updated_at=$8, is_deleted=$9 WHERE id=$10`,
+			t.Amount, t.Type, t.FromAccountID, t.ToAccountID, t.CategoryID, t.Note, t.OccurredAt, t.UpdatedAt, t.IsDeleted, t.ID,
 		)
 		if err != nil {
 			return err
@@ -435,7 +435,7 @@ func (s *SyncService) queryCategories(ctx context.Context, since time.Time, ledg
 
 func (s *SyncService) queryTransactions(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Transaction, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT t.id, t.ledger_id, t.user_id, t.amount, t.type, t.from_account_id, t.to_account_id, t.category_id, t.occurred_at, t.created_at, t.updated_at, t.is_deleted,
+		`SELECT t.id, t.ledger_id, t.user_id, t.amount, t.type, t.from_account_id, t.to_account_id, t.category_id, t.note, t.occurred_at, t.created_at, t.updated_at, t.is_deleted,
 		 COALESCE(array_agg(tg.tag_id) FILTER (WHERE tg.tag_id IS NOT NULL), '{}') AS tag_ids
 		 FROM transactions t
 		 LEFT JOIN transaction_tags tg ON t.id = tg.transaction_id
@@ -452,7 +452,7 @@ func (s *SyncService) queryTransactions(ctx context.Context, ledgerIDs []string,
 	for rows.Next() {
 		var t model.Transaction
 		var tagIDs []string
-		if err := rows.Scan(&t.ID, &t.LedgerID, &t.UserID, &t.Amount, &t.Type, &t.FromAccountID, &t.ToAccountID, &t.CategoryID, &t.OccurredAt, &t.CreatedAt, &t.UpdatedAt, &t.IsDeleted, &tagIDs); err != nil {
+		if err := rows.Scan(&t.ID, &t.LedgerID, &t.UserID, &t.Amount, &t.Type, &t.FromAccountID, &t.ToAccountID, &t.CategoryID, &t.Note, &t.OccurredAt, &t.CreatedAt, &t.UpdatedAt, &t.IsDeleted, &tagIDs); err != nil {
 			return nil, err
 		}
 		t.TagIDs = tagIDs
