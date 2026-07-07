@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { X, Plus } from "lucide-vue-next";
 import { useAccountStore } from "@/stores/account";
 import { useLedgerStore } from "@/stores/ledger";
-import { useAuthStore } from "@/stores/auth";
-import { getCurrentUserId } from "@/db/userDb";
+import { useMemberInfo } from "@/composables/useMemberInfo";
 import type { Account } from "@/types";
 
 defineProps<{
@@ -21,20 +20,28 @@ const emit = defineEmits<{
 
 const accountStore = useAccountStore();
 const ledgerStore = useLedgerStore();
-const auth = useAuthStore();
 
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
-const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || '');
 
-// ponytail: simple owner display — show "我" for self, owner_id prefix otherwise
-function ownerLabel(ownerId: string): string {
-  if (ownerId === currentUserId.value) return '我';
-  return ownerId.slice(0, 8);
+const { getMember } = useMemberInfo();
+const ownerNames = ref<Record<string, string>>({});
+
+async function loadOwnerName(ownerId: string) {
+  if (!ownerNames.value[ownerId]) {
+    const info = await getMember(ownerId);
+    ownerNames.value[ownerId] = info.displayName;
+  }
 }
 
 const availableAccounts = computed(() =>
   accountStore.accounts.filter((a) => !a.is_deleted)
 );
+
+watch(availableAccounts, (accs) => {
+  for (const a of accs) {
+    if (a.owner_id) loadOwnerName(a.owner_id);
+  }
+}, { immediate: true });
 
 function select(acc: Account) {
   emit("select", acc);
@@ -87,7 +94,7 @@ function select(acc: Account) {
             />
             <span class="text-text">{{ acc.name }}</span>
             <span v-if="isTeamLedger && acc.owner_id" class="text-[10px] text-text-secondary">
-              ({{ ownerLabel(acc.owner_id) }})
+              ({{ ownerNames[acc.owner_id] ?? acc.owner_id.slice(0,8) }})
             </span>
           </button>
 
