@@ -35,6 +35,7 @@ export interface Transaction {
   from_account_id: string | null;
   to_account_id: string | null;
   category_id: string | null;
+  note: string | null;
   occurred_at: string;
   created_at: string;
   updated_at: string;
@@ -103,3 +104,13 @@ export interface User {
   created_at: string;
   updated_at: string;
 }
+
+export interface TeamMember {
+  user_id: string;
+  username: string;
+  nickname: string;
+  avatar_url: string | null;
+  role: string;
+  joined_at: string;
+}
+
