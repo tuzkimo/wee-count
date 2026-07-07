@@ -39,9 +39,9 @@ const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
 const ownerName = ref("");
 
 watch(
-  () => props.account.owner_id,
-  async (oid) => {
-    if (oid && isTeamLedger.value) {
+  () => [props.account.owner_id, isTeamLedger.value] as const,
+  async ([oid, team]) => {
+    if (oid && team) {
       const info = await getMember(oid);
       ownerName.value = info.displayName;
     } else {

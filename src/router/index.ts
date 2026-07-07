@@ -134,7 +134,7 @@ router.beforeEach(async (to) => {
   // 如果 init 已自动恢复会话，直接放行
   if (auth.isAuthenticated) {
     // 团队功能需要在线模式
-    const onlineOnlyPages = ['/teams/create', '/teams/join']
+    const onlineOnlyPages = ['/teams/create', '/teams/join', '/teams/members']
     if (onlineOnlyPages.includes(to.path) && !auth.isOnline) {
       return { path: '/me', replace: true }
     }
