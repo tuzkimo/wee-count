@@ -64,9 +64,17 @@ const defaultCategoryId = computed(() => {
   return cats[0]?.id ?? null;
 });
 
+// 团队账本：仅显示当前用户拥有的账户
+const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
+const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "");
+
 // 可用账户
 const availableAccounts = computed(() =>
-  accountStore.accounts.filter((a) => !a.is_deleted)
+  accountStore.accounts.filter((a) => {
+    if (a.is_deleted) return false;
+    if (isTeamLedger.value && a.owner_id !== currentUserId.value) return false;
+    return true;
+  })
 );
 
 // 表达式求值结果

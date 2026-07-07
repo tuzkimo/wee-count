@@ -3,6 +3,8 @@ import { computed, ref, watch } from "vue";
 import { X, Plus } from "lucide-vue-next";
 import { useAccountStore } from "@/stores/account";
 import { useLedgerStore } from "@/stores/ledger";
+import { useAuthStore } from "@/stores/auth";
+import { getCurrentUserId } from "@/db/userDb";
 import { useMemberInfo } from "@/composables/useMemberInfo";
 import type { Account } from "@/types";
 
@@ -20,8 +22,10 @@ const emit = defineEmits<{
 
 const accountStore = useAccountStore();
 const ledgerStore = useLedgerStore();
+const auth = useAuthStore();
 
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
+const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "");
 
 const { getMember } = useMemberInfo();
 const ownerNames = ref<Record<string, string>>({});
@@ -34,7 +38,11 @@ async function loadOwnerName(ownerId: string) {
 }
 
 const availableAccounts = computed(() =>
-  accountStore.accounts.filter((a) => !a.is_deleted)
+  accountStore.accounts.filter((a) => {
+    if (a.is_deleted) return false;
+    if (isTeamLedger.value && a.owner_id !== currentUserId.value) return false;
+    return true;
+  })
 );
 
 watch(availableAccounts, (accs) => {
