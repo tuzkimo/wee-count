@@ -4,6 +4,8 @@ import { useRouter } from "vue-router";
 import { Plus } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
+import { useAuthStore } from "@/stores/auth";
+import { getCurrentUserId } from "@/db/userDb";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountCard from "@/components/AccountCard.vue";
 import AccountSheet from "@/components/AccountSheet.vue";
@@ -13,6 +15,7 @@ import { ACCOUNT_CATEGORY } from "@/types";
 const router = useRouter();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
+const auth = useAuthStore();
 
 const sheetVisible = ref(false);
 const isLoading = ref(true);
@@ -49,7 +52,7 @@ async function handleSubmit(data: {
   if (!ledgerStore.currentLedger) return;
   await accountStore.add({
     ledger_id: ledgerStore.currentLedger.id,
-    owner_id: ledgerStore.currentLedger.owner_id,
+    owner_id: auth.currentLocalUser?.server_user_id || getCurrentUserId() || "",
     category: ACCOUNT_CATEGORY[data.type],
     ...data,
   });
