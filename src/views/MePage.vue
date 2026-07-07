@@ -5,7 +5,7 @@ import { useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useLedgerStore } from "@/stores/ledger";
 import { performSync, getLastSyncedAt } from "@/services/sync";
-import { ChevronRight, LogOut, Plus, UserPlus } from "lucide-vue-next";
+import { ChevronRight, LogOut, Plus, UserPlus, Users } from "lucide-vue-next";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -142,6 +142,11 @@ function handleLogout(): void {
           <button class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/join')">
             <UserPlus :size="18" class="text-primary" />
             <span class="flex-1 text-left text-text">加入团队</span>
+            <ChevronRight :size="16" class="text-text-secondary" />
+          </button>
+          <button class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/members')">
+            <Users :size="18" class="text-primary" />
+            <span class="flex-1 text-left text-text">成员管理</span>
             <ChevronRight :size="16" class="text-text-secondary" />
           </button>
         </div>
