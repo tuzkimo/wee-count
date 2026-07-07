@@ -5,6 +5,10 @@ import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import { useCategoryStore } from "@/stores/category";
+import { useAuthStore } from "@/stores/auth";
+import { getCurrentUserId, getTeamMembers } from "@/db/userDb";
+import type { TeamMemberRow } from "@/db/userDb";
+import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
@@ -17,6 +21,7 @@ const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const tagStore = useTagStore();
 const categoryStore = useCategoryStore();
+const auth = useAuthStore();
 
 const selectedAccountId = ref("");
 const selectedAccountName = ref("全部账户");
@@ -24,6 +29,10 @@ const dateFrom = ref("");
 const dateTo = ref("");
 const selectedTagIds = ref<string[]>([]);
 const selectedCategoryIds = ref<string[]>([]);
+const selectedMemberIds = ref<string[]>([]);
+const teamMembers = ref<TeamMemberRow[]>([]);
+const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
+const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "");
 
 const accountPickerVisible = ref(false);
 const datePickerVisible = ref(false);
@@ -43,6 +52,19 @@ onMounted(async () => {
     categoryStore.fetchAll(ledgerId),
   ]);
 
+  // 团队账本：拉取并缓存成员
+  if (isTeamLedger.value && ledgerStore.currentLedger?.team_id) {
+    const teamId = ledgerStore.currentLedger.team_id;
+    try {
+      const members = await fetchTeamMembers(teamId);
+      const { upsertTeamMembers } = await import("@/db/userDb");
+      await upsertTeamMembers(teamId, members);
+    } catch (e) {
+      console.warn("[FilterPage] fetchTeamMembers failed:", e);
+    }
+    teamMembers.value = await getTeamMembers(teamId);
+  }
+
   // 从 query 恢复筛选状态
   if (route.query.account) {
     selectedAccountId.value = route.query.account as string;
@@ -56,6 +78,9 @@ onMounted(async () => {
   }
   if (route.query.categories) {
     selectedCategoryIds.value = (route.query.categories as string).split(",").filter(Boolean);
+  }
+  if (route.query.members) {
+    selectedMemberIds.value = (route.query.members as string).split(",").filter(Boolean);
   }
 });
 
@@ -89,6 +114,15 @@ function toggleCategory(catId: string) {
   }
 }
 
+function toggleMember(memberId: string) {
+  const idx = selectedMemberIds.value.indexOf(memberId);
+  if (idx >= 0) {
+    selectedMemberIds.value.splice(idx, 1);
+  } else {
+    selectedMemberIds.value.push(memberId);
+  }
+}
+
 function apply() {
   const query: Record<string, string> = {};
   if (selectedAccountId.value) query.account = selectedAccountId.value;
@@ -96,6 +130,7 @@ function apply() {
   if (dateTo.value) query.dateTo = dateTo.value;
   if (selectedTagIds.value.length > 0) query.tags = selectedTagIds.value.join(",");
   if (selectedCategoryIds.value.length > 0) query.categories = selectedCategoryIds.value.join(",");
+  if (selectedMemberIds.value.length > 0) query.members = selectedMemberIds.value.join(",");
   router.push({ path: "/", query });
 }
 
@@ -106,6 +141,7 @@ function reset() {
   dateTo.value = "";
   selectedTagIds.value = [];
   selectedCategoryIds.value = [];
+  selectedMemberIds.value = [];
 }
 
 function onDateTimeConfirm(value: string) {
@@ -166,25 +202,6 @@ function goBack() {
         </div>
       </div>
 
-      <!-- 标签 -->
-      <div class="mb-4">
-        <label class="mb-1 block text-xs text-text-secondary">🏷️ 标签</label>
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="tag in tagStore.tags"
-            :key="tag.id"
-            class="rounded-full px-3 py-1.5 text-xs transition-colors"
-            :class="selectedTagIds.includes(tag.id)
-              ? 'bg-primary text-white'
-              : 'bg-gray-100 text-text-secondary'"
-            @click="toggleTag(tag.id)"
-          >
-            {{ selectedTagIds.includes(tag.id) ? '☑' : '☐' }} {{ tag.name }}
-          </button>
-          <p v-if="tagStore.tags.length === 0" class="text-xs text-text-secondary">暂无标签</p>
-        </div>
-      </div>
-
       <!-- 分类（多选） -->
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">📂 分类</label>
@@ -202,6 +219,45 @@ function goBack() {
             {{ cat.name }}
           </button>
           <p v-if="categoryStore.categories.length === 0" class="text-xs text-text-secondary">暂无分类</p>
+        </div>
+      </div>
+
+      <!-- 成员（多选，仅团队账本） -->
+      <div v-if="isTeamLedger" class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">👥 成员</label>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="m in teamMembers"
+            :key="m.user_id"
+            class="rounded-full px-3 py-1.5 text-xs transition-colors"
+            :class="selectedMemberIds.includes(m.user_id)
+              ? 'bg-primary text-white'
+              : 'bg-gray-100 text-text-secondary'"
+            @click="toggleMember(m.user_id)"
+          >
+            {{ selectedMemberIds.includes(m.user_id) ? '☑' : '☐' }}
+            {{ m.user_id === currentUserId ? '我' : (m.nickname || m.username || m.user_id.slice(0,8)) }}
+          </button>
+          <p v-if="teamMembers.length === 0" class="text-xs text-text-secondary">暂无成员</p>
+        </div>
+      </div>
+
+      <!-- 标签 -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">🏷️ 标签</label>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="tag in tagStore.tags"
+            :key="tag.id"
+            class="rounded-full px-3 py-1.5 text-xs transition-colors"
+            :class="selectedTagIds.includes(tag.id)
+              ? 'bg-primary text-white'
+              : 'bg-gray-100 text-text-secondary'"
+            @click="toggleTag(tag.id)"
+          >
+            {{ selectedTagIds.includes(tag.id) ? '☑' : '☐' }} {{ tag.name }}
+          </button>
+          <p v-if="tagStore.tags.length === 0" class="text-xs text-text-secondary">暂无标签</p>
         </div>
       </div>
 
