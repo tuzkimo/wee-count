@@ -258,6 +258,24 @@ func (s *AuthService) UpdateProfile(ctx context.Context, userID string, req mode
 	return &user, nil
 }
 
+func (s *AuthService) UpdateAvatar(ctx context.Context, userID string, avatarURL string) (*model.User, error) {
+	_, err := s.pool.Exec(ctx, "UPDATE users SET avatar_url = $1, updated_at = $2 WHERE id = $3",
+		avatarURL, time.Now().UTC(), userID)
+	if err != nil {
+		return nil, fmt.Errorf("update avatar_url: %w", err)
+	}
+
+	var user model.User
+	err = s.pool.QueryRow(ctx,
+		`SELECT id, username, nickname, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
+		userID,
+	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("query user: %w", err)
+	}
+	return &user, nil
+}
+
 func (s *AuthService) generateTokens(userID string) (string, string, error) {
 	now := time.Now().UTC()
 

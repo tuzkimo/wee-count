@@ -11,6 +11,7 @@ type Config struct {
 	RedisURL    string
 	JWTSecret   string
 	Port        string
+	UploadDir   string
 }
 
 func Load() (*Config, error) {
@@ -19,6 +20,7 @@ func Load() (*Config, error) {
 		RedisURL:    getEnv("REDIS_URL", ""),
 		JWTSecret:   getEnv("JWT_SECRET", ""),
 		Port:        getEnv("PORT", "8080"),
+		UploadDir:   getEnv("UPLOAD_DIR", "./uploads"),
 	}
 
 	missing := []string{}
