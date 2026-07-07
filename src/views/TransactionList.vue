@@ -114,6 +114,12 @@ const currentAccount = computed(() => {
   return accountStore.accounts.find((a) => a.id === accountId.value) ?? null;
 });
 
+// 当前账户是否属于当前用户（团队账本中他人账户为只读）
+const isAccountOwner = computed(() => {
+  if (!isAccountMode.value || !currentAccount.value) return true;
+  return currentAccount.value.owner_id === currentUserId.value;
+});
+
 // 使用 store 的 totalIncome / totalExpense
 const totalIncome = computed(() => transactionStore.totalIncome);
 const totalExpense = computed(() => transactionStore.totalExpense);
@@ -411,6 +417,7 @@ function onTxClick(tx: Transaction) {
             <ListChecks :size="18" class="text-text-secondary" />
           </button>
           <button
+            v-if="isAccountOwner"
             class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
             @click="router.push(`/accounts/${accountId}/edit`)"
           >
@@ -601,7 +608,7 @@ function onTxClick(tx: Transaction) {
 
     <!-- FAB（多选模式下隐藏） -->
     <router-link
-      v-if="!isMultiSelectMode"
+      v-if="!isMultiSelectMode && isAccountOwner"
       :to="isAccountMode ? `/record?account=${accountId}` : '/record'"
       class="fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
       style="top: 75%"
