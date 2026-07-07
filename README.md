@@ -72,5 +72,10 @@
 | `/login` | LoginPage | 本地账户登录（用户名+密码） |
 | `/welcome` | WelcomePage | 首次启动创建本地账户 |
 | `/bind-sync` | BindSyncPage | 配置在线同步（API地址+登录/注册） |
+| `/welcome/local` | LocalSetupPage | 本地账户初始化（昵称+密码） |
+| `/teams/create` | CreateTeamPage | 创建团队（仅在线模式，隐藏 Tab） |
+| `/teams/join` | JoinTeamPage | 加入团队（仅在线模式，隐藏 Tab） |
+| `/teams/members` | TeamMembersPage | 团队成员管理：查看成员+改别名（隐藏 Tab） |
+| `/profile` | ProfilePage | 个人资料页（头像上传等，隐藏 Tab） |
 | `/transactions` | → `/` | 旧路由重定向 |
 | `/settings` | SettingsPage | 设置页（开发中） |
