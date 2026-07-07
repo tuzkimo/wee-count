@@ -54,6 +54,11 @@ async function handleCreate(): Promise<void> {
     await ledgerStore.addLedger(res.data.shared_ledger);
   }
   await performSync();
+  // performSync 拉回远程 ledgers 后 store 可能把 currentLedgerId 重置回 rows[0]，
+  // 这里显式切回新团队账本，确保用户落地在新建账本
+  if (res.data?.shared_ledger) {
+    ledgerStore.setCurrentLedger(res.data.shared_ledger.id);
+  }
   createdCode.value = inviteRes.data!.invite_code;
 }
 
