@@ -40,6 +40,7 @@ const toAccountId = ref<string | null>(null);
 const occurredAt = ref("");
 const expression = ref(""); // 表达式原文
 const selectedTagIds = ref<string[]>([]);
+const note = ref("");
 
 const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
@@ -117,6 +118,7 @@ onMounted(async () => {
       occurredAt.value = utcToLocalDatetimeString(tx.occurred_at);
       expression.value = tx.amount.toString();
       selectedTagIds.value = tx.tags?.map((t) => t.id) ?? [];
+      note.value = tx.note ?? "";
     }
   } else {
     // 新增模式：默认当前本地时间
@@ -132,6 +134,7 @@ onMounted(async () => {
     }
     // 默认分类
     categoryId.value = defaultCategoryId.value;
+    note.value = "";
   }
 
   isReady.value = true;
@@ -233,6 +236,7 @@ async function doSave(): Promise<boolean> {
       to_account_id: txType.value === "income" || txType.value === "transfer" ? toAccountId.value : null,
       occurred_at: new Date(occurredAt.value).toISOString(),
       tag_ids: selectedTagIds.value,
+      note: note.value.trim() || null,
     };
 
     if (isEdit.value && editId.value) {
@@ -268,6 +272,7 @@ async function onSaveNext() {
     // 重置表单
     expression.value = "";
     selectedTagIds.value = [];
+    note.value = "";
     categoryId.value = defaultCategoryId.value;
     occurredAt.value = toLocalDatetimeString(new Date());
     // 保留账户和标签
@@ -499,6 +504,18 @@ function goBack() {
             + 添加标签
           </button>
         </div>
+      </div>
+
+      <!-- 7. 备注 -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">备注</label>
+        <input
+          v-model="note"
+          type="text"
+          maxlength="100"
+          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+          placeholder="可选，最多 100 字"
+        />
       </div>
     </div>
 
