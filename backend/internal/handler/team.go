@@ -91,3 +91,13 @@ func (h *TeamHandler) Join(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, resp)
 }
+
+func (h *TeamHandler) Members(w http.ResponseWriter, r *http.Request) {
+	teamID := chi.URLParam(r, "id")
+	members, err := h.svc.ListMembers(r.Context(), teamID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, members)
+}

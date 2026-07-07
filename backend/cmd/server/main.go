@@ -78,6 +78,7 @@ func main() {
 			r.Post("/teams", teamH.Create)
 			r.Post("/teams/{id}/invite", teamH.Invite)
 			r.Post("/teams/join", teamH.Join)
+			r.Get("/teams/{id}/members", teamH.Members)
 		})
 	})
 

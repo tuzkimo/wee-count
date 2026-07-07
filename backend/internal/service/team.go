@@ -179,3 +179,40 @@ func generateInviteCode() (string, error) {
 	}
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
+
+type TeamMember struct {
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Nickname  string    `json:"nickname"`
+	AvatarURL *string   `json:"avatar_url"`
+	Role      string    `json:"role"`
+	JoinedAt  time.Time `json:"joined_at"`
+}
+
+func (s *TeamService) ListMembers(ctx context.Context, teamID string) ([]TeamMember, error) {
+	if teamID == "" {
+		return nil, fmt.Errorf("team id is required")
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT u.id, u.username, u.nickname, u.avatar_url, tm.role, tm.joined_at
+		 FROM team_members tm
+		 JOIN users u ON tm.user_id = u.id
+		 WHERE tm.team_id = $1
+		 ORDER BY tm.joined_at ASC`,
+		teamID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query team members: %w", err)
+	}
+	defer rows.Close()
+
+	var members []TeamMember
+	for rows.Next() {
+		var m TeamMember
+		if err := rows.Scan(&m.UserID, &m.Username, &m.Nickname, &m.AvatarURL, &m.Role, &m.JoinedAt); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
+}
