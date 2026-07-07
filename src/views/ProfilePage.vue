@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
 import { useAuthStore } from "@/stores/auth";
+import * as api from "@/services/api";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -13,6 +14,30 @@ const currentAvatar = computed(() =>
 
 const nickname = ref(auth.currentLocalUser?.nickname || "");
 const selectedEmoji = ref(currentAvatar.value);
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const uploading = ref(false);
+
+function triggerUpload() {
+  fileInput.value?.click();
+}
+
+async function onFileChange(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  uploading.value = true;
+  try {
+    const updated = await api.uploadAvatar(file);
+    selectedEmoji.value = updated.avatar_url || "";
+    await auth.updateProfile({ avatar_url: updated.avatar_url });
+  } catch (err) {
+    console.error("Upload avatar failed:", err);
+  } finally {
+    uploading.value = false;
+    input.value = "";
+  }
+}
 
 // emoji 头像选项
 const avatarOptions = ["😀", "🐱", "🐶", "🦊", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦", "🐤", "🦄", "🐌", "🐛", "🦋"];
@@ -49,6 +74,24 @@ const hasChanges = computed(() =>
     <div class="flex-1 overflow-auto px-4 py-4">
       <!-- 头像 -->
       <label class="mb-2 block text-sm font-medium text-text">头像</label>
+      <div class="mb-3">
+        <button
+          type="button"
+          :disabled="uploading"
+          class="rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text-secondary hover:border-primary hover:text-primary disabled:opacity-50"
+          @click="triggerUpload"
+        >
+          {{ uploading ? '上传中...' : '📷 上传图片头像' }}
+        </button>
+        <input
+          ref="fileInput"
+          type="file"
+          accept="image/*"
+          class="hidden"
+          @change="onFileChange"
+        />
+        <p class="mt-1 text-xs text-text-secondary">或选择下方 emoji：</p>
+      </div>
       <div class="mb-6 flex flex-wrap gap-2">
         <button
           v-for="emoji in avatarOptions"
