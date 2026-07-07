@@ -98,6 +98,7 @@ async function initUserTables(db: Database): Promise<void> {
       from_account_id TEXT REFERENCES accounts(id),
       to_account_id TEXT REFERENCES accounts(id),
       category_id TEXT REFERENCES categories(id),
+      note TEXT,
       occurred_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -110,6 +111,27 @@ async function initUserTables(db: Database): Promise<void> {
       transaction_id TEXT REFERENCES transactions(id) ON DELETE CASCADE,
       tag_id TEXT REFERENCES tags(id) ON DELETE CASCADE,
       PRIMARY KEY (transaction_id, tag_id)
+    )
+  `)
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS team_members (
+      team_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      username TEXT,
+      nickname TEXT,
+      avatar_url TEXT,
+      role TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (team_id, user_id)
+    )
+  `)
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS member_aliases (
+      target_user_id TEXT PRIMARY KEY,
+      alias_name TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `)
 
@@ -148,6 +170,9 @@ async function migrateUserTables(db: Database): Promise<void> {
     await db.execute("ALTER TABLE transactions ADD COLUMN occurred_at TEXT NOT NULL DEFAULT ''")
     await db.execute("UPDATE transactions SET occurred_at = transacted_at WHERE occurred_at = ''")
   }
+  if (!txCols.has("note")) {
+    await db.execute("ALTER TABLE transactions ADD COLUMN note TEXT")
+  }
 }
 
 async function ensureUserDefaults(db: Database, userId: string, nickname?: string): Promise<void> {
@@ -166,6 +191,74 @@ async function ensureUserDefaults(db: Database, userId: string, nickname?: strin
     `INSERT INTO ledgers (id, name, type, owner_id, created_at, updated_at)
      VALUES ($1, $2, 'personal', $3, $4, $5)`,
     [ledgerId, ledgerName, userId, now, now]
+  )
+}
+
+// --- team members 缓存（从 GET /teams/{id}/members 拉取，按本地用户隔离在 userDb） ---
+export interface TeamMemberRow {
+  team_id: string
+  user_id: string
+  username: string | null
+  nickname: string | null
+  avatar_url: string | null
+  role: string | null
+  updated_at: string
+}
+
+export async function upsertTeamMembers(teamId: string, members: { user_id: string; username: string; nickname: string; avatar_url: string | null; role: string }[]): Promise<void> {
+  const db = getUserDb()
+  if (!db) return
+  const now = new Date().toISOString()
+  for (const m of members) {
+    await db.execute(
+      `INSERT OR REPLACE INTO team_members (team_id, user_id, username, nickname, avatar_url, role, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [teamId, m.user_id, m.username, m.nickname, m.avatar_url, m.role, now]
+    )
+  }
+}
+
+export async function getTeamMembers(teamId: string): Promise<TeamMemberRow[]> {
+  const db = getUserDb()
+  if (!db) return []
+  return db.select<TeamMemberRow[]>(
+    'SELECT team_id, user_id, username, nickname, avatar_url, role, updated_at FROM team_members WHERE team_id = $1',
+    [teamId]
+  )
+}
+
+// --- member aliases（userDb，去 setter 列；userDb 主人即唯一 setter） ---
+export interface MemberAliasRow {
+  target_user_id: string
+  alias_name: string
+  updated_at: string
+}
+
+export async function getMemberAliases(): Promise<MemberAliasRow[]> {
+  const db = getUserDb()
+  if (!db) return []
+  return db.select<MemberAliasRow[]>(
+    'SELECT target_user_id, alias_name, updated_at FROM member_aliases'
+  )
+}
+
+export async function getMemberAlias(targetUserId: string): Promise<MemberAliasRow | null> {
+  const db = getUserDb()
+  if (!db) return null
+  const rows = await db.select<MemberAliasRow[]>(
+    'SELECT target_user_id, alias_name, updated_at FROM member_aliases WHERE target_user_id = $1',
+    [targetUserId]
+  )
+  return rows.length > 0 ? rows[0] : null
+}
+
+export async function setMemberAlias(targetUserId: string, aliasName: string): Promise<void> {
+  const db = getUserDb()
+  if (!db) return
+  await db.execute(
+    `INSERT OR REPLACE INTO member_aliases (target_user_id, alias_name, updated_at)
+     VALUES ($1, $2, datetime('now'))`,
+    [targetUserId, aliasName]
   )
 }
 
