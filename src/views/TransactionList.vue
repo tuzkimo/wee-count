@@ -7,8 +7,8 @@ import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import { useTransactionStore } from "@/stores/transaction";
 import { useAuthStore } from "@/stores/auth";
-import { getCurrentUserId } from "@/db/userDb";
-import { getMemberAliases, type MemberAlias } from "@/db/meta";
+import { getCurrentUserId, getMemberAliases } from "@/db/userDb";
+import type { MemberAliasRow } from "@/db/userDb";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import type { Transaction } from "@/types";
@@ -21,16 +21,14 @@ const tagStore = useTagStore();
 const transactionStore = useTransactionStore();
 const authStore = useAuthStore();
 
-const memberAliases = ref<MemberAlias[]>([]);
+const memberAliases = ref<MemberAliasRow[]>([]);
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
 
 // 获取用户显示名（别名 > 昵称 > 用户名）
 function getUserDisplayName(userId: string): string {
   const currentUserId = authStore.currentLocalUser?.server_user_id || getCurrentUserId();
   if (userId === currentUserId) return "我";
-  const alias = memberAliases.value.find(
-    (a) => a.setter_user_id === currentUserId && a.target_user_id === userId
-  );
+  const alias = memberAliases.value.find((a) => a.target_user_id === userId);
   if (alias) return alias.alias_name;
   // fallback: 显示 user_id 前 8 位
   return userId.slice(0, 8);

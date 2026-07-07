@@ -37,15 +37,6 @@ async function initMetaTables(): Promise<void> {
   }
   // 回填：username 为空时用当前 nickname 初始化（旧记录的 nickname 即原登录键）
   await db.execute("UPDATE local_users SET username = nickname WHERE username IS NULL")
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS member_aliases (
-      setter_user_id TEXT NOT NULL,
-      target_user_id TEXT NOT NULL,
-      alias_name TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (setter_user_id, target_user_id)
-    )
-  `)
 }
 
 export interface LocalUser {
@@ -132,33 +123,6 @@ export async function updateLocalUsername(id: string, username: string): Promise
     `UPDATE local_users SET username = $1, updated_at = datetime('now') WHERE id = $2`,
     [username, id]
   )
-}
-
-export interface MemberAlias {
-  setter_user_id: string;
-  target_user_id: string;
-  alias_name: string;
-  updated_at: string;
-}
-
-export async function getMemberAliases(): Promise<MemberAlias[]> {
-  const db = await getMetaDb();
-  return db.select<MemberAlias[]>(
-    'SELECT setter_user_id, target_user_id, alias_name, updated_at FROM member_aliases'
-  );
-}
-
-export async function setMemberAlias(
-  setterUserId: string,
-  targetUserId: string,
-  aliasName: string
-): Promise<void> {
-  const db = await getMetaDb();
-  await db.execute(
-    `INSERT OR REPLACE INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at)
-     VALUES ($1, $2, $3, datetime('now'))`,
-    [setterUserId, targetUserId, aliasName]
-  );
 }
 
 export function closeMetaDb(): void {
