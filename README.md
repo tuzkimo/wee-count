@@ -41,6 +41,7 @@
 - API 层动态 baseUrl（`setBaseUrl()`），支持多服务端切换
 - bcryptjs 本地密码哈希
 - 同步游标按本地用户隔离（`last_synced_at:<user_id>`），避免多用户共用游标导致团队账本里别人的数据被跳过；在线会话恢复后自动后台拉取一次远程变更
+- member_aliases 同步：本地 userDb 无 setter 列（本地用户即唯一 setter）；推送时由 `collectMemberAliasesForSync` 全量补盖 `setter_user_id`（在线模式取服务端 user id，回退本地 user id），apply 时过滤 `setter=me` 再写本地，忽略他人为同一 target 设的别名
 
 ### Phase 4-C：Onboarding 引导流程（已完成）
 - WelcomePage：首次启动创建本地账户（昵称 + 密码）
