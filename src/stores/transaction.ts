@@ -16,6 +16,7 @@ interface TransactionRow {
   from_account_id: string | null;
   to_account_id: string | null;
   category_id: string | null;
+  note: string | null;
   occurred_at: string;
   created_at: string;
   updated_at: string;
@@ -45,6 +46,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
     from_account_id: row.from_account_id,
     to_account_id: row.to_account_id,
     category_id: row.category_id,
+    note: row.note,
     occurred_at: row.occurred_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -110,7 +112,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
 const QUERY = `
   SELECT
     t.id, t.ledger_id, t.user_id, t.amount, t.type,
-    t.from_account_id, t.to_account_id, t.category_id,
+    t.from_account_id, t.to_account_id, t.category_id, t.note,
     t.occurred_at, t.created_at, t.updated_at, t.is_deleted,
     c.name AS category_name, c.type AS category_type, c.icon AS category_icon, c.owner_id AS category_owner_id, c.sort_order AS category_sort_order,
     GROUP_CONCAT(DISTINCT tg.tag_id) AS tag_ids,
@@ -213,6 +215,7 @@ export const useTransactionStore = defineStore("transaction", () => {
     to_account_id: string | null;
     occurred_at: string;
     tag_ids: string[];
+    note?: string | null;
   }): Promise<string> {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
@@ -220,11 +223,11 @@ export const useTransactionStore = defineStore("transaction", () => {
     const id = crypto.randomUUID();
 
     await db.execute(
-      `INSERT INTO transactions (id, ledger_id, user_id, type, amount, category_id, from_account_id, to_account_id, occurred_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO transactions (id, ledger_id, user_id, type, amount, category_id, from_account_id, to_account_id, note, occurred_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, data.ledger_id, data.user_id, data.type, data.amount, data.category_id,
-        data.from_account_id, data.to_account_id, data.occurred_at, now, now,
+        data.from_account_id, data.to_account_id, data.note ?? null, data.occurred_at, now, now,
       ]
     );
 
@@ -264,6 +267,7 @@ export const useTransactionStore = defineStore("transaction", () => {
       to_account_id: string | null;
       occurred_at: string;
       tag_ids: string[];
+      note?: string | null;
     }>
   ): Promise<void> {
     const db = getUserDb();
@@ -276,6 +280,7 @@ export const useTransactionStore = defineStore("transaction", () => {
     if (data.category_id !== undefined) { sets.push("category_id = ?"); values.push(data.category_id); }
     if (data.from_account_id !== undefined) { sets.push("from_account_id = ?"); values.push(data.from_account_id); }
     if (data.to_account_id !== undefined) { sets.push("to_account_id = ?"); values.push(data.to_account_id); }
+    if (data.note !== undefined) { sets.push("note = ?"); values.push(data.note); }
     if (data.occurred_at !== undefined) { sets.push("occurred_at = ?"); values.push(data.occurred_at); }
 
     if (sets.length > 0) {

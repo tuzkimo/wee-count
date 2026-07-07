@@ -34,6 +34,7 @@ function makeTx(overrides: Partial<Transaction> = {}): Transaction {
     from_account_id: "acc-1",
     to_account_id: null,
     category_id: "cat-1",
+    note: null,
     occurred_at: "2026-06-09T12:00:00Z",
     created_at: "2026-06-09T12:00:00Z",
     updated_at: "2026-06-09T12:00:00Z",
@@ -59,6 +60,7 @@ describe("transactionStore", () => {
         from_account_id: "acc-1",
         to_account_id: null,
         category_id: "cat-1",
+        note: null,
         occurred_at: "2026-06-09T12:00:00Z",
         created_at: "2026-06-09T12:00:00Z",
         updated_at: "2026-06-09T12:00:00Z",
@@ -176,6 +178,29 @@ describe("transactionStore", () => {
         expect.stringContaining("INSERT INTO transactions"),
         expect.arrayContaining(["transfer", 500, "acc-1", "acc-2"])
       );
+    });
+
+    it("should insert note into transactions", async () => {
+      mockDb.execute.mockResolvedValue(undefined);
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.add({
+        ledger_id: "pl-1",
+        user_id: "u-1",
+        type: "expense",
+        amount: 10,
+        category_id: "cat-1",
+        from_account_id: "acc-1",
+        to_account_id: null,
+        occurred_at: "2026-07-07T12:00:00Z",
+        tag_ids: [],
+        note: "午餐-面馆",
+      });
+
+      const insertCall = mockDb.execute.mock.calls.find((c) => String(c[0]).includes("INSERT INTO transactions"));
+      expect(insertCall).toBeDefined();
+      expect(insertCall![1]).toContain("午餐-面馆");
     });
   });
 
