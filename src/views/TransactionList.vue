@@ -7,8 +7,11 @@ import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import { useTransactionStore } from "@/stores/transaction";
 import { useAuthStore } from "@/stores/auth";
-import { getCurrentUserId, getMemberAliases } from "@/db/userDb";
-import type { MemberAliasRow } from "@/db/userDb";
+import { getCurrentUserId } from "@/db/userDb";
+import { upsertTeamMembers } from "@/db/userDb";
+import { useMemberInfo } from "@/composables/useMemberInfo";
+import MemberAvatar from "@/components/MemberAvatar.vue";
+import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import type { Transaction } from "@/types";
@@ -21,17 +24,38 @@ const tagStore = useTagStore();
 const transactionStore = useTransactionStore();
 const authStore = useAuthStore();
 
-const memberAliases = ref<MemberAliasRow[]>([]);
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
 
-// 获取用户显示名（别名 > 昵称 > 用户名）
-function getUserDisplayName(userId: string): string {
-  const currentUserId = authStore.currentLocalUser?.server_user_id || getCurrentUserId();
-  if (userId === currentUserId) return "我";
-  const alias = memberAliases.value.find((a) => a.target_user_id === userId);
-  if (alias) return alias.alias_name;
-  // fallback: 显示 user_id 前 8 位
-  return userId.slice(0, 8);
+const { getMember } = useMemberInfo();
+const memberDisplay = ref<Record<string, string>>({});
+
+async function loadMemberDisplay(userIds: string[]) {
+  const unique = [...new Set(userIds)];
+  for (const uid of unique) {
+    if (!memberDisplay.value[uid]) {
+      const info = await getMember(uid);
+      memberDisplay.value[uid] = info.displayName;
+    }
+  }
+}
+
+const currentUserId = computed(() => authStore.currentLocalUser?.server_user_id || getCurrentUserId() || "");
+
+function isTxOwner(tx: Transaction): boolean {
+  return tx.user_id === currentUserId.value;
+}
+
+async function refreshTeamMembers() {
+  if (isTeamLedger.value && ledgerStore.currentLedger?.team_id) {
+    const teamId = ledgerStore.currentLedger.team_id;
+    try {
+      const members = await fetchTeamMembers(teamId);
+      await upsertTeamMembers(teamId, members);
+    } catch (e) {
+      console.warn("[TransactionList] fetchTeamMembers failed:", e);
+    }
+  }
+  memberDisplay.value = {};
 }
 
 const filterAccountId = ref<string>("");
@@ -103,10 +127,8 @@ onMounted(async () => {
   await accountStore.fetchAll(ledgerId);
   await tagStore.fetchAll(ledgerId);
 
-  // 加载成员别名
-  if (isTeamLedger.value) {
-    memberAliases.value = await getMemberAliases();
-  }
+  // 刷新团队成员缓存（团队账本）
+  await refreshTeamMembers();
 
   // 从 route params 判断模式
   if (isAccountMode.value && accountId.value) {
@@ -119,6 +141,7 @@ onMounted(async () => {
 
   const opts = buildFetchOpts();
   await transactionStore.fetchAll(ledgerId, opts);
+  await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
   isLoading.value = false;
 
   // 点击外部关闭账本切换下拉
@@ -141,10 +164,9 @@ watch(
     filterAccountId.value = "";
     await accountStore.fetchAll(newId);
     await tagStore.fetchAll(newId);
+    await refreshTeamMembers();
     await transactionStore.fetchAll(newId, buildFetchOpts());
-    if (isTeamLedger.value) {
-      memberAliases.value = await getMemberAliases();
-    }
+    await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
     isLoading.value = false;
   },
 );
@@ -161,6 +183,7 @@ watch(
     filterAccountId.value = qAccount || "";
     const opts = buildFetchOpts();
     await transactionStore.fetchAll(ledgerId, opts);
+    await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
     // 刷新账户余额
     await accountStore.fetchAll(ledgerId);
   }
@@ -175,6 +198,7 @@ watch(
     await accountStore.fetchAll(ledgerId);
     await tagStore.fetchAll(ledgerId);
     await transactionStore.fetchAll(ledgerId, buildFetchOpts());
+    await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
   }
 );
 
@@ -340,6 +364,14 @@ function goRecord(txId: string) {
   } else {
     router.push(`/record/${txId}`);
   }
+}
+
+function onTxClick(tx: Transaction) {
+  if (isTeamLedger.value && !isTxOwner(tx)) {
+    // 他人记录，不可编辑：不做任何跳转
+    return;
+  }
+  goRecord(tx.id);
 }
 </script>
 
@@ -507,8 +539,11 @@ function goRecord(txId: string) {
             <button
               v-for="tx in group.transactions"
               :key="tx.id"
-              class="flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors hover:bg-gray-50"
-              @click="isMultiSelectMode ? toggleTxSelection(tx.id) : goRecord(tx.id)"
+              class="flex w-full items-center gap-3 rounded-xl bg-surface px-3 py-3 text-left transition-colors"
+              :class="isMultiSelectMode ? 'hover:bg-gray-50'
+                : (isTeamLedger && !isTxOwner(tx)) ? 'opacity-60'
+                : 'hover:bg-gray-50'"
+              @click="isMultiSelectMode ? toggleTxSelection(tx.id) : onTxClick(tx)"
             >
               <!-- 多选模式：选择指示器 -->
               <template v-if="isMultiSelectMode">
@@ -523,13 +558,19 @@ function goRecord(txId: string) {
                   class="text-gray-300"
                 />
               </template>
+              <!-- 团队账本他人记录：成员头像 -->
+              <MemberAvatar
+                v-else-if="isTeamLedger && !isTxOwner(tx)"
+                :user-id="tx.user_id"
+                :size="20"
+              />
               <!-- 正常模式：交易图标 -->
               <span v-else class="text-xl">{{ getTxIcon(tx) }}</span>
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium text-text">{{ getTxCategoryName(tx) }}</p>
                 <p class="text-xs text-text-secondary">{{ getTxDescription(tx) }}</p>
                 <p v-if="isTeamLedger && tx.user_id" class="text-[10px] text-text-secondary">
-                  👤 {{ getUserDisplayName(tx.user_id) }}
+                  👤 {{ memberDisplay[tx.user_id] ?? tx.user_id.slice(0,8) }}
                 </p>
                 <p v-if="tx.tags && tx.tags.length > 0" class="mt-0.5 flex gap-1">
                   <span
@@ -540,10 +581,15 @@ function goRecord(txId: string) {
                     🏷️ {{ tag.name }}
                   </span>
                 </p>
+                <p v-if="tx.note" class="mt-0.5 text-[11px] text-text-secondary truncate">
+                  📝 {{ tx.note }}
+                </p>
               </div>
               <span
                 class="shrink-0 text-sm font-semibold"
-                :class="tx.type === 'expense' ? 'text-expense' : tx.type === 'income' ? 'text-income' : 'text-text'"
+                :class="(isTeamLedger && !isTxOwner(tx))
+                  ? 'text-text-secondary'
+                  : (tx.type === 'expense' ? 'text-expense' : tx.type === 'income' ? 'text-income' : 'text-text')"
               >
                 {{ formatAmount(tx) }}
               </span>
