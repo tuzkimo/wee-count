@@ -36,10 +36,11 @@ async function onCropperConfirm(dataUrl: string) {
   cropperFile.value = null;
   uploading.value = true;
   try {
-    selectedEmoji.value = dataUrl;
     await auth.updateProfile({ avatar_url: dataUrl });
+    selectedEmoji.value = dataUrl;
   } catch (err) {
     console.error("Update avatar failed:", err);
+    alert("头像保存失败，请重试");
   } finally {
     uploading.value = false;
   }
@@ -97,7 +98,7 @@ const hasChanges = computed(() =>
           @click="triggerUpload"
         >
           <img
-            v-if="selectedEmoji.startsWith('data:')"
+            v-if="selectedEmoji.startsWith('data:') || selectedEmoji.startsWith('http') || selectedEmoji.startsWith('/')"
             :src="selectedEmoji"
             class="h-full w-full object-cover"
             alt="头像"
