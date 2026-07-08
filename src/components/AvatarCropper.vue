@@ -67,7 +67,7 @@ onMounted(async () => {
     };
     image.src = url;
   } catch {
-    emit("error");
+    if (alive) emit("error");
   }
 });
 
