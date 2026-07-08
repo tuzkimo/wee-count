@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
+import { Camera } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
+import AvatarCropper from "@/components/AvatarCropper.vue";
 import { useAuthStore } from "@/stores/auth";
-import * as api from "@/services/api";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -16,27 +17,41 @@ const nickname = ref(auth.currentLocalUser?.nickname || "");
 const selectedEmoji = ref(currentAvatar.value);
 
 const fileInput = ref<HTMLInputElement | null>(null);
+const cropperFile = ref<File | null>(null);
 const uploading = ref(false);
 
 function triggerUpload() {
   fileInput.value?.click();
 }
 
-async function onFileChange(e: Event) {
+function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
+  input.value = "";
   if (!file) return;
+  cropperFile.value = file;
+}
+
+async function onCropperConfirm(dataUrl: string) {
+  cropperFile.value = null;
   uploading.value = true;
   try {
-    const updated = await api.uploadAvatar(file);
-    selectedEmoji.value = updated.avatar_url || "";
-    await auth.updateProfile({ avatar_url: updated.avatar_url });
+    selectedEmoji.value = dataUrl;
+    await auth.updateProfile({ avatar_url: dataUrl });
   } catch (err) {
-    console.error("Upload avatar failed:", err);
+    console.error("Update avatar failed:", err);
   } finally {
     uploading.value = false;
-    input.value = "";
   }
+}
+
+function onCropperCancel() {
+  cropperFile.value = null;
+}
+
+function onCropperError() {
+  cropperFile.value = null;
+  alert("图片无法读取，请换一张");
 }
 
 // emoji 头像选项
@@ -74,14 +89,32 @@ const hasChanges = computed(() =>
     <div class="flex-1 overflow-auto px-4 py-4">
       <!-- 头像 -->
       <label class="mb-2 block text-sm font-medium text-text">头像</label>
-      <div class="mb-3">
+      <div class="mb-3 flex flex-col items-center">
         <button
           type="button"
           :disabled="uploading"
-          class="rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text-secondary hover:border-primary hover:text-primary disabled:opacity-50"
+          class="group relative h-24 w-24 overflow-hidden rounded-full bg-gray-100 ring-2 ring-gray-200 transition hover:ring-primary disabled:opacity-50"
           @click="triggerUpload"
         >
-          {{ uploading ? '上传中...' : '📷 上传图片头像' }}
+          <img
+            v-if="selectedEmoji.startsWith('data:')"
+            :src="selectedEmoji"
+            class="h-full w-full object-cover"
+            alt="头像"
+          />
+          <span
+            v-else-if="selectedEmoji"
+            class="flex h-full w-full items-center justify-center text-4xl"
+          >{{ selectedEmoji }}</span>
+          <span
+            v-else
+            class="flex h-full w-full items-center justify-center text-3xl text-text-secondary"
+          >{{ (nickname || "我").charAt(0) }}</span>
+          <span
+            class="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-white shadow"
+          >
+            <Camera :size="16" />
+          </span>
         </button>
         <input
           ref="fileInput"
@@ -90,7 +123,7 @@ const hasChanges = computed(() =>
           class="hidden"
           @change="onFileChange"
         />
-        <p class="mt-1 text-xs text-text-secondary">或选择下方 emoji：</p>
+        <p class="mt-2 text-xs text-text-secondary">点击更换头像，或选择下方 emoji</p>
       </div>
       <div class="mb-6 flex flex-wrap gap-2">
         <button
@@ -131,6 +164,13 @@ const hasChanges = computed(() =>
       >
         {{ saving ? '保存中...' : '保存' }}
       </button>
+      <AvatarCropper
+        v-if="cropperFile"
+        :file="cropperFile"
+        @confirm="onCropperConfirm"
+        @cancel="onCropperCancel"
+        @error="onCropperError"
+      />
     </div>
   </div>
 </template>
