@@ -56,6 +56,15 @@
 - LoginPage：改为手动输入用户名（本地账户登录）
 - MePage：显示在线/本地模式状态，配置在线同步入口，团队管理（创建/加入团队、成员管理），登出功能
 
+### Phase 4-G：头像裁剪与 data URL 存储（已完成）
+- 头像统一存 `avatar_url` 为 data URL（与 emoji 同路），本地/在线一致；在线模式经 `auth.updateProfile` 同步到 `users.avatar_url`
+- 后端迁移 006：`users.avatar_url` 由 `VARCHAR(255)` 改 `TEXT`，容纳 data URL
+- 删除后端 `POST /auth/avatar` 端点 + `/static` 静态服务 + `UploadDir` 配置（文件落盘方案不再使用）
+- `AvatarCropper` 组件：固定 280px 正方形视窗，拖动平移 + 滑块缩放（中心锚点），canvas 采样输出 256×256 JPEG（质量 0.85）data URL
+- `computeCrop` 纯函数（`src/utils/crop.ts`）由视窗几何反推源采样参数，配单测覆盖正方形/宽/高/缩放/偏移
+- ProfilePage 上传入口改为圆形预览 + 相机徽标，支持图片裁剪与 emoji 两种方式
+- `MemberAvatar` 支持渲染 `data:` / `http` / 服务器相对 URL 头像
+
 ## 路由
 
 | 路径 | 页面 | 说明 |
