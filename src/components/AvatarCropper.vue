@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { computeCrop } from "@/utils/crop";
 
 const props = defineProps<{
@@ -14,8 +14,12 @@ const emit = defineEmits<{
 
 // 视窗固定正方形边长
 const V = 280;
+// 视窗 280 → 输出 256，两步降采样意图在此显式
+const OUTPUT_SIZE = 256;
+const JPEG_QUALITY = 0.85;
 
 const imgEl = ref<HTMLImageElement | null>(null);
+let alive = true;
 const imgSrc = ref("");
 const imgW = ref(0);
 const imgH = ref(0);
@@ -48,6 +52,7 @@ onMounted(async () => {
     const url = await fileToDataUrl(props.file);
     const image = new Image();
     image.onload = () => {
+      if (!alive) return;
       imgEl.value = image;
       imgSrc.value = url;
       imgW.value = image.naturalWidth;
@@ -56,7 +61,10 @@ onMounted(async () => {
       x.value = (V - displayedW.value) / 2;
       y.value = (V - displayedH.value) / 2;
     };
-    image.onerror = () => emit("error");
+    image.onerror = () => {
+      if (!alive) return;
+      emit("error");
+    };
     image.src = url;
   } catch {
     emit("error");
@@ -65,7 +73,7 @@ onMounted(async () => {
 
 // 缩放以视窗中心为锚点：保持中心对应的源点不变
 watch(userScale, (nv, ov) => {
-  if (!imgEl.value || ov == null || !(baseScale.value * ov > 0)) return;
+  if (!imgW.value) return;
   const totalOld = baseScale.value * ov;
   const totalNew = baseScale.value * nv;
   const cxS = (V / 2 - x.value) / totalOld;
@@ -103,8 +111,8 @@ function onPointerUp() {
 function onConfirm() {
   if (!imgEl.value) return;
   const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
+  canvas.width = OUTPUT_SIZE;
+  canvas.height = OUTPUT_SIZE;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const { sx, sy, sSize } = computeCrop({
@@ -115,9 +123,11 @@ function onConfirm() {
     x: x.value,
     y: y.value,
   });
-  ctx.drawImage(imgEl.value, sx, sy, sSize, sSize, 0, 0, 256, 256);
-  emit("confirm", canvas.toDataURL("image/jpeg", 0.85));
+  ctx.drawImage(imgEl.value, sx, sy, sSize, sSize, 0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
+  emit("confirm", canvas.toDataURL("image/jpeg", JPEG_QUALITY));
 }
+
+onUnmounted(() => { alive = false; });
 </script>
 
 <template>
@@ -160,6 +170,7 @@ function onConfirm() {
             min="1"
             max="3"
             step="0.01"
+            aria-label="缩放"
             class="flex-1"
           />
           <span class="w-10 text-right text-xs text-text-secondary">{{ Math.round(userScale * 100) }}%</span>
