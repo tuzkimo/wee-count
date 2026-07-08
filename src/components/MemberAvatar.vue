@@ -26,7 +26,7 @@ watch(() => props.userId, load, { immediate: true });
     :style="{ width: (size ?? 20) + 'px', height: (size ?? 20) + 'px', fontSize: (size ?? 20) * 0.55 + 'px' }"
   >
     <img
-      v-if="avatarUrl && avatarUrl.startsWith('http')"
+      v-if="avatarUrl && (avatarUrl.startsWith('http') || avatarUrl.startsWith('data:'))"
       :src="avatarUrl"
       :alt="displayName"
       class="h-full w-full object-cover"

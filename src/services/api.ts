@@ -191,18 +191,3 @@ export async function fetchTeamMembers(teamId: string): Promise<TeamMember[]> {
   return res.data
 }
 
-export async function uploadAvatar(file: File): Promise<User> {
-  const formData = new FormData()
-  formData.append("file", file)
-  const url = `${getBaseUrl()}/auth/avatar`
-  const headers: Record<string, string> = {}
-  // accessToken 通过模块作用域访问
-  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`
-  const res = await fetch(url, { method: "POST", headers, body: formData })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || "上传失败")
-  }
-  const data: User = await res.json()
-  return data
-}
