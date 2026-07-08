@@ -63,9 +63,6 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	// 静态资源：头像文件
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir(cfg.UploadDir))))
-
 	r.Route("/api/v1", func(r chi.Router) {
 		// public
 		r.Post("/auth/register", authH.Register)
@@ -77,7 +74,6 @@ func main() {
 			r.Use(mw.AuthMiddleware(cfg.JWTSecret))
 			r.Get("/me", authH.Me)
 			r.Put("/auth/profile", authH.UpdateProfile)
-			r.Post("/auth/avatar", authH.UploadAvatar)
 			r.Post("/sync", syncH.Sync)
 			r.Post("/teams", teamH.Create)
 			r.Post("/teams/{id}/invite", teamH.Invite)

@@ -71,19 +71,3 @@ func TestRefreshHandler_MissingToken(t *testing.T) {
 		t.Errorf("expected 400, got %d", rec.Code)
 	}
 }
-
-func TestUploadAvatar_MissingFile(t *testing.T) {
-	h := &AuthHandler{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /auth/avatar", h.UploadAvatar)
-
-	req := httptest.NewRequest("POST", "/auth/avatar", bytes.NewBufferString(`{}`))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(setUserID(req.Context(), "test-user"))
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for missing file, got %d", rec.Code)
-	}
-}

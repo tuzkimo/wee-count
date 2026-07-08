@@ -4,11 +4,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"wee-count/backend/internal/middleware"
 	"wee-count/backend/internal/model"
@@ -119,68 +115,6 @@ func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := h.svc.UpdateProfile(r.Context(), userID, req)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, user)
-}
-
-func (h *AuthHandler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.GetUserID(r.Context())
-	if userID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	// 限制 5MB
-	r.Body = http.MaxBytesReader(w, r.Body, 5<<20)
-	if err := r.ParseMultipartForm(5 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "file too large or invalid (max 5MB)")
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "file field is required")
-		return
-	}
-	defer file.Close()
-
-	// 校验扩展名
-	ext := strings.ToLower(filepath.Ext(header.Filename))
-	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true}
-	if !allowed[ext] {
-		writeError(w, http.StatusBadRequest, "unsupported file type")
-		return
-	}
-
-	uploadDir := os.Getenv("UPLOAD_DIR")
-	if uploadDir == "" {
-		uploadDir = "./uploads"
-	}
-	avatarDir := filepath.Join(uploadDir, "avatars")
-	if err := os.MkdirAll(avatarDir, 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "create dir failed")
-		return
-	}
-
-	// 用 userID 命名，覆盖旧头像
-	filename := userID + ext
-	dstPath := filepath.Join(avatarDir, filename)
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create file failed")
-		return
-	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "write file failed")
-		return
-	}
-
-	avatarURL := "/static/avatars/" + filename
-	user, err := h.svc.UpdateAvatar(r.Context(), userID, avatarURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
