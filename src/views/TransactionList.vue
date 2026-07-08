@@ -257,7 +257,21 @@ const filterSummary = computed(() => {
     parts.push("📋 全部账户");
   }
 
-  // 标签
+  // 分类筛选摘要
+  if (q.categories) {
+    const catIds = (q.categories as string).split(",").filter(Boolean);
+    parts.push(`📂 ${catIds.length}个分类`);
+  } else {
+    parts.push("📂 全部分类");
+  }
+
+  // 成员筛选摘要
+  if (q.members) {
+    const memIds = (q.members as string).split(",").filter(Boolean);
+    parts.push(`👥 ${memIds.length}个成员`);
+  }
+
+  // 标签（放最后）
   if (q.tags) {
     const tagIds = (q.tags as string).split(",").filter(Boolean);
     const tagNames = tagIds
@@ -272,20 +286,6 @@ const filterSummary = computed(() => {
     }
   } else {
     parts.push("🏷️ 全部标签");
-  }
-
-  // 分类筛选摘要
-  if (q.categories) {
-    const catIds = (q.categories as string).split(",").filter(Boolean);
-    parts.push(`📂 ${catIds.length}个分类`);
-  } else {
-    parts.push("📂 全部分类");
-  }
-
-  // 成员筛选摘要
-  if (q.members) {
-    const memIds = (q.members as string).split(",").filter(Boolean);
-    parts.push(`👥 ${memIds.length}个成员`);
   }
 
   return parts.join(" · ");
