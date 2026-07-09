@@ -1,6 +1,6 @@
 <!-- src/views/MePage.vue -->
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useLedgerStore } from "@/stores/ledger";
@@ -10,6 +10,9 @@ import { ChevronRight, LogOut, Plus, UserPlus, Users } from "lucide-vue-next";
 const router = useRouter();
 const auth = useAuthStore();
 const ledger = useLedgerStore();
+
+// 仅当存在至少一个团队账本时，「成员管理」入口才有意义
+const hasTeamLedger = computed(() => ledger.ledgers.some((l) => l.type === "team"));
 
 onMounted(async () => {
   await auth.init();
@@ -150,7 +153,7 @@ function handleLogout(): void {
             <span class="flex-1 text-left text-text">加入团队</span>
             <ChevronRight :size="16" class="text-text-secondary" />
           </button>
-          <button class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/members')">
+          <button v-if="hasTeamLedger" class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/members')">
             <Users :size="18" class="text-primary" />
             <span class="flex-1 text-left text-text">成员管理</span>
             <ChevronRight :size="16" class="text-text-secondary" />
