@@ -94,25 +94,27 @@ const hasChanges = computed(() =>
         <button
           type="button"
           :disabled="uploading"
-          class="group relative h-24 w-24 overflow-hidden rounded-full bg-gray-100 ring-2 ring-gray-200 transition hover:ring-primary disabled:opacity-50"
+          class="group relative h-24 w-24 rounded-full bg-gray-100 ring-2 ring-gray-200 transition hover:ring-primary disabled:opacity-50"
           @click="triggerUpload"
         >
-          <img
-            v-if="selectedEmoji.startsWith('data:') || selectedEmoji.startsWith('http') || selectedEmoji.startsWith('/')"
-            :src="selectedEmoji"
-            class="h-full w-full object-cover"
-            alt="头像"
-          />
+          <span class="flex h-full w-full items-center justify-center overflow-hidden rounded-full">
+            <img
+              v-if="selectedEmoji.startsWith('data:') || selectedEmoji.startsWith('http') || selectedEmoji.startsWith('/')"
+              :src="selectedEmoji"
+              class="h-full w-full object-cover"
+              alt="头像"
+            />
+            <span
+              v-else-if="selectedEmoji"
+              class="text-4xl"
+            >{{ selectedEmoji }}</span>
+            <span
+              v-else
+              class="text-3xl text-text-secondary"
+            >{{ (nickname || "我").charAt(0) }}</span>
+          </span>
           <span
-            v-else-if="selectedEmoji"
-            class="flex h-full w-full items-center justify-center text-4xl"
-          >{{ selectedEmoji }}</span>
-          <span
-            v-else
-            class="flex h-full w-full items-center justify-center text-3xl text-text-secondary"
-          >{{ (nickname || "我").charAt(0) }}</span>
-          <span
-            class="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-white shadow"
+            class="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-white shadow ring-2 ring-surface"
           >
             <Camera :size="16" />
           </span>

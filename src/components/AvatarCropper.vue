@@ -152,6 +152,8 @@ onUnmounted(() => { alive = false; });
             :style="{
               width: displayedW + 'px',
               height: displayedH + 'px',
+              maxWidth: 'none',
+              maxHeight: 'none',
               transform: `translate(${x}px, ${y}px)`,
               position: 'absolute',
               left: 0,
