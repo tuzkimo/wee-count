@@ -68,8 +68,14 @@ function handleLogout(): void {
         class="flex items-center gap-3 bg-surface px-4 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
         @click="router.push('/profile')"
       >
-        <div class="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-lg text-white">
-          <span v-if="auth.currentLocalUser?.avatar_url">{{ auth.currentLocalUser.avatar_url }}</span>
+        <div class="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-primary text-lg text-white">
+          <img
+            v-if="auth.currentLocalUser?.avatar_url && (auth.currentLocalUser.avatar_url.startsWith('data:') || auth.currentLocalUser.avatar_url.startsWith('http') || auth.currentLocalUser.avatar_url.startsWith('/'))"
+            :src="auth.currentLocalUser.avatar_url"
+            class="h-full w-full object-cover"
+            alt="头像"
+          />
+          <span v-else-if="auth.currentLocalUser?.avatar_url">{{ auth.currentLocalUser.avatar_url }}</span>
           <span v-else>{{ auth.currentLocalUser?.nickname?.charAt(0) || "?" }}</span>
         </div>
         <div class="flex-1">

@@ -18,7 +18,6 @@ const selectedEmoji = ref(currentAvatar.value);
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const cropperFile = ref<File | null>(null);
-const uploading = ref(false);
 
 function triggerUpload() {
   fileInput.value?.click();
@@ -32,18 +31,11 @@ function onFileChange(e: Event) {
   cropperFile.value = file;
 }
 
-async function onCropperConfirm(dataUrl: string) {
+// 仅暂存到本地选中态，随「保存」按钮与昵称一起提交；
+// 不在此处立即落库，否则 currentAvatar 同步更新会导致 hasChanges 失效、保存按钮不可点。
+function onCropperConfirm(dataUrl: string) {
   cropperFile.value = null;
-  uploading.value = true;
-  try {
-    await auth.updateProfile({ avatar_url: dataUrl });
-    selectedEmoji.value = dataUrl;
-  } catch (err) {
-    console.error("Update avatar failed:", err);
-    alert("头像保存失败，请重试");
-  } finally {
-    uploading.value = false;
-  }
+  selectedEmoji.value = dataUrl;
 }
 
 function onCropperCancel() {
@@ -93,8 +85,7 @@ const hasChanges = computed(() =>
       <div class="mb-3 flex flex-col items-center">
         <button
           type="button"
-          :disabled="uploading"
-          class="group relative h-24 w-24 rounded-full bg-gray-100 ring-2 ring-gray-200 transition hover:ring-primary disabled:opacity-50"
+          class="group relative h-24 w-24 rounded-full bg-gray-100 ring-2 ring-gray-200 transition hover:ring-primary"
           @click="triggerUpload"
         >
           <span class="flex h-full w-full items-center justify-center overflow-hidden rounded-full">
