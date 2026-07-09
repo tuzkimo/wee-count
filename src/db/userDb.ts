@@ -135,6 +135,13 @@ async function initUserTables(db: Database): Promise<void> {
     )
   `)
 
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS app_kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `)
+
   // 迁移：确保旧表有新增的列
   await migrateUserTables(db)
 }
@@ -265,4 +272,24 @@ export async function setMemberAlias(targetUserId: string, aliasName: string): P
 export function closeUserDb(): void {
   userDb = null
   currentUserId = null
+}
+
+// --- app_kv：per-user 通用键值存储（当前账本选择等随账号隔离的状态） ---
+export async function getAppValue(key: string): Promise<string | null> {
+  const db = getUserDb()
+  if (!db) return null
+  const rows = await db.select<{ value: string }[]>(
+    'SELECT value FROM app_kv WHERE key = $1',
+    [key]
+  )
+  return rows.length > 0 ? rows[0].value : null
+}
+
+export async function setAppValue(key: string, value: string): Promise<void> {
+  const db = getUserDb()
+  if (!db) return
+  await db.execute(
+    'INSERT OR REPLACE INTO app_kv (key, value) VALUES ($1, $2)',
+    [key, value]
+  )
 }
