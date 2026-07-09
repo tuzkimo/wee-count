@@ -493,7 +493,19 @@ function goBack() {
         </button>
       </div>
 
-      <!-- 6. 标签 -->
+      <!-- 6. 备注 -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">备注</label>
+        <input
+          v-model="note"
+          type="text"
+          maxlength="100"
+          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+          placeholder="可选，最多 100 字"
+        />
+      </div>
+
+      <!-- 7. 标签 -->
       <div class="mb-4">
         <label class="mb-1 block text-xs text-text-secondary">标签</label>
         <div class="flex flex-wrap gap-1.5">
@@ -512,18 +524,6 @@ function goBack() {
             + 添加标签
           </button>
         </div>
-      </div>
-
-      <!-- 7. 备注 -->
-      <div class="mb-4">
-        <label class="mb-1 block text-xs text-text-secondary">备注</label>
-        <input
-          v-model="note"
-          type="text"
-          maxlength="100"
-          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-          placeholder="可选，最多 100 字"
-        />
       </div>
     </div>
 
