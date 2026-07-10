@@ -6,11 +6,12 @@ import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
 import { useCategoryStore } from "@/stores/category";
 import { useAuthStore } from "@/stores/auth";
-import { getCurrentUserId, getTeamMembers } from "@/db/userDb";
+import { getCurrentUserId, getTeamMembers, getMemberAliases } from "@/db/userDb";
 import type { TeamMemberRow } from "@/db/userDb";
 import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
+import MemberAvatar from "@/components/MemberAvatar.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
 import { toLocalDatetimeString } from "@/utils/datetime";
 import type { Account } from "@/types";
@@ -31,8 +32,15 @@ const selectedTagIds = ref<string[]>([]);
 const selectedCategoryIds = ref<string[]>([]);
 const selectedMemberIds = ref<string[]>([]);
 const teamMembers = ref<TeamMemberRow[]>([]);
+const aliasMap = ref<Record<string, string>>({});
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
 const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "");
+
+// 其他成员展示名：别名 > 昵称 > username > id 前 8 位
+function memberDisplayName(m: TeamMemberRow): string {
+  if (m.user_id === currentUserId.value) return "我";
+  return aliasMap.value[m.user_id] || m.nickname || m.username || m.user_id.slice(0, 8);
+}
 
 const accountPickerVisible = ref(false);
 const datePickerVisible = ref(false);
@@ -64,6 +72,10 @@ onMounted(async () => {
     }
     teamMembers.value = await getTeamMembers(teamId);
   }
+
+  // 加载别名缓存（用于成员展示名）
+  const aliases = await getMemberAliases();
+  aliasMap.value = Object.fromEntries(aliases.map((a) => [a.target_user_id, a.alias_name]));
 
   // 从 query 恢复筛选状态
   if (route.query.account) {
@@ -209,14 +221,15 @@ function goBack() {
           <button
             v-for="cat in categoryStore.categories"
             :key="cat.id"
-            class="rounded-full px-3 py-1.5 text-xs transition-colors"
+            class="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs transition-colors"
             :class="selectedCategoryIds.includes(cat.id)
               ? 'bg-primary text-white'
               : 'bg-gray-100 text-text-secondary'"
             @click="toggleCategory(cat.id)"
           >
+            <span>{{ selectedCategoryIds.includes(cat.id) ? '☑' : '☐' }}</span>
             <span>{{ cat.icon }}</span>
-            {{ cat.name }}
+            <span>{{ cat.name }}</span>
           </button>
           <p v-if="categoryStore.categories.length === 0" class="text-xs text-text-secondary">暂无分类</p>
         </div>
@@ -229,14 +242,15 @@ function goBack() {
           <button
             v-for="m in teamMembers"
             :key="m.user_id"
-            class="rounded-full px-3 py-1.5 text-xs transition-colors"
+            class="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs transition-colors"
             :class="selectedMemberIds.includes(m.user_id)
               ? 'bg-primary text-white'
               : 'bg-gray-100 text-text-secondary'"
             @click="toggleMember(m.user_id)"
           >
-            {{ selectedMemberIds.includes(m.user_id) ? '☑' : '☐' }}
-            {{ m.user_id === currentUserId ? '我' : (m.nickname || m.username || m.user_id.slice(0,8)) }}
+            <span>{{ selectedMemberIds.includes(m.user_id) ? '☑' : '☐' }}</span>
+            <MemberAvatar v-if="m.user_id !== currentUserId" :user-id="m.user_id" :size="16" />
+            <span>{{ memberDisplayName(m) }}</span>
           </button>
           <p v-if="teamMembers.length === 0" class="text-xs text-text-secondary">暂无成员</p>
         </div>

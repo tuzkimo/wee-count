@@ -5,10 +5,10 @@ import { ChevronDown, Filter, Plus, Pencil, ListChecks, Trash2, Circle, CheckCir
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useTagStore } from "@/stores/tag";
+import { useCategoryStore } from "@/stores/category";
 import { useTransactionStore } from "@/stores/transaction";
 import { useAuthStore } from "@/stores/auth";
-import { getCurrentUserId } from "@/db/userDb";
-import { upsertTeamMembers } from "@/db/userDb";
+import { getCurrentUserId, getTeamMembers, upsertTeamMembers } from "@/db/userDb";
 import { useMemberInfo } from "@/composables/useMemberInfo";
 import MemberAvatar from "@/components/MemberAvatar.vue";
 import { fetchTeamMembers } from "@/services/api";
@@ -21,6 +21,7 @@ const router = useRouter();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const tagStore = useTagStore();
+const categoryStore = useCategoryStore();
 const transactionStore = useTransactionStore();
 const authStore = useAuthStore();
 
@@ -45,7 +46,15 @@ function isTxOwner(tx: Transaction): boolean {
   return tx.user_id === currentUserId.value;
 }
 
+// query 中选中的成员 id（用于筛选摘要解析展示名）
+const queryMemberIds = computed(() => {
+  const q = route.query.members as string | undefined;
+  return q ? q.split(",").filter(Boolean) : [];
+});
+watch(queryMemberIds, (ids) => { if (ids.length) loadMemberDisplay(ids); }, { immediate: true });
+
 async function refreshTeamMembers() {
+  memberDisplay.value = {};
   if (isTeamLedger.value && ledgerStore.currentLedger?.team_id) {
     const teamId = ledgerStore.currentLedger.team_id;
     try {
@@ -54,8 +63,10 @@ async function refreshTeamMembers() {
     } catch (e) {
       console.warn("[TransactionList] fetchTeamMembers failed:", e);
     }
+    // 预加载所有成员的展示名，供筛选摘要同步解析（避免短暂显示 id）
+    const all = await getTeamMembers(teamId);
+    await loadMemberDisplay(all.map((m) => m.user_id));
   }
-  memberDisplay.value = {};
 }
 
 const filterAccountId = ref<string>("");
@@ -132,6 +143,7 @@ onMounted(async () => {
 
   await accountStore.fetchAll(ledgerId);
   await tagStore.fetchAll(ledgerId);
+  await categoryStore.fetchAll(ledgerId);
 
   // 刷新团队成员缓存（团队账本）
   await refreshTeamMembers();
@@ -170,6 +182,7 @@ watch(
     filterAccountId.value = "";
     await accountStore.fetchAll(newId);
     await tagStore.fetchAll(newId);
+    await categoryStore.fetchAll(newId);
     await refreshTeamMembers();
     await transactionStore.fetchAll(newId, buildFetchOpts());
     await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
@@ -260,15 +273,35 @@ const filterSummary = computed(() => {
   // 分类筛选摘要
   if (q.categories) {
     const catIds = (q.categories as string).split(",").filter(Boolean);
-    parts.push(`📂 ${catIds.length}个分类`);
+    const catNames = catIds
+      .map((id) => categoryStore.categories.find((c) => c.id === id)?.name)
+      .filter(Boolean) as string[];
+    const MAX_VISIBLE = 2;
+    if (catNames.length <= MAX_VISIBLE) {
+      parts.push(`📂 ${catNames.join(", ")}`);
+    } else {
+      parts.push(`📂 ${catNames.slice(0, MAX_VISIBLE).join(", ")}等${catNames.length}个分类`);
+    }
   } else {
     parts.push("📂 全部分类");
   }
 
-  // 成员筛选摘要
-  if (q.members) {
-    const memIds = (q.members as string).split(",").filter(Boolean);
-    parts.push(`👥 ${memIds.length}个成员`);
+  // 成员筛选摘要（仅团队账本）
+  if (isTeamLedger.value) {
+    if (q.members) {
+      const memIds = (q.members as string).split(",").filter(Boolean);
+      const names = memIds
+        .map((id) => memberDisplay.value[id] ?? id.slice(0, 8))
+        .filter(Boolean);
+      const MAX_VISIBLE = 2;
+      if (names.length <= MAX_VISIBLE) {
+        parts.push(`👥 ${names.join(", ")}`);
+      } else {
+        parts.push(`👥 ${names.slice(0, MAX_VISIBLE).join(", ")}等${names.length}个成员`);
+      }
+    } else {
+      parts.push("👥 全部成员");
+    }
   }
 
   // 标签（放最后）
