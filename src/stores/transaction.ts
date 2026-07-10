@@ -31,9 +31,11 @@ interface TransactionRow {
   from_account_name: string | null;
   from_account_type: string | null;
   from_account_color: string | null;
+  from_account_owner_id: string | null;
   to_account_name: string | null;
   to_account_type: string | null;
   to_account_color: string | null;
+  to_account_owner_id: string | null;
 }
 
 function assembleTransaction(row: TransactionRow): Transaction {
@@ -80,7 +82,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
     tx.from_account = {
       id: row.from_account_id,
       ledger_id: "",
-      owner_id: "",
+      owner_id: row.from_account_owner_id ?? "",
       name: row.from_account_name,
       type: row.from_account_type as never,
       initial_balance: 0,
@@ -95,7 +97,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
     tx.to_account = {
       id: row.to_account_id,
       ledger_id: "",
-      owner_id: "",
+      owner_id: row.to_account_owner_id ?? "",
       name: row.to_account_name,
       type: row.to_account_type as never,
       initial_balance: 0,
@@ -117,8 +119,8 @@ const QUERY = `
     c.name AS category_name, c.type AS category_type, c.icon AS category_icon, c.owner_id AS category_owner_id, c.sort_order AS category_sort_order,
     GROUP_CONCAT(DISTINCT tg.tag_id) AS tag_ids,
     GROUP_CONCAT(DISTINCT tags.name) AS tag_names,
-    fa.name AS from_account_name, fa.type AS from_account_type, fa.color AS from_account_color,
-    ta.name AS to_account_name, ta.type AS to_account_type, ta.color AS to_account_color
+    fa.name AS from_account_name, fa.type AS from_account_type, fa.color AS from_account_color, fa.owner_id AS from_account_owner_id,
+    ta.name AS to_account_name, ta.type AS to_account_type, ta.color AS to_account_color, ta.owner_id AS to_account_owner_id
   FROM transactions t
   LEFT JOIN categories c ON t.category_id = c.id
   LEFT JOIN transaction_tags tg ON t.id = tg.transaction_id

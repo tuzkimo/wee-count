@@ -40,6 +40,16 @@ async function loadMemberDisplay(userIds: string[]) {
   }
 }
 
+// 预加载每条流水涉及成员的展示名：记录创建者 + 跨成员转账的双方账户所属成员
+async function loadTxMemberDisplay() {
+  const ids = new Set<string>();
+  for (const t of transactionStore.transactions) {
+    if (t.user_id) ids.add(t.user_id);
+    for (const mid of transferMemberIds(t)) ids.add(mid);
+  }
+  await loadMemberDisplay([...ids]);
+}
+
 const currentUserId = computed(() => authStore.currentLocalUser?.server_user_id || getCurrentUserId() || "");
 
 function isTxOwner(tx: Transaction): boolean {
@@ -159,7 +169,7 @@ onMounted(async () => {
 
   const opts = buildFetchOpts();
   await transactionStore.fetchAll(ledgerId, opts);
-  await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
+  await loadTxMemberDisplay();
   isLoading.value = false;
 
   // 点击外部关闭账本切换下拉
@@ -185,7 +195,7 @@ watch(
     await categoryStore.fetchAll(newId);
     await refreshTeamMembers();
     await transactionStore.fetchAll(newId, buildFetchOpts());
-    await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
+    await loadTxMemberDisplay();
     isLoading.value = false;
   },
 );
@@ -202,7 +212,7 @@ watch(
     filterAccountId.value = qAccount || "";
     const opts = buildFetchOpts();
     await transactionStore.fetchAll(ledgerId, opts);
-    await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
+    await loadTxMemberDisplay();
     // 刷新账户余额
     await accountStore.fetchAll(ledgerId);
   }
@@ -217,7 +227,7 @@ watch(
     await accountStore.fetchAll(ledgerId);
     await tagStore.fetchAll(ledgerId);
     await transactionStore.fetchAll(ledgerId, buildFetchOpts());
-    await loadMemberDisplay(transactionStore.transactions.map(t => t.user_id));
+    await loadTxMemberDisplay();
   }
 );
 
@@ -383,6 +393,25 @@ function getTxDescription(tx: Transaction): string {
     return tx.to_account?.name ?? "";
   }
   return tx.from_account?.name ?? "";
+}
+
+// 跨成员转账：from 账户所属成员 → to 账户所属成员
+function transferFromUid(tx: Transaction): string | null {
+  if (tx.type !== "transfer") return null;
+  return tx.from_account?.owner_id ?? null;
+}
+function transferToUid(tx: Transaction): string | null {
+  if (tx.type !== "transfer") return null;
+  return tx.to_account?.owner_id ?? null;
+}
+function isCrossMemberTransfer(tx: Transaction): boolean {
+  const from = transferFromUid(tx);
+  const to = transferToUid(tx);
+  return !!from && !!to && from !== to;
+}
+function transferMemberIds(tx: Transaction): string[] {
+  if (!isCrossMemberTransfer(tx)) return [];
+  return [transferFromUid(tx)!, transferToUid(tx)!];
 }
 
 // 获取交易分类名
@@ -604,7 +633,22 @@ function onTxClick(tx: Transaction) {
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium text-text">{{ getTxCategoryName(tx) }}</p>
                 <p class="text-xs text-text-secondary">{{ getTxDescription(tx) }}</p>
-                <p v-if="isTeamLedger && tx.user_id" class="flex items-center gap-1 text-[10px] text-text-secondary">
+                <!-- 跨成员转账：标清 from → to 成员 -->
+                <p
+                  v-if="isTeamLedger && isCrossMemberTransfer(tx)"
+                  class="flex items-center gap-1 text-[10px] text-text-secondary"
+                >
+                  <MemberAvatar :user-id="transferFromUid(tx)!" :size="14" />
+                  {{ memberDisplay[transferFromUid(tx)!] ?? transferFromUid(tx)!.slice(0,8) }}
+                  <span class="text-gray-400">→</span>
+                  <MemberAvatar :user-id="transferToUid(tx)!" :size="14" />
+                  {{ memberDisplay[transferToUid(tx)!] ?? transferToUid(tx)!.slice(0,8) }}
+                </p>
+                <!-- 普通流水/同人转账：显示创建者 -->
+                <p
+                  v-else-if="isTeamLedger && tx.user_id"
+                  class="flex items-center gap-1 text-[10px] text-text-secondary"
+                >
                   <MemberAvatar :user-id="tx.user_id" :size="14" />
                   {{ memberDisplay[tx.user_id] ?? tx.user_id.slice(0,8) }}
                 </p>
