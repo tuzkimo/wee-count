@@ -411,6 +411,7 @@ function onTxClick(tx: Transaction) {
         <!-- 正常模式 -->
         <template v-else>
           <button
+            v-if="isAccountOwner"
             class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-gray-100"
             @click="enterMultiSelectMode"
           >
