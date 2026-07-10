@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { X, Plus } from "lucide-vue-next";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useCategoryStore } from "@/stores/category";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAuthStore } from "@/stores/auth";
@@ -94,6 +95,13 @@ const formName = ref("");
 const formIcon = ref("");
 const formError = ref("");
 
+// ---- 删除确认状态 ----
+const deleteTarget = ref<Category | null>(null);
+const showDeleteConfirm = computed(() => deleteTarget.value !== null);
+
+// ---- 删除失败提示状态 ----
+const deleteError = ref("");
+
 // 按类型分组
 const expenseCategories = computed(() =>
   categoryStore.categories.filter((c) => c.type === "expense" && !c.is_deleted),
@@ -152,12 +160,18 @@ function openEdit(category: Category) {
 }
 
 async function handleDelete(category: Category) {
-  const ok = window.confirm(`确定要删除分类「${category.name}」吗？`);
-  if (!ok) return;
+  deleteTarget.value = category;
+}
+
+async function confirmDelete() {
+  const target = deleteTarget.value;
+  if (!target) return;
   try {
-    await categoryStore.remove(category.id);
+    await categoryStore.remove(target.id);
+    deleteTarget.value = null;
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : "删除失败");
+    deleteTarget.value = null;
+    deleteError.value = e instanceof Error ? e.message : "删除失败";
   }
 }
 
@@ -387,5 +401,27 @@ async function handleSubmit() {
         </template>
       </div>
     </Transition>
+
+    <!-- 删除确认 -->
+    <ConfirmDialog
+      :visible="showDeleteConfirm"
+      title="删除分类"
+      :description="`确定要删除分类「${deleteTarget?.name ?? ''}」吗？`"
+      confirm-text="删除"
+      danger
+      @confirm="confirmDelete"
+      @cancel="deleteTarget = null"
+    />
+
+    <!-- 删除失败提示 -->
+    <ConfirmDialog
+      :visible="deleteError !== ''"
+      title="删除失败"
+      :description="deleteError"
+      confirm-text="知道了"
+      hide-cancel
+      @confirm="deleteError = ''"
+      @cancel="deleteError = ''"
+    />
   </Teleport>
 </template>

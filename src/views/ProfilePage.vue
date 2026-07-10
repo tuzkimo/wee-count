@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { Camera } from "lucide-vue-next";
 import AppHeader from "@/components/AppHeader.vue";
 import AvatarCropper from "@/components/AvatarCropper.vue";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useAuthStore } from "@/stores/auth";
 
 const router = useRouter();
@@ -18,6 +19,7 @@ const selectedEmoji = ref(currentAvatar.value);
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const cropperFile = ref<File | null>(null);
+const avatarError = ref("");
 
 function triggerUpload() {
   fileInput.value?.click();
@@ -44,7 +46,7 @@ function onCropperCancel() {
 
 function onCropperError() {
   cropperFile.value = null;
-  alert("图片无法读取，请换一张");
+  avatarError.value = "图片无法读取，请换一张";
 }
 
 // emoji 头像选项
@@ -166,5 +168,16 @@ const hasChanges = computed(() =>
         @error="onCropperError"
       />
     </div>
+
+    <!-- 图片读取失败提示 -->
+    <ConfirmDialog
+      :visible="avatarError !== ''"
+      title="提示"
+      :description="avatarError"
+      confirm-text="知道了"
+      hide-cancel
+      @confirm="avatarError = ''"
+      @cancel="avatarError = ''"
+    />
   </div>
 </template>

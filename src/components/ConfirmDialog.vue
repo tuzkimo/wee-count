@@ -6,6 +6,8 @@ defineProps<{
   confirmText?: string;
   cancelText?: string;
   danger?: boolean;
+  /** 仅显示确认按钮（提示态），隐藏取消按钮 */
+  hideCancel?: boolean;
 }>();
 
 defineEmits<{
@@ -33,6 +35,7 @@ defineEmits<{
             </p>
             <div class="mt-6 flex gap-3">
               <button
+                v-if="!hideCancel"
                 class="flex-1 rounded-xl bg-gray-100 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-200"
                 @click="$emit('cancel')"
               >
