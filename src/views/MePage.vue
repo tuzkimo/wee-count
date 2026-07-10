@@ -121,10 +121,12 @@ function handleLogout(): void {
       >
         <span
           class="inline-block h-2 w-2 rounded-full"
-          :class="auth.isSyncing ? 'bg-yellow-400' : 'bg-green-400'"
+          :class="auth.isSyncing ? 'bg-yellow-400' : auth.lastSyncFailed ? 'bg-red-500' : 'bg-green-400'"
         />
-        <span class="text-sm text-text-secondary">
-          {{ auth.isSyncing ? "同步中..." : `已同步 ${getLastSyncedAt() ? new Date(getLastSyncedAt()!).toLocaleString() : "从未同步"}` }}
+        <span class="text-sm" :class="auth.lastSyncFailed ? 'text-red-500' : 'text-text-secondary'">
+          <template v-if="auth.isSyncing">同步中...</template>
+          <template v-else-if="auth.lastSyncFailed">同步失败，点击重试</template>
+          <template v-else>已同步 {{ getLastSyncedAt() ? new Date(getLastSyncedAt()!).toLocaleString() : "从未同步" }}</template>
         </span>
       </button>
 

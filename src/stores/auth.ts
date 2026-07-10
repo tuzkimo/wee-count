@@ -24,6 +24,7 @@ export const useAuthStore = defineStore("auth", () => {
   const isInitialized = ref(false);
   const isSyncing = ref(false);
   const lastSyncedAt = ref<string | null>(null);
+  const lastSyncFailed = ref(false);
   const syncVersion = ref(0);
 
   const isAuthenticated = computed(() => mode.value !== 'none');
@@ -141,6 +142,7 @@ export const useAuthStore = defineStore("auth", () => {
     onlineUser.value = null;
     mode.value = 'none';
     lastSyncedAt.value = null;
+    lastSyncFailed.value = false;
     localStorage.removeItem("current_user_id");
   }
 
@@ -159,6 +161,7 @@ export const useAuthStore = defineStore("auth", () => {
     api.clearTokens();
     onlineUser.value = null;
     mode.value = 'local';
+    lastSyncFailed.value = false;
   }
 
   // 初始化
@@ -264,6 +267,7 @@ export const useAuthStore = defineStore("auth", () => {
     isInitialized,
     isSyncing,
     lastSyncedAt,
+    lastSyncFailed,
     syncVersion,
     isAuthenticated,
     isOnline,

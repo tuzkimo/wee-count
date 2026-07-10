@@ -91,16 +91,24 @@ function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
 }
 
 /**
- * Execute sync: send local changes to server, receive and merge remote changes
+ * Execute sync: send local changes to server, receive and merge remote changes.
+ * 返回是否同步成功（含首次全量同步）；失败时本地变更已重新入队待重试。
  */
-export async function performSync(): Promise<void> {
+export async function performSync(): Promise<boolean> {
   const lastSyncedAt = getLastSyncedAt();
 
   // 从未同步成功过，做全量上传
   if (!lastSyncedAt) {
     const { firstFullSync } = await import('./migration')
-    try { await firstFullSync() } catch (e) { console.warn('[sync] firstFullSync failed:', e) }
-    return
+    try {
+      await firstFullSync()
+    } catch (e) {
+      console.warn('[sync] firstFullSync failed:', e)
+      await markSyncResult(false)
+      return false
+    }
+    await markSyncResult(true)
+    return true
   }
 
   const changes = { ...pendingChanges };
@@ -124,7 +132,8 @@ export async function performSync(): Promise<void> {
   if (!res.ok || !res.data) {
     console.warn("[sync] performSync failed:", res.status, res.error);
     mergeChanges(pendingChanges, changes);
-    return;
+    await markSyncResult(false)
+    return false;
   }
 
   await applyRemoteChanges(res.data.remote_changes);
@@ -133,6 +142,19 @@ export async function performSync(): Promise<void> {
   // 通知 TransactionList 刷新
   const { useAuthStore } = await import("@/stores/auth");
   useAuthStore().notifySyncComplete();
+  await markSyncResult(true)
+  return true;
+}
+
+// 把同步结果同步到 auth store，供 UI 显示「同步失败」而非误报「已同步」。
+// 动态 import 避免与 auth.ts 顶层循环依赖。
+async function markSyncResult(ok: boolean): Promise<void> {
+  try {
+    const { useAuthStore } = await import("@/stores/auth");
+    useAuthStore().lastSyncFailed = !ok;
+  } catch {
+    // auth store 尚未初始化，忽略
+  }
 }
 
 /**
@@ -296,6 +318,15 @@ export async function collectMemberAliasesForSync(): Promise<MemberAliasPayload[
     setter_user_id: setter,
     target_user_id: a.target_user_id,
     alias_name: a.alias_name,
-    updated_at: a.updated_at,
+    updated_at: toIsoTimestamp(a.updated_at),
   }));
+}
+
+// SQLite 的 datetime('now') 产出 "YYYY-MM-DD HH:MM:SS"（UTC），非 RFC3339，
+// Go time.Time 无法解析会让整个 /sync 请求体被拒（400 invalid request body）。
+// 统一归一化为 ISO（带 Z）；已经是 ISO 的原样返回。
+export function toIsoTimestamp(v: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(v);
+  if (m) return `${m[1]}T${m[2]}${m[3] ?? ""}Z`;
+  return v;
 }

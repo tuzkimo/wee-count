@@ -27,6 +27,7 @@ func (h *SyncHandler) Sync(w http.ResponseWriter, r *http.Request) {
 
 	var req model.SyncRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("sync bad request for user %s: %v", userID, err)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

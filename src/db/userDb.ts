@@ -262,10 +262,13 @@ export async function getMemberAlias(targetUserId: string): Promise<MemberAliasR
 export async function setMemberAlias(targetUserId: string, aliasName: string): Promise<void> {
   const db = getUserDb()
   if (!db) return
+  // 用 JS ISO 写入，与 transactions/accounts 等表一致；datetime('now') 产出非 RFC3339，
+  // 会导致 /sync 请求体被后端 time.Time 解析失败（400）。
+  const now = new Date().toISOString()
   await db.execute(
     `INSERT OR REPLACE INTO member_aliases (target_user_id, alias_name, updated_at)
-     VALUES ($1, $2, datetime('now'))`,
-    [targetUserId, aliasName]
+     VALUES ($1, $2, $3)`,
+    [targetUserId, aliasName, now]
   )
 }
 

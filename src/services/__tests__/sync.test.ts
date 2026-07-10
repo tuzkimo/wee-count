@@ -12,7 +12,7 @@ vi.mock("@/services/api", () => ({
   hasBaseUrl: vi.fn(() => true),
 }));
 
-import { getLastSyncedAt, setLastSyncedAt } from "@/services/sync";
+import { getLastSyncedAt, setLastSyncedAt, toIsoTimestamp } from "@/services/sync";
 
 describe("sync cursor is per-user", () => {
   beforeEach(() => {
@@ -37,5 +37,21 @@ describe("sync cursor is per-user", () => {
     // user2's cursor stays T2
     getCurrentUserId.mockReturnValue("user-2");
     expect(getLastSyncedAt()).toBe("T2");
+  });
+});
+
+describe("toIsoTimestamp", () => {
+  it("normalizes SQLite datetime('now') format to RFC3339", () => {
+    // datetime('now') 产出 "YYYY-MM-DD HH:MM:SS"（UTC），Go time.Time 无法解析
+    expect(toIsoTimestamp("2026-07-10 02:31:59")).toBe("2026-07-10T02:31:59Z");
+  });
+
+  it("preserves fractional seconds from datetime('now','subsec')", () => {
+    expect(toIsoTimestamp("2026-07-10 02:31:59.123")).toBe("2026-07-10T02:31:59.123Z");
+  });
+
+  it("leaves already-ISO timestamps untouched", () => {
+    const iso = "2026-07-10T02:31:59.123Z";
+    expect(toIsoTimestamp(iso)).toBe(iso);
   });
 });
