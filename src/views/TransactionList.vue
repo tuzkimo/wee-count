@@ -565,19 +565,14 @@ function onTxClick(tx: Transaction) {
                   class="text-gray-300"
                 />
               </template>
-              <!-- 团队账本他人记录：成员头像 -->
-              <MemberAvatar
-                v-else-if="isTeamLedger && !isTxOwner(tx)"
-                :user-id="tx.user_id"
-                :size="20"
-              />
-              <!-- 正常模式：交易图标 -->
-              <span v-else class="text-xl">{{ getTxIcon(tx) }}</span>
+              <!-- 交易图标 -->
+              <span class="text-xl">{{ getTxIcon(tx) }}</span>
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium text-text">{{ getTxCategoryName(tx) }}</p>
                 <p class="text-xs text-text-secondary">{{ getTxDescription(tx) }}</p>
-                <p v-if="isTeamLedger && tx.user_id" class="text-[10px] text-text-secondary">
-                  👤 {{ memberDisplay[tx.user_id] ?? tx.user_id.slice(0,8) }}
+                <p v-if="isTeamLedger && tx.user_id" class="flex items-center gap-1 text-[10px] text-text-secondary">
+                  <MemberAvatar :user-id="tx.user_id" :size="14" />
+                  {{ memberDisplay[tx.user_id] ?? tx.user_id.slice(0,8) }}
                 </p>
                 <p v-if="tx.tags && tx.tags.length > 0" class="mt-0.5 flex gap-1">
                   <span
@@ -594,9 +589,7 @@ function onTxClick(tx: Transaction) {
               </div>
               <span
                 class="shrink-0 text-sm font-semibold"
-                :class="(isTeamLedger && !isTxOwner(tx))
-                  ? 'text-text-secondary'
-                  : (tx.type === 'expense' ? 'text-expense' : tx.type === 'income' ? 'text-income' : 'text-text')"
+                :class="tx.type === 'expense' ? 'text-expense' : tx.type === 'income' ? 'text-income' : 'text-text'"
               >
                 {{ formatAmount(tx) }}
               </span>

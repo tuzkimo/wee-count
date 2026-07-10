@@ -12,6 +12,7 @@ import { ACCOUNT_TYPE_LABELS } from "@/types";
 import { computed, ref, watch } from "vue";
 import { useLedgerStore } from "@/stores/ledger";
 import { useMemberInfo } from "@/composables/useMemberInfo";
+import MemberAvatar from "@/components/MemberAvatar.vue";
 
 const props = defineProps<{
   account: Account;
@@ -84,7 +85,8 @@ const balanceClass = computed(() => {
     <div class="flex-1">
       <p class="text-sm font-medium text-text">{{ account.name }}</p>
       <p class="text-xs text-text-secondary">{{ typeLabel }}</p>
-      <p v-if="isTeamLedger && ownerName" class="text-[10px] text-text-secondary">
+      <p v-if="isTeamLedger && ownerName" class="flex items-center gap-1 text-[10px] text-text-secondary">
+        <MemberAvatar :user-id="account.owner_id" :size="14" />
         {{ ownerName }}
       </p>
     </div>

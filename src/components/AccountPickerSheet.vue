@@ -6,11 +6,16 @@ import { useLedgerStore } from "@/stores/ledger";
 import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
 import { useMemberInfo } from "@/composables/useMemberInfo";
+import MemberAvatar from "@/components/MemberAvatar.vue";
 import type { Account } from "@/types";
 
-defineProps<{
+const props = defineProps<{
   visible: boolean;
   showAllOption?: boolean;
+  /** 账户范围：own 仅自己创建的（团队账本下过滤）；all 所有账户 */
+  scope?: "own" | "all";
+  /** 是否在账户下方显示归属成员（头像+名字） */
+  showMember?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -26,6 +31,7 @@ const auth = useAuthStore();
 
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
 const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "");
+const showMemberInfo = computed(() => isTeamLedger.value && props.showMember === true);
 
 const { getMember } = useMemberInfo();
 const ownerNames = ref<Record<string, string>>({});
@@ -40,7 +46,8 @@ async function loadOwnerName(ownerId: string) {
 const availableAccounts = computed(() =>
   accountStore.accounts.filter((a) => {
     if (a.is_deleted) return false;
-    if (isTeamLedger.value && a.owner_id !== currentUserId.value) return false;
+    // 团队账本且范围为 own 时仅显示自己创建的账户
+    if (isTeamLedger.value && props.scope !== "all" && a.owner_id !== currentUserId.value) return false;
     return true;
   })
 );
@@ -93,16 +100,22 @@ function select(acc: Account) {
           <button
             v-for="acc in availableAccounts"
             :key="acc.id"
-            class="flex w-full items-center gap-3 px-2 py-3 text-sm transition-colors hover:bg-gray-50"
+            class="flex w-full items-center gap-3 px-2 py-3 text-left transition-colors hover:bg-gray-50"
             @click="select(acc)"
           >
             <span
               class="h-3 w-3 shrink-0 rounded-full"
               :style="{ backgroundColor: acc.color || '#3b82f6' }"
             />
-            <span class="text-text">{{ acc.name }}</span>
-            <span v-if="isTeamLedger && acc.owner_id" class="text-[10px] text-text-secondary">
-              ({{ ownerNames[acc.owner_id] ?? acc.owner_id.slice(0,8) }})
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm text-text">{{ acc.name }}</span>
+              <span
+                v-if="showMemberInfo && acc.owner_id"
+                class="mt-0.5 flex items-center gap-1 text-[10px] text-text-secondary"
+              >
+                <MemberAvatar :user-id="acc.owner_id" :size="14" />
+                {{ ownerNames[acc.owner_id] ?? acc.owner_id.slice(0,8) }}
+              </span>
             </span>
           </button>
 

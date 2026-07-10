@@ -47,6 +47,8 @@ const deleteDialogVisible = ref(false);
 const accountPickerVisible = ref(false);
 const accountCreateSheetVisible = ref(false);
 const accountPickerTarget = ref<"from" | "to">("from");
+const pickerScope = ref<"own" | "all">("own");
+const pickerShowMember = ref(false);
 const categorySheetVisible = ref(false);
 const saveError = ref("");
 const isSaving = ref(false);
@@ -187,6 +189,14 @@ function getAccountName(id: string | null): string {
 
 function openAccountPicker(target: "from" | "to") {
   accountPickerTarget.value = target;
+  // 转账的转入账户：可选所有账户，并显示归属成员（头像+名字）
+  if (target === "to" && txType.value === "transfer") {
+    pickerScope.value = "all";
+    pickerShowMember.value = true;
+  } else {
+    pickerScope.value = "own";
+    pickerShowMember.value = false;
+  }
   accountPickerVisible.value = true;
 }
 
@@ -453,7 +463,7 @@ function goBack() {
               <span class="flex items-center gap-2">
                 <span
                   class="h-2.5 w-2.5 shrink-0 rounded-full"
-                  :style="{ backgroundColor: availableAccounts.find(a => a.id === toAccountId)?.color || '#ccc' }"
+                  :style="{ backgroundColor: accountStore.accounts.find(a => a.id === toAccountId)?.color || '#ccc' }"
                 />
                 {{ getAccountName(toAccountId) || '请选择' }}
               </span>
@@ -549,6 +559,8 @@ function goBack() {
     <!-- 账户选择 Sheet -->
     <AccountPickerSheet
       :visible="accountPickerVisible"
+      :scope="pickerScope"
+      :show-member="pickerShowMember"
       @close="accountPickerVisible = false"
       @select="onAccountSelect"
       @create="handleCreateAccount"
