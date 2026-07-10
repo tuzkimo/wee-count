@@ -7,6 +7,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://wee:wee@postgres:5432/wee-count?sslmode=disable}
       REDIS_URL: ${REDIS_URL:-redis:6379}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://tauri.localhost}
     depends_on:
       postgres:
         condition: service_healthy

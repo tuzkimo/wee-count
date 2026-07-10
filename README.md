@@ -88,3 +88,67 @@
 | `/profile` | ProfilePage | 个人资料页（头像上传等，隐藏 Tab） |
 | `/transactions` | → `/` | 旧路由重定向 |
 | `/settings` | SettingsPage | 设置页（开发中） |
+
+## 后端配置
+
+后端通过环境变量配置（`backend/.env`），加载逻辑见 `backend/internal/config/config.go`：
+
+| 变量 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `DATABASE_URL` | 是 | — | PostgreSQL 连接串 |
+| `REDIS_URL` | 是 | — | Redis 地址 |
+| `JWT_SECRET` | 是 | — | JWT 签名密钥 |
+| `PORT` | 否 | `8080` | 监听端口 |
+| `CORS_ALLOWED_ORIGINS` | 否 | `http://tauri.localhost,http://localhost:1420` | 允许的来源，逗号分隔，需含 scheme |
+
+CORS 默认放行 Tauri Android webview 来源（`http://tauri.localhost`）与 Vite dev server（`http://localhost:1420`）。生产环境若需锁定单一来源，显式设置 `CORS_ALLOWED_ORIGINS=http://tauri.localhost` 即可。
+
+## 后端部署
+
+后端用 Docker Compose 一键拉起 API + PostgreSQL + Redis，配置见 `backend/Dockerfile` 与 `backend/docker-compose.yml`。
+
+### 1. 准备服务器
+
+- 安装 Docker + Docker Compose（或直接用 Podman）
+- 开放入站端口：`8080`（API）。PostgreSQL/Redis 仅容器内通信，**不要**对公网开放
+
+### 2. 配置环境变量
+
+在 `backend/` 下创建 `.env`（compose 会自动读取），**务必改掉默认密码与 JWT 密钥**：
+
+```env
+POSTGRES_USER=wee
+POSTGRES_PASSWORD=<改成强密码>
+POSTGRES_DB=wee-count
+JWT_SECRET=<改成随机长字符串>
+CORS_ALLOWED_ORIGINS=http://tauri.localhost
+```
+
+> `DATABASE_URL` / `REDIS_URL` 不需要手填——compose 用容器服务名 `postgres` / `redis` 拼好默认值透传给 API。
+
+### 3. 启动
+
+```bash
+cd backend
+docker compose up -d
+```
+
+数据库迁移在服务启动时自动执行（`internal/database` 的 `RunMigrations`）。
+
+### 4. 验证
+
+```bash
+curl http://<服务器IP>:8080/api/v1/auth/register
+```
+
+返回 4xx（缺少请求体）即说明 API 已正常监听。
+
+### 5. 前端对接
+
+在 Tauri App 的在线同步配置页填入 API 地址：
+
+```
+http://<服务器IP>:8080/api/v1
+```
+
+> **安全建议**：生产环境建议前置 nginx 反向代理 + HTTPS（Let's Encrypt 或 Cloudflare Tunnel），此时 `CORS_ALLOWED_ORIGINS` 保持 `http://tauri.localhost` 不变——CORS 校验的是 webview 来源，与后端域名无关。
