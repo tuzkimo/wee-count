@@ -65,4 +65,34 @@ describe("useAuthStore", () => {
     expect(ok).toBe(false);
     expect(getLocalUserByUsername).toHaveBeenCalledWith("alice");
   });
+
+  it("localLogin fallback 不得用他人凭据开别人的库", async () => {
+    // 回归：清空数据后在线登录 user1，登出，再用 user2（同密码）本地登录。
+    // fallback 会拿 user2 凭据去服务端登录成功，但绝不能因此打开 user1 的库、
+    // 或把 user2 的 username 写到 user1 的本地记录上。
+    const { getLocalUserByUsername, getLocalUsers, updateLocalUsername } = await import("@/db/meta");
+    const { openUserDb } = await import("@/db/userDb");
+    const api = await import("@/services/api");
+    (getLocalUserByUsername as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (getLocalUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: "local-user1", username: "user1", nickname: "user1", password_hash: "x",
+        api_url: "http://srv", server_user_id: "server-user1", avatar_url: null,
+        created_at: "", updated_at: "",
+      },
+    ]);
+    // user2 凭据在服务端登录成功，但返回的是 user2 的服务端身份
+    (api.login as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      user: { id: "server-user2", username: "user2", nickname: "user2", avatar_url: null, created_at: "", updated_at: "" },
+      access_token: "a", refresh_token: "r", ledger_id: "L2",
+    });
+
+    const store = useAuthStore();
+    const ok = await store.localLogin("user2", "same-password");
+
+    expect(ok).toBe(false);
+    expect(openUserDb).not.toHaveBeenCalled();
+    expect(updateLocalUsername).not.toHaveBeenCalled();
+    expect(api.clearTokens).toHaveBeenCalled();
+  });
 });

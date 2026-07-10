@@ -68,6 +68,12 @@ export const useAuthStore = defineStore("auth", () => {
       } catch {
         continue;
       }
+      // 必须是同一服务端账号（本地 username 漂移）才可复用此候选人的库；
+      // 否则输入的是别人的凭据，开错库会看到他人数据，且会把别人 username 写到该库上。
+      if (resp.user.id !== c.server_user_id) {
+        api.clearTokens();
+        continue;
+      }
       await updateLocalUsername(c.id, username);
       await openUserDb(c.id, c.nickname);
       currentLocalUser.value = { ...c, username };
