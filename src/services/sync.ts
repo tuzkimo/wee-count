@@ -282,8 +282,10 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
   }
 
   // member_aliases：本地 userDb 只存"我设的"别名（去 setter 列），
-  // 服务端 payload 带 setter_user_id 标识，apply 时过滤 setter=me 再写本地
-  const myUserId = getCurrentUserId() || (await authServerUserId()) || "";
+  // 服务端 payload 带 setter_user_id 标识，apply 时过滤 setter=me 再写本地。
+  // 必须与 collectMemberAliasesForSync 的 setter 取值一致（优先 server_user_id），
+  // 否则上传用 server_user_id、下载用本地 user.id，两者不等会把别名全跳过。
+  const myUserId = (await authServerUserId()) || getCurrentUserId() || "";
   for (const alias of (remote.member_aliases || [])) {
     if (alias.setter_user_id !== myUserId) continue;
     const { getMemberAlias, setMemberAlias } = await import("@/db/userDb");
