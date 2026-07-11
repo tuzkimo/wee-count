@@ -54,11 +54,20 @@ export const useTagStore = defineStore("tag", () => {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
+    const existing = tags.value.find((t) => t.id === id);
     await db.execute(
       "UPDATE tags SET is_deleted = 1, updated_at = ? WHERE id = ?",
       [now, id]
     );
     tags.value = tags.value.filter((t) => t.id !== id);
+    if (existing) {
+      enqueueSync({
+        accounts: [],
+        tags: [{ ...existing, is_deleted: true, updated_at: now }],
+        categories: [],
+        transactions: [],
+      });
+    }
   }
 
   return { tags, fetchAll, add, remove };

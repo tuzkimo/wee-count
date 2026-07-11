@@ -21,6 +21,15 @@ vi.mock("@/stores/account", () => ({
   })),
 }));
 
+vi.mock("@/services/sync", () => ({
+  enqueueSync: vi.fn(),
+}));
+
+vi.mock("@/stores/auth", () => ({
+  useAuthStore: vi.fn(() => ({ isAuthenticated: true })),
+}));
+
+import { enqueueSync } from "@/services/sync";
 import { useTransactionStore } from "@/stores/transaction";
 import type { Transaction } from "@/types";
 
@@ -235,6 +244,41 @@ describe("transactionStore", () => {
       );
       // Verify account balance refresh
       expect(mockFetchAll).toHaveBeenCalledWith("pl-1");
+    });
+
+    it("should bump updated_at and enqueue sync when only tags change", async () => {
+      mockDb.execute.mockResolvedValue(undefined);
+      // 初始 fetchAll 填充 store（旧 updated_at）
+      mockDb.select.mockResolvedValueOnce([{ ...makeTx({ id: "tx-1" }), is_deleted: 0 }]);
+      // update 后 fetchAll 重读，模拟 DB 已 bump updated_at、新标签已写入
+      mockDb.select.mockResolvedValueOnce([
+        {
+          ...makeTx({ id: "tx-1", updated_at: "2026-06-10T00:00:00Z" }),
+          is_deleted: 0,
+          tag_ids: "tag-3",
+          tag_names: "标签3",
+        },
+      ]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1");
+      vi.mocked(enqueueSync).mockClear();
+
+      await store.update("tx-1", { tag_ids: ["tag-3"] });
+
+      // 只改标签也必须发 UPDATE transactions bump updated_at，
+      // 否则 enqueueSync 带旧 updated_at，后端 LWW 跳过 → 标签变更不同步
+      const updateCalls = mockDb.execute.mock.calls.filter(
+        (c) => String(c[0]).includes("UPDATE transactions")
+      );
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0][0]).toContain("updated_at");
+
+      // sync 收到带新 updated_at 的 tx
+      expect(enqueueSync).toHaveBeenCalledOnce();
+      const payload = vi.mocked(enqueueSync).mock.calls[0][0];
+      expect(payload.transactions![0].updated_at).toBe("2026-06-10T00:00:00Z");
+      expect(payload.transactions![0].tag_ids).toEqual(["tag-3"]);
     });
   });
 

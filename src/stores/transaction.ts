@@ -285,20 +285,30 @@ export const useTransactionStore = defineStore("transaction", () => {
     if (data.note !== undefined) { sets.push("note = ?"); values.push(data.note); }
     if (data.occurred_at !== undefined) { sets.push("occurred_at = ?"); values.push(data.occurred_at); }
 
+    const hasTagChange = data.tag_ids !== undefined;
+    const now = new Date().toISOString();
+
     if (sets.length > 0) {
       sets.push("updated_at = ?");
-      values.push(new Date().toISOString());
+      values.push(now);
       values.push(id);
 
       await db.execute(
         `UPDATE transactions SET ${sets.join(", ")} WHERE id = ?`,
         values
       );
+    } else if (hasTagChange) {
+      // 只改标签也要 bump updated_at，否则 enqueueSync 带旧 updated_at，
+      // 后端 LWW 判定不新于服务端而跳过，标签变更静默不同步。
+      await db.execute(
+        "UPDATE transactions SET updated_at = ? WHERE id = ?",
+        [now, id]
+      );
     }
 
-    if (data.tag_ids !== undefined) {
+    if (hasTagChange) {
       await db.execute("DELETE FROM transaction_tags WHERE transaction_id = ?", [id]);
-      for (const tagId of data.tag_ids) {
+      for (const tagId of data.tag_ids!) {
         await db.execute(
           "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)",
           [id, tagId]
