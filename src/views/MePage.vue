@@ -84,7 +84,7 @@ function handleLogout(): void {
         <div class="flex-1">
           <p class="font-medium text-text">{{ auth.currentLocalUser?.nickname }}</p>
           <p class="text-sm text-text-secondary">
-            {{ auth.isOnline ? '在线模式' : '本地模式' }}
+            {{ auth.isOnline ? '在线模式' : (auth.isOnlineBound ? '本地模式（在线服务不可用）' : '本地模式') }}
           </p>
         </div>
         <ChevronRight :size="16" class="text-text-secondary" />
@@ -96,14 +96,18 @@ function handleLogout(): void {
           <div>
             <p class="text-sm font-medium">
               <span v-if="auth.isOnline" class="text-green-500">● 已绑定在线同步</span>
+              <span v-else-if="auth.isOnlineBound" class="text-orange-500">⚠ 在线服务暂不可用</span>
               <span v-else class="text-gray-400">○ 纯本地模式</span>
             </p>
             <p v-if="auth.isOnline && auth.currentLocalUser?.api_url" class="text-xs text-gray-400 mt-1">
               {{ auth.currentLocalUser.api_url }}
             </p>
+            <p v-else-if="auth.isOnlineBound" class="text-xs text-orange-400 mt-1">
+              已切换本地模式，服务恢复后自动重连
+            </p>
           </div>
           <button
-            v-if="!auth.isOnline"
+            v-if="!auth.isOnlineBound"
             class="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white"
             @click="router.push('/bind-sync')"
           >
@@ -112,7 +116,7 @@ function handleLogout(): void {
         </div>
       </div>
 
-      <!-- Sync status (online only) -->
+      <!-- Sync status -->
       <button
         v-if="auth.isOnline"
         class="flex items-center gap-2 bg-surface px-4 py-3 border-b border-gray-100"
@@ -129,6 +133,13 @@ function handleLogout(): void {
           <template v-else>已同步 {{ getLastSyncedAt() ? new Date(getLastSyncedAt()!).toLocaleString() : "从未同步" }}</template>
         </span>
       </button>
+      <div
+        v-else-if="auth.isOnlineBound"
+        class="flex items-center gap-2 bg-surface px-4 py-3 border-b border-gray-100"
+      >
+        <span class="inline-block h-2 w-2 rounded-full bg-orange-400" />
+        <span class="text-sm text-orange-500">在线服务不可用，正在自动重连...</span>
+      </div>
 
       <!-- My ledgers -->
       <div class="mt-3">
@@ -141,25 +152,30 @@ function handleLogout(): void {
         </div>
       </div>
 
-      <!-- Team management (online only) -->
-      <div v-if="auth.isOnline" class="mt-3">
+      <!-- Team management (需在线模式) -->
+      <div v-if="auth.isOnlineBound" class="mt-3">
         <p class="px-4 py-2 text-xs font-medium text-text-secondary uppercase">团队管理</p>
         <div class="border-y border-gray-100 bg-surface">
-          <button class="flex w-full items-center gap-3 px-4 py-3" @click="router.push('/teams/create')">
-            <Plus :size="18" class="text-primary" />
-            <span class="flex-1 text-left text-text">创建团队</span>
-            <ChevronRight :size="16" class="text-text-secondary" />
-          </button>
-          <button class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/join')">
-            <UserPlus :size="18" class="text-primary" />
-            <span class="flex-1 text-left text-text">加入团队</span>
-            <ChevronRight :size="16" class="text-text-secondary" />
-          </button>
-          <button v-if="hasTeamLedger" class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/members')">
-            <Users :size="18" class="text-primary" />
-            <span class="flex-1 text-left text-text">成员管理</span>
-            <ChevronRight :size="16" class="text-text-secondary" />
-          </button>
+          <template v-if="auth.isOnline">
+            <button class="flex w-full items-center gap-3 px-4 py-3" @click="router.push('/teams/create')">
+              <Plus :size="18" class="text-primary" />
+              <span class="flex-1 text-left text-text">创建团队</span>
+              <ChevronRight :size="16" class="text-text-secondary" />
+            </button>
+            <button class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/join')">
+              <UserPlus :size="18" class="text-primary" />
+              <span class="flex-1 text-left text-text">加入团队</span>
+              <ChevronRight :size="16" class="text-text-secondary" />
+            </button>
+            <button v-if="hasTeamLedger" class="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3" @click="router.push('/teams/members')">
+              <Users :size="18" class="text-primary" />
+              <span class="flex-1 text-left text-text">成员管理</span>
+              <ChevronRight :size="16" class="text-text-secondary" />
+            </button>
+          </template>
+          <div v-else class="px-4 py-3 text-sm text-text-secondary">
+            团队功能需在线模式，服务恢复后自动可用
+          </div>
         </div>
       </div>
 
@@ -173,8 +189,8 @@ function handleLogout(): void {
         </div>
       </div>
 
-      <!-- 退出在线同步 (仅在线模式) -->
-      <div v-if="auth.isOnline" class="mt-6 px-4">
+      <!-- 退出在线同步 (绑定过在线同步即可，降级时也允许解绑) -->
+      <div v-if="auth.isOnlineBound" class="mt-6 px-4">
         <button
           class="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 py-3 text-text-secondary"
           @click="handleUnbindOnline"

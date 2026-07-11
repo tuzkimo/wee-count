@@ -29,6 +29,11 @@ export const useAuthStore = defineStore("auth", () => {
 
   const isAuthenticated = computed(() => mode.value !== 'none');
   const isOnline = computed(() => mode.value === 'online');
+  // 是否绑定过在线同步（与当前是否连上解耦）：绑定了但服务下线退到 local 时为 true。
+  // 用于 UI 区分「纯本地用户」与「在线用户降级」，避免降级时误显示「配置在线同步」。
+  const isOnlineBound = computed(
+    () => !!currentLocalUser.value?.server_user_id && !!currentLocalUser.value?.api_url
+  );
 
   // 本地登录（按不可变 username 查，与可变 nickname 解耦）
   async function localLogin(username: string, password: string): Promise<boolean> {
@@ -44,14 +49,9 @@ export const useAuthStore = defineStore("auth", () => {
       mode.value = 'local';
       localStorage.setItem("current_user_id", user.id);
 
-      // 如果绑定了服务端，尝试恢复在线会话
+      // 绑定了服务端则后台恢复在线会话（不阻塞登录返回）
       if (user.server_user_id && user.api_url) {
-        api.setBaseUrl(user.api_url);
-        const restored = await api.tryRestoreSession();
-        if (restored) {
-          onlineUser.value = restored;
-          mode.value = 'online';
-        }
+        void restoreOnlineSession();
       }
       triggerOnlineSync();
       return true;
@@ -142,6 +142,7 @@ export const useAuthStore = defineStore("auth", () => {
 
   // 登出
   function logout(): void {
+    stopOnlineRecovery();
     closeUserDb();
     // 不再调用 api.clearTokens() — refresh_token 保留以便下次登录自动恢复在线会话
     currentLocalUser.value = null;
@@ -156,6 +157,7 @@ export const useAuthStore = defineStore("auth", () => {
   async function unbindOnline(): Promise<void> {
     if (!currentLocalUser.value) return;
 
+    stopOnlineRecovery();
     await updateLocalUserBinding(currentLocalUser.value.id, "", "");
 
     currentLocalUser.value = {
@@ -189,23 +191,18 @@ export const useAuthStore = defineStore("auth", () => {
       return;
     }
 
-    // 打开用户 db
+    // 打开用户 db，立即以本地模式就绪——不阻塞路由守卫渲染。
+    // 在线服务即便下线，用户也能先用本地数据。
     await openUserDb(user.id, user.nickname);
     currentLocalUser.value = user;
     mode.value = 'local';
-
-    // 如果绑定了服务端，尝试恢复在线会话
-    if (user.server_user_id && user.api_url) {
-      api.setBaseUrl(user.api_url);
-      const restored = await api.tryRestoreSession();
-      if (restored) {
-        onlineUser.value = restored;
-        mode.value = 'online';
-      }
-    }
-
     isInitialized.value = true;
-    triggerOnlineSync();
+
+    // 绑定了在线同步则后台恢复会话（不阻塞）：
+    // 成功 → 切 online + 拉取远程；失败/服务下线 → 保持本地可用 + 退避重连直到恢复。
+    if (user.server_user_id && user.api_url) {
+      void restoreOnlineSession();
+    }
   }
 
   function notifySyncComplete(): void {
@@ -218,6 +215,53 @@ export const useAuthStore = defineStore("auth", () => {
   function triggerOnlineSync(): void {
     if (mode.value !== 'online') return;
     void performSync().catch(() => { /* performSync 内部已 console.warn，吞掉即可 */ });
+  }
+
+  // 后台在线会话恢复：幂等，可在 local 模式下反复调用。
+  // 成功 → 切 online + 拉取远程 + 推送降级期间积压的本地变更；
+  // 失败/超时 → 启动指数退避重连，直到在线服务重新上线自动恢复。
+  // 关键：不阻塞 init/localLogin，路由渲染与会话恢复解耦。
+  let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let recoveryAttempt = 0;
+
+  async function restoreOnlineSession(): Promise<void> {
+    if (mode.value === 'online') return;
+    const user = currentLocalUser.value;
+    if (!user || !user.server_user_id || !user.api_url) return;
+
+    api.setBaseUrl(user.api_url);
+    const restored = await api.tryRestoreSession();
+    if (restored) {
+      onlineUser.value = restored;
+      mode.value = 'online';
+      stopOnlineRecovery();
+      triggerOnlineSync();
+      return;
+    }
+    startOnlineRecovery();
+  }
+
+  // 指数退避：10s → 20s → 40s → 60s（上限），长期保持每分钟探测一次。
+  function startOnlineRecovery(): void {
+    if (recoveryTimer) return;
+    if (mode.value === 'online') return;
+    const user = currentLocalUser.value;
+    if (!user || !user.server_user_id || !user.api_url) return;
+
+    recoveryAttempt++;
+    const delay = Math.min(10000 * Math.pow(2, recoveryAttempt - 1), 60000);
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      void restoreOnlineSession();
+    }, delay);
+  }
+
+  function stopOnlineRecovery(): void {
+    recoveryAttempt = 0;
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer);
+      recoveryTimer = null;
+    }
   }
 
   async function updateProfile(data: { nickname?: string; avatar_url?: string | null }): Promise<void> {
@@ -277,6 +321,7 @@ export const useAuthStore = defineStore("auth", () => {
     syncVersion,
     isAuthenticated,
     isOnline,
+    isOnlineBound,
     localLogin,
     createLocalAccount,
     bindOnline,

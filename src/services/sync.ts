@@ -68,8 +68,21 @@ export function enqueueSync(changes: Partial<SyncPayload>): void {
     clearTimeout(syncTimer);
   }
   syncTimer = setTimeout(() => {
-    performSync();
+    void performSyncIfOnline();
   }, 3000);
+}
+
+// 降级模式（绑定在线但会话未恢复，mode!=='online'）下不推送：
+// token 缺失会让每次 /sync 走 401→refresh 失败→重新入队的风暴。
+// 变更留在 pendingChanges，等 restoreOnlineSession 成功后的 triggerOnlineSync 统一推。
+async function performSyncIfOnline(): Promise<void> {
+  try {
+    const { useAuthStore } = await import("@/stores/auth");
+    if (!useAuthStore().isOnline) return;
+  } catch {
+    return; // auth store 尚未初始化
+  }
+  performSync();
 }
 
 function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {

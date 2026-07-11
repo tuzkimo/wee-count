@@ -41,6 +41,7 @@
 - API 层动态 baseUrl（`setBaseUrl()`），支持多服务端切换
 - bcryptjs 本地密码哈希
 - 同步游标按本地用户隔离（`last_synced_at:<user_id>`），避免多用户共用游标导致团队账本里别人的数据被跳过；在线会话恢复后自动后台拉取一次远程变更
+- 在线服务降级容错：所有 fetch 经 `fetchWithTimeout`（会话恢复 5s / 业务请求 15s / 登录注册 10s）兜底，服务 TCP 可达但 HTTP 不响应时不再永久挂起；启动/登录时会话恢复改为后台非阻塞，本地数据立即可用（不白屏）；服务下线期间保持本地模式，本地变更入队暂不推送，后台指数退避（10s→60s 上限）探测服务，恢复后自动重连 + 拉取远程 + 推送积压变更
 - member_aliases 同步：本地 userDb 无 setter 列（本地用户即唯一 setter）；推送时由 `collectMemberAliasesForSync` 全量补盖 `setter_user_id`（在线模式取服务端 user id，回退本地 user id），apply 时过滤 `setter=me` 再写本地，忽略他人为同一 target 设的别名
 
 ### Phase 4-C：Onboarding 引导流程（已完成）
@@ -54,7 +55,7 @@
 
 ### Phase 4-E/F：登录页 + 我的页更新（已完成）
 - LoginPage：改为手动输入用户名（本地账户登录）
-- MePage：显示在线/本地模式状态，配置在线同步入口，团队管理（创建/加入团队、成员管理），登出功能
+- MePage：显示在线/本地模式状态，配置在线同步入口，团队管理（创建/加入团队、成员管理），登出功能；在线服务降级时（`isOnlineBound && !isOnline`）同步状态显示「在线服务暂不可用，正在自动重连」，团队入口隐藏并替换为文字提示，退出在线同步仍可用
 
 ### Phase 4-G：头像裁剪与 data URL 存储（已完成）
 - 头像统一存 `avatar_url` 为 data URL（与 emoji 同路），本地/在线一致；在线模式经 `auth.updateProfile` 同步到 `users.avatar_url`

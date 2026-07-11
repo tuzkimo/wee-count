@@ -19,6 +19,23 @@ export function hasBaseUrl(): boolean {
   return baseUrl !== null
 }
 
+// 给裸 fetch 加超时兜底：服务端 TCP 可达但 HTTP 不响应（半死 / 代理丢包）时，
+// 原生 fetch 会永久 pending，把整条 await 链挂死（曾导致在线服务下线时客户端白屏）。
+// 超时后 abort，fetch 走 catch，由调用方的 try/catch 吞成失败返回。
+export async function fetchWithTimeout(
+  input: string,
+  init: RequestInit = {},
+  timeoutMs = 15000
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function setTokens(access: string, refresh: string): void {
   accessToken = access
   refreshToken = refresh
@@ -40,11 +57,11 @@ async function refreshAccessToken(): Promise<boolean> {
   if (!stored || !baseUrl) return false
 
   try {
-    const res = await fetch(`${baseUrl}/auth/refresh`, {
+    const res = await fetchWithTimeout(`${baseUrl}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: stored }),
-    })
+    }, 5000)
     if (!res.ok) return false
     const data = await res.json()
     accessToken = data.access_token
@@ -70,14 +87,14 @@ export async function apiFetch<T = unknown>(
     headers["Authorization"] = `Bearer ${accessToken}`
   }
 
-  let res = await fetch(url, { ...options, headers })
+  let res = await fetchWithTimeout(url, { ...options, headers })
 
   // 401 -> try refresh
   if (res.status === 401 && refreshToken) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {
       headers["Authorization"] = `Bearer ${accessToken}`
-      res = await fetch(url, { ...options, headers })
+      res = await fetchWithTimeout(url, { ...options, headers })
     }
   }
 
@@ -113,11 +130,11 @@ export interface AuthResponse {
 }
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
-  const res = await fetch(`${getBaseUrl()}/auth/login`, {
+  const res = await fetchWithTimeout(`${getBaseUrl()}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
-  })
+  }, 10000)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error || '登录失败')
@@ -132,11 +149,11 @@ export async function register(
   password: string,
   nickname?: string
 ): Promise<AuthResponse> {
-  const res = await fetch(`${getBaseUrl()}/auth/register`, {
+  const res = await fetchWithTimeout(`${getBaseUrl()}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password, nickname }),
-  })
+  }, 10000)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error || '注册失败')
@@ -167,11 +184,11 @@ export async function tryRestoreSession(): Promise<User | null> {
   if (!stored || !baseUrl) return null
 
   try {
-    const res = await fetch(`${baseUrl}/auth/refresh`, {
+    const res = await fetchWithTimeout(`${baseUrl}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: stored }),
-    })
+    }, 5000)
     if (!res.ok) return null
     const data = await res.json()
     accessToken = data.access_token

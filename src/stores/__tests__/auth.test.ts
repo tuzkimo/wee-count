@@ -15,6 +15,13 @@ vi.mock("@/services/api", () => ({
   login: vi.fn(),
   register: vi.fn(),
   tryRestoreSession: vi.fn(),
+  fetchWithTimeout: vi.fn(),
+}));
+
+// mock sync module — performSync 触发的真实同步不在 auth 测试范围内
+vi.mock("@/services/sync", () => ({
+  performSync: vi.fn().mockResolvedValue(true),
+  enqueueSync: vi.fn(),
 }));
 
 // mock meta db module
@@ -94,5 +101,78 @@ describe("useAuthStore", () => {
     expect(openUserDb).not.toHaveBeenCalled();
     expect(updateLocalUsername).not.toHaveBeenCalled();
     expect(api.clearTokens).toHaveBeenCalled();
+  });
+
+  it("init 对绑定在线同步的用户不阻塞：tryRestoreSession 挂起时仍立即以 local 就绪", async () => {
+    // 回归：在线服务 TCP 可达但 HTTP 不响应时，旧实现 await tryRestoreSession 永久挂起，
+    // 路由守卫不 resolve 导致白屏。改造后 init 本地部分立即完成，会话恢复后台进行。
+    const { getLocalUser } = await import("@/db/meta");
+    const api = await import("@/services/api");
+    localStorage.setItem("current_user_id", "u1");
+    (getLocalUser as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "u1", username: "alice", nickname: "Alice", password_hash: "x",
+      api_url: "http://srv", server_user_id: "s1", avatar_url: null,
+      created_at: "", updated_at: "",
+    });
+    // 模拟服务挂起：tryRestoreSession 永不 resolve
+    (api.tryRestoreSession as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise(() => {})
+    );
+
+    const store = useAuthStore();
+    await store.init(); // 必须立即 resolve，不被挂起的 restore 阻塞
+
+    expect(store.isInitialized).toBe(true);
+    expect(store.mode).toBe("local"); // 未切 online（会话尚未恢复）
+    expect(api.tryRestoreSession).toHaveBeenCalled();
+  });
+
+  it("init 后台恢复在线会话成功 → 切 online", async () => {
+    const { getLocalUser } = await import("@/db/meta");
+    const api = await import("@/services/api");
+    localStorage.setItem("current_user_id", "u2");
+    (getLocalUser as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "u2", username: "bob", nickname: "Bob", password_hash: "x",
+      api_url: "http://srv", server_user_id: "s2", avatar_url: null,
+      created_at: "", updated_at: "",
+    });
+    (api.tryRestoreSession as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "s2", username: "bob", nickname: "Bob", avatar_url: null,
+      created_at: "", updated_at: "",
+    });
+
+    const store = useAuthStore();
+    await store.init();
+    // restoreOnlineSession 是 fire-and-forget，flush 微任务等其完成
+    await vi.waitFor(() => expect(store.mode).toBe("online"));
+    expect(store.onlineUser).not.toBeNull();
+    expect(store.onlineUser?.id).toBe("s2");
+  });
+
+  it("isOnlineBound 区分纯本地与绑定在线（含降级）", () => {
+    // 纯本地用户：从未绑定 → isOnlineBound=false
+    const store = useAuthStore();
+    store.currentLocalUser = {
+      id: "u3", username: "carol", nickname: "Carol", password_hash: "x",
+      api_url: null, server_user_id: null, avatar_url: null,
+      created_at: "", updated_at: "",
+    };
+    store.mode = "local";
+    expect(store.isOnlineBound).toBe(false);
+    expect(store.isOnline).toBe(false);
+
+    // 绑定在线但服务下线降级 → isOnlineBound=true、isOnline=false
+    store.currentLocalUser = {
+      ...store.currentLocalUser!,
+      api_url: "http://srv",
+      server_user_id: "s3",
+    };
+    expect(store.isOnlineBound).toBe(true);
+    expect(store.isOnline).toBe(false);
+
+    // 恢复在线 → 两者皆 true
+    store.mode = "online";
+    expect(store.isOnlineBound).toBe(true);
+    expect(store.isOnline).toBe(true);
   });
 });

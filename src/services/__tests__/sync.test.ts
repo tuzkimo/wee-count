@@ -12,7 +12,22 @@ vi.mock("@/services/api", () => ({
   hasBaseUrl: vi.fn(() => true),
 }));
 
-import { getLastSyncedAt, setLastSyncedAt, toIsoTimestamp } from "@/services/sync";
+// performSyncIfOnline 动态 import auth store 读 isOnline
+interface AuthStoreLike {
+  isOnline: boolean;
+  notifySyncComplete: () => void;
+  lastSyncFailed: boolean;
+}
+const useAuthStoreMock = vi.fn<() => AuthStoreLike>(() => ({
+  isOnline: false,
+  notifySyncComplete: () => {},
+  lastSyncFailed: false,
+}));
+vi.mock("@/stores/auth", () => ({
+  useAuthStore: () => useAuthStoreMock(),
+}));
+
+import { enqueueSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp } from "@/services/sync";
 
 describe("sync cursor is per-user", () => {
   beforeEach(() => {
@@ -53,5 +68,56 @@ describe("toIsoTimestamp", () => {
   it("leaves already-ISO timestamps untouched", () => {
     const iso = "2026-07-10T02:31:59.123Z";
     expect(toIsoTimestamp(iso)).toBe(iso);
+  });
+});
+
+describe("enqueueSync 降级模式", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+    useAuthStoreMock.mockReturnValue({
+      isOnline: false,
+      notifySyncComplete: vi.fn(),
+      lastSyncFailed: false,
+    });
+  });
+
+  it("isOnline=false 时入队但不触发 performSync（避免降级期 401 风暴）", async () => {
+    // 回归：绑定在线但会话未恢复时，旧实现每条本地写都 3s 后打一次 /sync，
+    // 全部 401→refresh 失败→重新入队。改造后非 online 不推，变更留待恢复后统一推。
+    vi.useFakeTimers();
+    const { apiFetch } = await import("@/services/api");
+
+    enqueueSync({
+      transactions: [{ id: "t1", updated_at: "2026-07-11T00:00:00Z" } as never],
+    });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(apiFetch).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("isOnline=true 时正常触发 performSync", async () => {
+    useAuthStoreMock.mockReturnValue({
+      isOnline: true,
+      notifySyncComplete: vi.fn(),
+      lastSyncFailed: false,
+    });
+    vi.useFakeTimers();
+    // 设游标让 performSync 走 /sync 分支而非 firstFullSync
+    setLastSyncedAt("T1");
+    const { apiFetch } = await import("@/services/api");
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true, status: 200, data: { server_time: "T2", remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } },
+    });
+
+    enqueueSync({
+      transactions: [{ id: "t2", updated_at: "2026-07-11T00:00:00Z" } as never],
+    });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(apiFetch).toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });
