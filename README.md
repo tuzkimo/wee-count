@@ -43,6 +43,7 @@
 - 同步游标按本地用户隔离（`last_synced_at:<user_id>`），避免多用户共用游标导致团队账本里别人的数据被跳过；在线会话恢复后自动后台拉取一次远程变更
 - 在线服务降级容错：所有 fetch 经 `fetchWithTimeout`（会话恢复 5s / 业务请求 15s / 登录注册 10s）兜底，服务 TCP 可达但 HTTP 不响应时不再永久挂起；启动/登录时会话恢复改为后台非阻塞，本地数据立即可用（不白屏）；服务下线期间保持本地模式，本地变更入队暂不推送，后台指数退避（10s→60s 上限）探测服务，恢复后自动重连 + 拉取远程 + 推送积压变更
 - member_aliases 同步：本地 userDb 无 setter 列（本地用户即唯一 setter）；推送时由 `collectMemberAliasesForSync` 全量补盖 `setter_user_id`（在线模式取服务端 user id，回退本地 user id），apply 时过滤 `setter=me` 再写本地，忽略他人为同一 target 设的别名
+- 账户变更同步修复：`accountStore.update/remove` 此前未调用 `enqueueSync`，导致改账户余额/名称或删除账户后只落本地、不同步线上；现已补上入队，并推送完整账户对象（后端 `lwwMergeAccount` 按整体 LWW 合并，部分字段会让缺失字段被零值覆盖）
 
 ### Phase 4-C：Onboarding 引导流程（已完成）
 - WelcomePage：首次启动创建本地账户（昵称 + 密码）

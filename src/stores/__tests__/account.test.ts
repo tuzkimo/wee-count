@@ -7,11 +7,17 @@ const mockDb = {
   execute: vi.fn(),
 };
 
+const { enqueueSyncMock } = vi.hoisted(() => ({ enqueueSyncMock: vi.fn() }));
+
 vi.mock("@/db/userDb", () => ({
   getUserDb: vi.fn(() => mockDb),
   getCurrentUserId: vi.fn(() => "local-user-1"),
   openUserDb: vi.fn(),
   closeUserDb: vi.fn(),
+}));
+
+vi.mock("@/services/sync", () => ({
+  enqueueSync: enqueueSyncMock,
 }));
 
 import { useAccountStore } from "@/stores/account";
@@ -175,6 +181,35 @@ describe("accountStore", () => {
         expect.arrayContaining([80000, 10, "a1"])
       );
     });
+
+    it("should enqueue full account to sync with new updated_at", async () => {
+      // clearAllMocks 不清 mockResolvedValueOnce 队列，手动 reset 防止前序测试残留污染
+      mockDb.select.mockReset();
+      mockDb.execute.mockReset();
+      const acc = { ...makeAccount({ id: "a1", initial_balance: 100 }), is_deleted: 0 };
+      mockDb.select.mockResolvedValueOnce([acc]); // 初始 fetchAll 填充 store
+      mockDb.execute.mockResolvedValueOnce(undefined); // UPDATE
+      mockDb.select.mockResolvedValueOnce([{ ...acc, name: "改名后", initial_balance: 200, is_deleted: 0 }]); // 刷新
+
+      const store = useAccountStore();
+      await store.fetchAll("personal-ledger-1");
+      await store.update("a1", { name: "改名后", initial_balance: 200 });
+
+      expect(enqueueSyncMock).toHaveBeenCalledTimes(1);
+      const payload = enqueueSyncMock.mock.calls[0][0];
+      expect(payload.accounts).toHaveLength(1);
+      expect(payload.accounts[0]).toMatchObject({
+        id: "a1",
+        ledger_id: "personal-ledger-1",
+        owner_id: "local-user-1",
+        name: "改名后",
+        initial_balance: 200,
+        is_deleted: false,
+      });
+      // 未改动的字段也要带上，否则后端 LWW 会用零值覆盖线上
+      expect(payload.accounts[0].created_at).toBe("2026-06-01T00:00:00Z");
+      expect(payload.accounts[0].color).toBe("#3b82f6");
+    });
   });
 
   describe("remove", () => {
@@ -189,6 +224,28 @@ describe("accountStore", () => {
         expect.stringContaining("is_deleted = 1"),
         expect.arrayContaining(["a1"])
       );
+    });
+
+    it("should enqueue account with is_deleted=true to sync", async () => {
+      mockDb.select.mockReset();
+      mockDb.execute.mockReset();
+      const acc = { ...makeAccount({ id: "a1" }), is_deleted: 0 };
+      mockDb.select.mockResolvedValueOnce([acc]); // 初始 fetchAll 填充 store
+      mockDb.execute.mockResolvedValueOnce(undefined); // 软删除
+      mockDb.select.mockResolvedValueOnce([]); // 刷新（已删除，列表空）
+
+      const store = useAccountStore();
+      await store.fetchAll("personal-ledger-1");
+      await store.remove("a1");
+
+      expect(enqueueSyncMock).toHaveBeenCalledTimes(1);
+      const payload = enqueueSyncMock.mock.calls[0][0];
+      expect(payload.accounts).toHaveLength(1);
+      expect(payload.accounts[0]).toMatchObject({
+        id: "a1",
+        owner_id: "local-user-1",
+        is_deleted: true,
+      });
     });
   });
 });

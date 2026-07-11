@@ -157,8 +157,9 @@ export const useAccountStore = defineStore("account", () => {
 
     if (sets.length === 0) return;
 
+    const now = new Date().toISOString();
     sets.push("updated_at = ?");
-    values.push(new Date().toISOString());
+    values.push(now);
     values.push(id);
 
     await db.execute(
@@ -168,6 +169,28 @@ export const useAccountStore = defineStore("account", () => {
     const existing = accounts.value.find((a) => a.id === id);
     if (existing) {
       await fetchAll(existing.ledger_id);
+      // 推送完整账户对象：后端 lwwMergeAccount 按整体 LWW 合并，
+      // 只传部分字段会让缺失字段被 Go 解析成零值，冲掉线上数据。
+      enqueueSync({
+        accounts: [{
+          id,
+          ledger_id: existing.ledger_id,
+          owner_id: existing.owner_id,
+          name: data.name !== undefined ? data.name : existing.name,
+          type: data.type !== undefined ? data.type : existing.type,
+          category: (data.category !== undefined ? data.category : existing.category) as Account["category"],
+          initial_balance: data.initial_balance !== undefined ? data.initial_balance : existing.initial_balance,
+          credit_limit: data.credit_limit !== undefined ? data.credit_limit : existing.credit_limit,
+          repayment_day: data.repayment_day !== undefined ? data.repayment_day : existing.repayment_day,
+          color: data.color !== undefined ? data.color : existing.color,
+          created_at: existing.created_at,
+          updated_at: now,
+          is_deleted: false,
+        }],
+        tags: [],
+        categories: [],
+        transactions: [],
+      });
     }
   }
 
@@ -182,6 +205,26 @@ export const useAccountStore = defineStore("account", () => {
     const existing = accounts.value.find((a) => a.id === id);
     if (existing) {
       await fetchAll(existing.ledger_id);
+      enqueueSync({
+        accounts: [{
+          id,
+          ledger_id: existing.ledger_id,
+          owner_id: existing.owner_id,
+          name: existing.name,
+          type: existing.type,
+          category: existing.category as Account["category"],
+          initial_balance: existing.initial_balance,
+          credit_limit: existing.credit_limit,
+          repayment_day: existing.repayment_day,
+          color: existing.color,
+          created_at: existing.created_at,
+          updated_at: now,
+          is_deleted: true,
+        }],
+        tags: [],
+        categories: [],
+        transactions: [],
+      });
     }
   }
 
