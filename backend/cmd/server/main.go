@@ -52,6 +52,8 @@ func main() {
 
 	// router
 	r := chi.NewRouter()
+	// 从 X-Forwarded-For / X-Real-IP 还原真实客户端 IP（Caddy 反代后才有意义）
+	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
