@@ -299,7 +299,7 @@ Create `src/views/Home.vue`:
 
 <template>
   <div class="p-4">
-    <h1 class="text-xl font-bold text-text">一起记账</h1>
+    <h1 class="text-xl font-bold text-text">一起数钱</h1>
     <p class="text-text-secondary mt-2">首页 — 后续放记账入口和流水概览</p>
     <div class="mt-6">
       <router-link
@@ -364,7 +364,7 @@ app.mount("#app");
 - [ ] **Step 6: 验证路由**
 
 运行 `npm run dev`，浏览器访问：
-- `http://localhost:1420/` → 看到"一起记账"标题和"账户管理"链接
+- `http://localhost:1420/` → 看到"一起数钱"标题和"账户管理"链接
 - `http://localhost:1420/accounts` → 看到"账户管理"标题
 
 - [ ] **Step 7: Commit**
@@ -1493,7 +1493,7 @@ Edit `index.html`，替换 `<title>`：
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>一起记账 - WeeCount</title>
+    <title>一起数钱 - WeeCount</title>
   </head>
 
   <body>

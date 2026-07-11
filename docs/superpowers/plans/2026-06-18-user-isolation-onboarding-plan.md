@@ -1103,7 +1103,7 @@ git commit -m "feat: add per-user SQLite databases with local auth and _meta.db"
 <template>
   <div class="min-h-screen flex flex-col items-center justify-center px-6 bg-white">
     <div class="w-full max-w-sm">
-      <h1 class="text-3xl font-bold text-center mb-2">一起记账</h1>
+      <h1 class="text-3xl font-bold text-center mb-2">一起数钱</h1>
       <p class="text-gray-500 text-center mb-8">创建本地账户以开始记账</p>
 
       <div class="space-y-4">
@@ -1535,7 +1535,7 @@ git commit -m "feat: add local-to-online data migration and bind sync page"
 <template>
   <div class="min-h-screen flex flex-col items-center justify-center px-6 bg-white">
     <div class="w-full max-w-sm">
-      <h1 class="text-3xl font-bold text-center mb-2">一起记账</h1>
+      <h1 class="text-3xl font-bold text-center mb-2">一起数钱</h1>
       <p class="text-gray-500 text-center mb-8">输入账户信息登录</p>
 
       <div class="space-y-4">

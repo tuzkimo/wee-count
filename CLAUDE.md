@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-一起记账（WeeCount）— 离线优先、家庭/团队协同的资产级记账 App，移动端（Android）优先。
+一起数钱（WeeCount）— 离线优先、家庭/团队协同的资产级记账 App，移动端（Android）优先。
 - 前端：Vue 3 + TypeScript + Vite
 - 客户端壳：Tauri 2.0（桌面端仅用于开发调试，Android 为正式目标平台）
 - 本地存储：SQLite（`@tauri-apps/plugin-sql`）

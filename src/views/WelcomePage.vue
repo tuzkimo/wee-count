@@ -2,7 +2,7 @@
 <template>
   <div class="min-h-screen flex flex-col items-center justify-center px-6 bg-white">
     <div class="w-full max-w-sm">
-      <h1 class="text-3xl font-bold text-center mb-2">一起记账</h1>
+      <h1 class="text-3xl font-bold text-center mb-2">一起数钱</h1>
       <p class="text-gray-500 text-center mb-8">选择你的记账方式</p>
 
       <!-- 本地模式 -->
