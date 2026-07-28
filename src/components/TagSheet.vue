@@ -3,6 +3,7 @@ import { ref, computed, watch } from "vue";
 import { X } from "lucide-vue-next";
 import { useTagStore } from "@/stores/tag";
 import { useLedgerStore } from "@/stores/ledger";
+import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import type { Tag } from "@/types";
 
 const props = defineProps<{
@@ -17,6 +18,10 @@ const emit = defineEmits<{
 
 const tagStore = useTagStore();
 const ledgerStore = useLedgerStore();
+
+// 软键盘高度：键盘弹出时让 sheet 底部留出空间，避免搜索框聚焦后确定按钮/标签列表被遮挡
+const keyboardInset = useKeyboardInset();
+const sheetPadBottom = computed(() => `calc(${keyboardInset.value}px + 2rem)`);
 
 const search = ref("");
 const localSelected = ref<string[]>([]);
@@ -81,7 +86,8 @@ function confirm() {
     <Transition name="sheet-slide-up">
       <div
         v-if="visible"
-        class="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-xl max-h-[70vh] flex flex-col"
+        class="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-surface px-4 pt-4 shadow-xl max-h-[70vh] flex flex-col"
+        :style="{ paddingBottom: sheetPadBottom }"
       >
         <div class="mb-4 flex items-center justify-between">
           <h2 class="text-lg font-semibold text-text">添加标签</h2>

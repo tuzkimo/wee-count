@@ -28,7 +28,7 @@ export function generateHourOptions(): string[] {
 }
 
 export function generateMinuteOptions(): string[] {
-  return Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, "0"));
+  return Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"));
 }
 
 export function parseModelValue(value: string): {
@@ -80,7 +80,7 @@ function getCurrentDefaults(): { year: number; month: number; day: number; hour:
     month: n.getMonth() + 1,
     day: n.getDate(),
     hour: n.getHours(),
-    minute: Math.min(Math.round(n.getMinutes() / 5) * 5, 55),
+    minute: n.getMinutes(),
   };
 }
 

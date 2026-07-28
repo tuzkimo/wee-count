@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import { X, Plus } from "lucide-vue-next";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { useCategoryStore } from "@/stores/category";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
+import { useKeyboardInset } from "@/composables/useKeyboardInset";
 import type { Category } from "@/types";
 
 const props = defineProps<{ visible: boolean; initialTab?: "expense" | "income" }>();
@@ -15,6 +16,11 @@ defineEmits<{ close: [] }>();
 const categoryStore = useCategoryStore();
 const ledgerStore = useLedgerStore();
 const auth = useAuthStore();
+
+// 软键盘高度：键盘弹出时让 sheet 底部留出空间，避免确定按钮被遮挡、图标区滚动失效
+const keyboardInset = useKeyboardInset();
+// sheet 底部内边距，跟随键盘高度动态调整（含原有 32px 安全间距）
+const sheetPadBottom = computed(() => `calc(${keyboardInset.value}px + 2rem)`);
 
 const currentUserId = computed(() =>
   auth.currentLocalUser?.server_user_id || getCurrentUserId(),
@@ -27,61 +33,136 @@ function canEdit(category: Category): boolean {
 }
 
 // ---- emoji 库 ----
-const emojiGroups: Record<string, { keywords: string[]; emojis: string[] }> = {
+// 按类型分组展示：始终渲染全部分组，输入名称命中关键词时仅自动滚动定位到对应分组，
+// 用户仍可上下滚动浏览其他分组，避免"匹配后看不到全部"的问题。
+const emojiGroups: Record<string, { label: string; keywords: string[]; emojis: string[] }> = {
   food: {
-    keywords: ["餐", "食", "饭", "菜", "吃", "喝", "饮", "酒", "茶", "咖啡", "早餐", "午餐", "晚餐", "外卖", "食堂", "小吃", "零食", "水果", "烧烤", "火锅", "烘焙", "甜点"],
-    emojis: ["🍔", "🍕", "🍜", "🍱", "🍲", "🍳", "🥘", "🍿", "🍩", "🍪", "🍰", "🧁", "🍉", "🍇", "🍓", "🥝", "🍌", "🍊", "🥤", "☕", "🍵", "🧋", "🍺", "🍷", "🥡", "🍗", "🥩", "🧇", "🥐", "🍞"],
+    label: "餐饮",
+    keywords: ["餐", "食", "饭", "菜", "吃", "喝", "饮", "酒", "茶", "咖啡", "早餐", "午餐", "晚餐", "外卖", "食堂", "小吃", "零食", "水果", "烧烤", "火锅", "烘焙", "甜点", "面", "粉", "饺", "粥", "汤", "菜"],
+    emojis: ["🍔", "🍕", "🍜", "🍱", "🍲", "🍳", "🥘", "🍿", "🍩", "🍪", "🍰", "🧁", "🍉", "🍇", "🍓", "🥝", "🍌", "🍊", "🥤", "☕", "🍵", "🧋", "🍺", "🍷", "🥡", "🍗", "🥩", "🧇", "🥐", "🍞", "🍝", "🥟", "🍚", "🍘", "🍙", "🌮", "🥗", "🍦", "🥧", "🍫", "🍬"],
   },
   transport: {
-    keywords: ["交通", "出行", "车", "地铁", "公交", "油", "高铁", "火车", "飞机", "打车", "出租", "骑行", "单车", "停车", "过路费", "加油", "充电", "保养", "维修", "保险", "洗车", "通勤"],
-    emojis: ["🚌", "🚗", "🚕", "🚲", "🛴", "🏍️", "🚄", "✈️", "🚢", "🚇", "🚉", "🅿️", "⛽", "🚦", "🚙", "🛵", "🚐", "🚁", "⚡", "🔧"],
+    label: "交通",
+    keywords: ["交通", "出行", "车", "地铁", "公交", "油", "高铁", "火车", "飞机", "打车", "出租", "骑行", "单车", "停车", "过路费", "加油", "充电", "保养", "维修", "保险", "洗车", "通勤", "船", "票"],
+    emojis: ["🚌", "🚗", "🚕", "🚲", "🛴", "🏍️", "🚄", "✈️", "🚢", "🚇", "🚉", "🅿️", "⛽", "🚦", "🚙", "🛵", "🚐", "🚁", "⚡", "🔧", "🚓", "🚑", "🚒", "🚂", "🚊", "🛶", "⛵", "🚤", "🛸", "🚀"],
   },
   shopping: {
-    keywords: ["购物", "买", "购", "商场", "超市", "衣服", "鞋", "包", "数码", "日用品", "化妆品", "护肤", "饰品", "玩具", "家具", "家电", "手机", "电脑", "平板"],
-    emojis: ["🛒", "👔", "👗", "👟", "👜", "💼", "⌚", "📱", "💻", "🎮", "📦", "💄", "🧴", "🪥", "👓", "🧸", "🛋️", "💡", "🧹", "🪞"],
+    label: "购物",
+    keywords: ["购物", "买", "购", "商场", "超市", "衣服", "鞋", "包", "日用品", "化妆品", "护肤", "饰品", "玩具", "家具", "家电", "手机", "电脑", "平板", "服饰", "裙", "裤", "帽"],
+    emojis: ["🛒", "👔", "👗", "👟", "👜", "💼", "⌚", "📱", "💻", "🎮", "📦", "💄", "🧴", "🪥", "👓", "🧸", "🛋️", "💡", "🧹", "🪞", "🛍️", "👕", "👖", "👒", "🧢", "🥾", "🧦", "🧣", "👛", "🎒", "🩰", "👗", "🧥"],
   },
   housing: {
-    keywords: ["房租", "房贷", "水电", "物业", "燃气", "网费", "话费", "维修", "装修", "家居", "暖气", "宽带", "租金", "房", "住"],
-    emojis: ["🏠", "🏡", "🏢", "💡", "🔌", "💧", "🔥", "🛏️", "🪑", "🚿", "🪣", "🧹", "🔑", "🪴"],
+    label: "居家",
+    keywords: ["房租", "房贷", "水电", "物业", "燃气", "网费", "话费", "维修", "装修", "家居", "暖气", "宽带", "租金", "房", "住", "床", "桌", "椅", "灯"],
+    emojis: ["🏠", "🏡", "🏢", "💡", "🔌", "💧", "🔥", "🛏️", "🪑", "🚿", "🪣", "🧹", "🔑", "🪴", "🧯", "🛁", "🚽", "🧻", "🧼", "🪟", "🚪", "🛖", "🏬", "🏠", "🏡"],
   },
   entertainment: {
-    keywords: ["娱乐", "电影", "游戏", "音乐", "视频", "会员", "旅游", "旅行", "运动", "健身", "游泳", "ktv", "演出", "剧本杀", "棋牌", "密室", "景点", "门票"],
-    emojis: ["🎬", "🎮", "🎵", "🎤", "🎯", "🎳", "🎪", "🎭", "🎨", "🎾", "⚽", "🏀", "🏊", "🧘", "🎿", "🏄", "🎸", "🎹", "📺", "🎧"],
+    label: "娱乐",
+    keywords: ["娱乐", "电影", "游戏", "音乐", "视频", "会员", "演出", "剧本杀", "棋牌", "密室", "景点", "门票", "聚会", "派对", "酒吧", "夜店"],
+    emojis: ["🎬", "🎮", "🎵", "🎤", "🎯", "🎳", "🎪", "🎭", "🎨", "🎸", "🎹", "📺", "🎧", "🎟️", "🎫", "🎡", "🎢", "🎠", "♟️", "🎲", "🧩", "🎰", "🎸", "🥁", "🎷", "🎺", "📻", "📹", "🎤", "🎧"],
+  },
+  sports: {
+    label: "运动户外",
+    keywords: ["运动", "健身", "游泳", "跑步", "瑜伽", "球", "篮球", "足球", "羽毛球", "乒乓", "网球", "登山", "徒步", "露营", "钓鱼", "骑行", "滑雪", "冲浪", "潜水", "健身房"],
+    emojis: ["⚽", "🏀", "🎾", "🏈", "⚾", "🥎", "🏐", "🏉", "🥏", "🎱", "🏓", "🏸", "🥅", "🏒", "🏑", "🥍", "🏏", "🏊", "🧘", "🏃", "🚴", "🎿", "🏄", "🤽", "🏋️", "🤸", "🧗", "🚣", "🎣", "⛺", "🏕️", "🧊"],
+  },
+  travel: {
+    label: "旅行",
+    keywords: ["旅游", "旅行", "出差", "酒店", "民宿", "机票", "签证", "行李", "度假", "景点", "海滩", "山", "温泉"],
+    emojis: ["✈️", "🧳", "🗺️", "🧭", "📍", "🌍", "🌎", "🌏", "🏖️", "🏝️", "⛰️", "🏔️", "🌋", "🏕️", "🗺️", "🗽", "🗼", "🏰", "🏯", "🎡", "🎢", "🎠", "⛱️", "🛂", "🛅", "🛃", "🛬", "🛫"],
   },
   medical: {
-    keywords: ["医疗", "药", "医", "医院", "挂号", "体检", "牙科", "眼科", "疫苗", "保健", "中药", "门诊", "住院"],
-    emojis: ["💊", "🏥", "🩺", "💉", "🩹", "🧬", "🫁", "🦷", "👁️", "🧑‍⚕️", "🚑", "🌡️"],
+    label: "医疗健康",
+    keywords: ["医疗", "药", "医", "医院", "挂号", "体检", "牙科", "眼科", "疫苗", "保健", "中药", "门诊", "住院", "健康", "锻炼"],
+    emojis: ["💊", "🏥", "🩺", "💉", "🩹", "🧬", "🫁", "🦷", "👁️", "🧑‍⚕️", "🚑", "🌡️", "🩻", "🧪", "🩸", "💊", "🧴", "🧼", "🪒", "🪥", "🧖", "💪", "🦴", "🦽", "🦼"],
   },
   income: {
-    keywords: ["工资", "奖金", "兼职", "理财", "利息", "分红", "报销", "红包", "转账", "退款", "二手", "出租", "薪资", "提成", "副业"],
-    emojis: ["💰", "💵", "💳", "💎", "📈", "🏦", "💼", "🧧", "🎁", "🪙", "💸", "🏧"],
+    label: "收入理财",
+    keywords: ["工资", "奖金", "兼职", "理财", "利息", "分红", "报销", "红包", "转账", "退款", "二手", "出租", "薪资", "提成", "副业", "收入", "投资", "基金", "股票", "存款", "还款", "贷款", "税费"],
+    emojis: ["💰", "💵", "💳", "💎", "📈", "🏦", "💼", "🧧", "🎁", "🪙", "💸", "🏧", "📉", "💹", "💱", "💲", "🧾", "🏷️", "🪙", "🏦"],
   },
   education: {
-    keywords: ["教育", "学费", "书", "课程", "培训", "考试", "学习", "文具", "辅导", "考证"],
-    emojis: ["📚", "✏️", "📝", "🎓", "📖", "🖊️", "📐", "🎒", "🏫", "💻"],
+    label: "教育学习",
+    keywords: ["教育", "学费", "书", "课程", "培训", "考试", "学习", "文具", "辅导", "考证", "学校", "上课", "笔记", "阅读"],
+    emojis: ["📚", "✏️", "📝", "🎓", "📖", "🖊️", "📐", "🎒", "🏫", "💻", "🔬", "🔭", "🧪", "📊", "📋", "📌", "📎", "📐", "📏", "🧮", "🖍️", "🖌️", "🗂️", "📁", "📆", "💡"],
+  },
+  digital: {
+    label: "数码电子",
+    keywords: ["数码", "电子", "手机", "电脑", "平板", "耳机", "相机", "充电", "数据线", "配件", "游戏机", "智能", "网络"],
+    emojis: ["📱", "💻", "🖥️", "⌨️", "🖱️", "🖨️", "📷", "📸", "📹", "🎥", "📺", "🎙️", "🎧", "🔊", "📡", "💡", "🔋", "🔌", "💾", "💿", "📀", "🎮", "🕹️", "⌚", "📱", "📟", "☎️", "📞", "📵"],
+  },
+  social: {
+    label: "社交通讯",
+    keywords: ["社交", "通讯", "电话", "短信", "聊天", "礼物", "红包", "聚会", "请客", "人情", "份子", "礼金"],
+    emojis: ["💬", "📨", "📩", "📤", "📥", "📦", "💌", "📧", "📞", "☎️", "📱", "📲", "🤝", "👋", "👍", "🤙", "✌️", "🫂", "🙌", "👏", "💭", "🗯️", "🗣️", "👥", "👪", "👨‍👩‍👧", "🫶", "🤜", "🤛"],
   },
   pet: {
-    keywords: ["宠物", "猫", "狗", "鱼", "鸟", "仓鼠", "兔", "龟", "蜥蜴"],
-    emojis: ["🐱", "🐶", "🐟", "🐦", "🐹", "🐰", "🐢", "🦴", "🐾", "🐕"],
+    label: "宠物",
+    keywords: ["宠物", "猫", "狗", "鱼", "鸟", "仓鼠", "兔", "龟", "蜥蜴", "宠物用品", "猫粮", "狗粮"],
+    emojis: ["🐱", "🐶", "🐟", "🐦", "🐹", "🐰", "🐢", "🦴", "🐾", "🐕", "🐈", "🦜", "🐠", "🦎", "🐍", "🐭", "🦔", "🐝", "🦋", "🐛", "🐌", "🐞"],
+  },
+  baby: {
+    label: "亲子",
+    keywords: ["孩子", "宝宝", "婴儿", "亲子", "玩具", "奶粉", "尿布", "母婴", "育儿", "儿童"],
+    emojis: ["👶", "🧒", "👧", "👦", "🧑‍🍼", "🍼", "🚼", "🧸", "🪆", "🛴", "🚸", "🎒", "🥛", "🧷", "🚼", "👶", "👶", "🚼"],
+  },
+  festival: {
+    label: "节日礼物",
+    keywords: ["节日", "礼物", "生日", "圣诞", "新年", "春节", "中秋", "纪念", "庆祝", "蛋糕", "派对"],
+    emojis: ["🎉", "🎊", "🎈", "🎁", "🎂", "🍰", "🎀", "🎄", "🎃", "🧧", "🎇", "🎆", "🪅", "🪄", "✨", "⭐", "🌟", "💫", "🔔", "🎵", "🎶", "🏮", "🎏", "🎑", "🧨", "🎁"],
+  },
+  office: {
+    label: "办公",
+    keywords: ["办公", "工作", "会议", "打印", "文具", "电脑", "软件", "订阅", "会员", "云盘", "邮箱"],
+    emojis: ["💼", "📎", "📌", "📋", "📁", "📂", "🗂️", "📅", "📆", "🗒️", "📓", "📔", "📒", "📕", "📗", "📘", "📙", "📚", "🖊️", "🖌️", "🖍️", "📝", "✏️", "🔍", "🔎", "💡", "📊", "📈", "📉", "📞", "☎️", "🖥️", "⌨️", "🖱️", "🖨️", "🗄️"],
+  },
+  beauty: {
+    label: "美容个护",
+    keywords: ["美容", "美发", "护肤", "化妆", "口红", "香水", "指甲", "spa", "按摩", "理发", "洗发", "造型"],
+    emojis: ["💄", "💅", "💆", "💇", "🧖", "🛁", "🚿", "🧴", "🧼", "🪥", "🪒", "🧖‍♀️", "🧖‍♂️", "💧", "✨", "💆", "💅", "💋", "💄", "🪞", "👗", "👙", "🩱"],
   },
   other: {
+    label: "其他",
     keywords: [],
-    emojis: ["📋", "❤️", "⭐", "🔥", "🎉", "👍", "✅", "📌", "💪", "🌟", "🎀", "🔔", "🎁", "🏆", "💡"],
+    emojis: ["📋", "❤️", "⭐", "🔥", "🎉", "👍", "✅", "📌", "💪", "🌟", "🎀", "🔔", "🎁", "🏆", "💡", "✨", "💫", "⚡", "🌈", "☀️", "🌙", "☁️", "❄️", "🍃", "🌸", "🌺", "🍀", "🌹", "🌻", "🌼", "🌷", "💐", "🍁", "🌾", "🪴"],
   },
 };
 
-const allEmojis = Object.values(emojiGroups).flatMap((g) => g.emojis);
+const emojiGroupList = Object.entries(emojiGroups).map(([key, g]) => ({ key, ...g }));
 
-// 根据分类名称匹配候选项
-const candidateEmojis = computed(() => {
+// 名称命中的分组 key（用于自动滚动定位，但不隐藏其他分组）
+const matchedGroupKey = computed<string | null>(() => {
   const name = formName.value.trim();
-  if (!name) return allEmojis;
-  for (const group of Object.values(emojiGroups)) {
-    if (group.keywords.some((k) => name.includes(k))) {
-      return group.emojis;
-    }
+  if (!name) return null;
+  for (const [key, group] of Object.entries(emojiGroups)) {
+    if (group.keywords.some((k) => name.includes(k))) return key;
   }
-  return allEmojis;
+  return null;
+});
+
+// 图标区分组容器引用，用于滚动定位
+const iconScrollerRef = ref<HTMLElement | null>(null);
+const groupHeaderRefs = ref<Record<string, HTMLElement | null>>({});
+
+// 模板 ref 回调类型守卫：仅记录 HTMLElement
+function setGroupHeaderRef(key: string) {
+  return (el: Element | { $el?: HTMLElement } | null) => {
+    const node = el && "$el" in (el as object) ? (el as { $el?: HTMLElement }).$el : (el as HTMLElement | null);
+    groupHeaderRefs.value[key] = node ?? null;
+  };
+}
+
+// 名称变化时滚动到匹配分组
+watch(matchedGroupKey, (key) => {
+  if (!key) return;
+  nextTick(() => {
+    const header = groupHeaderRefs.value[key];
+    const scroller = iconScrollerRef.value;
+    if (!header || !scroller) return;
+    // 滚动到分组标题顶部：用相对视口的 rect 差值，避免 offsetParent 假设
+    const delta = header.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    scroller.scrollTo({ top: scroller.scrollTop + delta, behavior: "smooth" });
+  });
 });
 
 // ---- 列表模式状态 ----
@@ -224,7 +305,8 @@ async function handleSubmit() {
     <Transition name="sheet-slide-up">
       <div
         v-if="visible"
-        class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-xl"
+        class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col rounded-t-2xl bg-surface px-4 pt-4 shadow-xl"
+        :style="{ paddingBottom: sheetPadBottom }"
       >
         <!-- ========== 列表模式 ========== -->
         <template v-if="!showForm">
@@ -361,23 +443,41 @@ async function handleSubmit() {
               class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
             />
 
-            <!-- 图标候选（根据名称动态过滤） -->
+            <!-- 图标候选（按类型分组，始终展示全部；名称命中关键词时自动滚动定位） -->
             <label class="mb-2 block text-sm font-medium text-text">图标</label>
-            <div class="mb-4 max-h-[200px] overflow-auto rounded-lg bg-gray-50 p-2">
-              <div class="grid grid-cols-8 gap-1.5">
-                <button
-                  v-for="icon in candidateEmojis"
-                  :key="icon"
-                  class="flex aspect-square items-center justify-center rounded-lg text-xl transition-colors"
-                  :class="
-                    formIcon === icon
-                      ? 'bg-primary/10 ring-2 ring-primary ring-offset-1'
-                      : 'hover:bg-gray-200'
-                  "
-                  @click="selectIcon(icon)"
+            <div
+              ref="iconScrollerRef"
+              class="mb-4 max-h-[200px] overflow-auto rounded-lg bg-gray-50 p-2"
+            >
+              <div
+                v-for="group in emojiGroupList"
+                :key="group.key"
+              >
+                <div
+                  :ref="setGroupHeaderRef(group.key)"
+                  class="sticky top-0 z-10 flex items-center gap-1 bg-gray-50 py-1 text-[11px] font-medium text-text-secondary"
                 >
-                  {{ icon }}
-                </button>
+                  <span>{{ group.label }}</span>
+                  <span
+                    v-if="matchedGroupKey === group.key"
+                    class="rounded bg-primary/15 px-1 text-[10px] text-primary"
+                  >匹配</span>
+                </div>
+                <div class="grid grid-cols-8 gap-1.5">
+                  <button
+                    v-for="icon in group.emojis"
+                    :key="icon"
+                    class="flex aspect-square items-center justify-center rounded-lg text-xl transition-colors"
+                    :class="
+                      formIcon === icon
+                        ? 'bg-primary/10 ring-2 ring-primary ring-offset-1'
+                        : 'hover:bg-gray-200'
+                    "
+                    @click="selectIcon(icon)"
+                  >
+                    {{ icon }}
+                  </button>
+                </div>
               </div>
             </div>
 

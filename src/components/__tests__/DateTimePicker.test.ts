@@ -63,12 +63,12 @@ describe("generateHourOptions", () => {
 });
 
 describe("generateMinuteOptions", () => {
-  it("should generate 00-55 step 5", () => {
+  it("should generate 00-59 step 1", () => {
     const options = generateMinuteOptions();
-    expect(options.length).toBe(12);
+    expect(options.length).toBe(60);
     expect(options[0]).toBe("00");
-    expect(options[1]).toBe("05");
-    expect(options[11]).toBe("55");
+    expect(options[1]).toBe("01");
+    expect(options[59]).toBe("59");
   });
 });
 
