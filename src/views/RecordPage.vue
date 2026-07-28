@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronDown, Trash2 } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
@@ -54,8 +54,6 @@ const saveError = ref("");
 const isSaving = ref(false);
 const isReady = ref(false);
 const datePickerVisible = ref(false);
-// 编辑模式预填期间为 true，阻止 txType watch 覆盖原记录的分类
-const isInitializing = ref(false);
 
 // 按类型过滤分类
 const filteredCategories = computed(() =>
@@ -123,10 +121,7 @@ onMounted(async () => {
     await transactionStore.fetchAll(ledgerId);
     const tx = transactionStore.transactions.find((t) => t.id === editId.value);
     if (tx) {
-      // 设类型会触发 txType watch 把 categoryId 重置成默认分类，
-      // 用 isInitializing flag 让 watch 在编辑预填期间跳过重置，
-      // 从而保留原记录的分类。
-      isInitializing.value = true;
+      // 直接赋值预填，不走 switchType：避免重置分类覆盖原记录的分类。
       txType.value = tx.type;
       categoryId.value = tx.category_id;
       fromAccountId.value = tx.from_account_id;
@@ -135,7 +130,6 @@ onMounted(async () => {
       expression.value = tx.amount.toString();
       selectedTagIds.value = tx.tags?.map((t) => t.id) ?? [];
       note.value = tx.note ?? "";
-      isInitializing.value = false;
     }
   } else {
     // 新增模式：默认当前本地时间
@@ -157,11 +151,13 @@ onMounted(async () => {
   isReady.value = true;
 });
 
-// 切换交易类型时重置分类（编辑预填期间跳过，以保留原记录分类）
-watch(txType, () => {
-  if (isInitializing.value) return;
+// 切换交易类型：用户主动切换时重置为该类型的默认分类。
+// 用 handler 而非 watch(txType)：watch 无法区分「用户切换」与「编辑预填」，
+// 会在编辑模式下把原记录的分类覆盖成默认分类（income 尤甚）。
+function switchType(t: TransactionType) {
+  txType.value = t;
   categoryId.value = defaultCategoryId.value;
-});
+}
 
 // 分类选择
 function selectCategory(cat: Category) {
@@ -392,7 +388,7 @@ function goBack() {
           :key="t"
           class="flex-1 rounded-md py-2 text-sm font-medium transition-colors"
           :class="txType === t ? 'bg-surface text-text shadow-sm' : 'text-text-secondary'"
-          @click="txType = t"
+          @click="switchType(t)"
         >
           {{ t === 'expense' ? '支出' : t === 'income' ? '收入' : '转账' }}
         </button>
