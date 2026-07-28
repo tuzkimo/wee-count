@@ -54,6 +54,8 @@ const saveError = ref("");
 const isSaving = ref(false);
 const isReady = ref(false);
 const datePickerVisible = ref(false);
+// 编辑模式预填期间为 true，阻止 txType watch 覆盖原记录的分类
+const isInitializing = ref(false);
 
 // 按类型过滤分类
 const filteredCategories = computed(() =>
@@ -121,6 +123,10 @@ onMounted(async () => {
     await transactionStore.fetchAll(ledgerId);
     const tx = transactionStore.transactions.find((t) => t.id === editId.value);
     if (tx) {
+      // 设类型会触发 txType watch 把 categoryId 重置成默认分类，
+      // 用 isInitializing flag 让 watch 在编辑预填期间跳过重置，
+      // 从而保留原记录的分类。
+      isInitializing.value = true;
       txType.value = tx.type;
       categoryId.value = tx.category_id;
       fromAccountId.value = tx.from_account_id;
@@ -129,6 +135,7 @@ onMounted(async () => {
       expression.value = tx.amount.toString();
       selectedTagIds.value = tx.tags?.map((t) => t.id) ?? [];
       note.value = tx.note ?? "";
+      isInitializing.value = false;
     }
   } else {
     // 新增模式：默认当前本地时间
@@ -150,8 +157,9 @@ onMounted(async () => {
   isReady.value = true;
 });
 
-// 切换交易类型时重置分类
+// 切换交易类型时重置分类（编辑预填期间跳过，以保留原记录分类）
 watch(txType, () => {
+  if (isInitializing.value) return;
   categoryId.value = defaultCategoryId.value;
 });
 
@@ -239,8 +247,13 @@ async function doSave(): Promise<boolean> {
     saveError.value = "请选择分类";
     return false;
   }
-  if (!fromAccountId.value) return false;
-  if (txType.value !== "expense" && !toAccountId.value) return false;
+  // 各类型必填的账户：expense/transfer 需扣款账户，income/transfer 需入账账户
+  if ((txType.value === "expense" || txType.value === "transfer") && !fromAccountId.value) {
+    return false;
+  }
+  if ((txType.value === "income" || txType.value === "transfer") && !toAccountId.value) {
+    return false;
+  }
 
   isSaving.value = true;
   try {

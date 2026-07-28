@@ -18,3 +18,25 @@ export function toLocalDatetimeString(date: Date): string {
 export function utcToLocalDatetimeString(isoString: string): string {
   return toLocalDatetimeString(new Date(isoString));
 }
+
+/**
+ * 将 UTC ISO 字符串转为本地时区的 "YYYY-MM-DD" 日期 key。
+ * 用于流水按天分组：直接 slice(0,10) 取的是 UTC 日期，
+ * 东八区 0–8 点的流水会被并到 UTC 的上一天。
+ * 这里通过 Date 的本地年/月/日取值，确保按用户所在时区归天。
+ */
+export function utcToLocalDateKey(isoString: string): string {
+  const d = new Date(isoString);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * 将本地时区的 "YYYY-MM-DD" 日期 key 解析为 Date（本地当天 00:00）。
+ * 注意：必须用 "YYYY-MM-DDTHH:mm" 形式构造，避免 "YYYY-MM-DD" 被当作 UTC 解析。
+ */
+export function localDateKeyToDate(dateKey: string): Date {
+  return new Date(`${dateKey}T00:00`);
+}

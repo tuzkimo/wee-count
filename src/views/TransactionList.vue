@@ -14,6 +14,7 @@ import MemberAvatar from "@/components/MemberAvatar.vue";
 import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import { utcToLocalDateKey, localDateKeyToDate } from "@/utils/datetime";
 import type { Transaction } from "@/types";
 
 const route = useRoute();
@@ -356,7 +357,7 @@ interface DayGroup {
 const groupedTransactions = computed<DayGroup[]>(() => {
   const groups: Record<string, Transaction[]> = {};
   for (const tx of transactionStore.transactions) {
-    const dateKey = tx.occurred_at.slice(0, 10);
+    const dateKey = utcToLocalDateKey(tx.occurred_at);
     if (!groups[dateKey]) groups[dateKey] = [];
     groups[dateKey].push(tx);
   }
@@ -369,8 +370,8 @@ const groupedTransactions = computed<DayGroup[]>(() => {
     }));
 });
 
-function formatDateLabel(dateStr: string): string {
-  const d = new Date(dateStr);
+function formatDateLabel(dateKey: string): string {
+  const d = localDateKeyToDate(dateKey);
   const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
   const month = d.getMonth() + 1;
   const day = d.getDate();
