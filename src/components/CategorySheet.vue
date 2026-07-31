@@ -448,15 +448,18 @@ async function handleSubmit() {
             <label class="mb-2 block text-sm font-medium text-text">图标</label>
             <div
               ref="iconScrollerRef"
-              class="mb-4 max-h-[200px] overflow-auto rounded-lg bg-gray-50 p-2"
+              class="mb-4 max-h-[200px] overflow-auto rounded-lg bg-gray-50"
             >
+              <!-- padding 下沉到内部包裹层：scroll 容器不能带 padding-top，
+                   否则 sticky top-0 会吸附到 padding box 内沿，顶部留缝、滚动内容从缝里露出 -->
+              <div class="px-2 pt-2 pb-2">
               <div
                 v-for="group in emojiGroupList"
                 :key="group.key"
               >
                 <div
                   :ref="setGroupHeaderRef(group.key)"
-                  class="sticky top-0 z-10 flex items-center gap-1 bg-gray-50 py-1 text-[11px] font-medium text-text-secondary"
+                  class="sticky top-0 z-10 flex items-center gap-1 bg-gray-50 px-2 -mx-2 py-1 text-[11px] font-medium text-text-secondary"
                 >
                   <span>{{ group.label }}</span>
                   <span
@@ -479,6 +482,7 @@ async function handleSubmit() {
                     {{ icon }}
                   </button>
                 </div>
+              </div>
               </div>
             </div>
 
