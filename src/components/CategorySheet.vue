@@ -152,7 +152,19 @@ function setGroupHeaderRef(key: string) {
   };
 }
 
-// 名称变化时滚动到匹配分组
+// ---- 列表模式状态 ----
+const showForm = ref(false);
+const editingCategory = ref<Category | null>(null);
+const listTab = ref<"expense" | "income">("expense");
+
+// ---- 表单模式状态 ----
+const formType = ref<"expense" | "income">("expense");
+const formName = ref("");
+const formIcon = ref("");
+const formError = ref("");
+
+// 名称变化时滚动到匹配分组：必须放在 formName 声明之后，
+// watch 注册时会同步读取 source 收集依赖，否则触发 formName 的 TDZ ReferenceError。
 watch(matchedGroupKey, (key) => {
   if (!key) return;
   nextTick(() => {
@@ -164,17 +176,6 @@ watch(matchedGroupKey, (key) => {
     scroller.scrollTo({ top: scroller.scrollTop + delta, behavior: "smooth" });
   });
 });
-
-// ---- 列表模式状态 ----
-const showForm = ref(false);
-const editingCategory = ref<Category | null>(null);
-const listTab = ref<"expense" | "income">("expense");
-
-// ---- 表单模式状态 ----
-const formType = ref<"expense" | "income">("expense");
-const formName = ref("");
-const formIcon = ref("");
-const formError = ref("");
 
 // ---- 删除确认状态 ----
 const deleteTarget = ref<Category | null>(null);

@@ -16,6 +16,7 @@
 - 分类图标库按类型分组展示（餐饮/交通/购物/居家/娱乐/运动/旅行/医疗/收入理财/教育/数码/社交/宠物/亲子/节日/办公/美容/其他），始终显示全部分组；输入名称命中关键词时仅自动滚动定位到对应分组，用户仍可上下滚动浏览其他分组；图标总数扩充至约 200 个。
 - 分类编辑/标签选择底部 Sheet 接入 `useKeyboardInset` composable（基于 `visualViewport`），软键盘弹出时动态上抬底部内边距，避免确定按钮被遮挡、图标区滚动失效。
 - 新增 `useKeyboardInset` composable：监听 `window.visualViewport` 的 resize/scroll，返回软键盘占据视口内高度。
+- 修复 `CategorySheet` 进入记账页白屏：`watch(matchedGroupKey)` 注册在 `formName` 声明之前，watch 同步求值 source 触发 `formName` 的 TDZ `ReferenceError`，setup 抛错导致组件挂载失败；已将 watch 移至 `formName` 声明之后，并补 `CategorySheet` 组件单测（11 例，覆盖 TDZ 回归、列表/表单模式、Tab 切换、新建/编辑提交、团队账本权限、关键词匹配）。
 
 ## 功能状态
 
