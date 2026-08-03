@@ -239,6 +239,7 @@ function buildFetchOpts() {
   const qTags = route.query.tags as string | undefined;
   const qCategories = route.query.categories as string | undefined;
   const qMembers = route.query.members as string | undefined;
+  const qUncategorized = route.query.uncategorized === "1" ? true : undefined;
 
   // 首页模式无任何筛选参数时，默认查当月
   let dateFrom = qDateFrom;
@@ -257,6 +258,7 @@ function buildFetchOpts() {
     tagIds: qTags ? qTags.split(",").filter(Boolean) : undefined,
     categoryIds: qCategories ? qCategories.split(",").filter(Boolean) : undefined,
     memberIds: qMembers ? qMembers.split(",").filter(Boolean) : undefined,
+    uncategorized: qUncategorized,
   };
 }
 

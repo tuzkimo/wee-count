@@ -31,6 +31,7 @@ const dateTo = ref("");
 const selectedTagIds = ref<string[]>([]);
 const selectedCategoryIds = ref<string[]>([]);
 const selectedMemberIds = ref<string[]>([]);
+const selectedUncategorized = ref(false);
 const teamMembers = ref<TeamMemberRow[]>([]);
 const aliasMap = ref<Record<string, string>>({});
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
@@ -94,6 +95,9 @@ onMounted(async () => {
   if (route.query.members) {
     selectedMemberIds.value = (route.query.members as string).split(",").filter(Boolean);
   }
+  if (route.query.uncategorized === "1") {
+    selectedUncategorized.value = true;
+  }
 });
 
 function onAccountSelect(acc: Account) {
@@ -135,6 +139,10 @@ function toggleMember(memberId: string) {
   }
 }
 
+function toggleUncategorized() {
+  selectedUncategorized.value = !selectedUncategorized.value;
+}
+
 function apply() {
   const query: Record<string, string> = {};
   if (selectedAccountId.value) query.account = selectedAccountId.value;
@@ -143,6 +151,7 @@ function apply() {
   if (selectedTagIds.value.length > 0) query.tags = selectedTagIds.value.join(",");
   if (selectedCategoryIds.value.length > 0) query.categories = selectedCategoryIds.value.join(",");
   if (selectedMemberIds.value.length > 0) query.members = selectedMemberIds.value.join(",");
+  if (selectedUncategorized.value) query.uncategorized = "1";
   router.push({ path: "/", query });
 }
 
@@ -154,6 +163,7 @@ function reset() {
   selectedTagIds.value = [];
   selectedCategoryIds.value = [];
   selectedMemberIds.value = [];
+  selectedUncategorized.value = false;
 }
 
 function onDateTimeConfirm(value: string) {
@@ -231,6 +241,11 @@ function goBack() {
             <span>{{ cat.icon }}</span>
             <span>{{ cat.name }}</span>
           </button>
+          <button
+            class="mt-2 flex items-center gap-1 rounded-full px-3 py-1.5 text-xs transition-colors"
+            :class="selectedUncategorized ? 'bg-primary text-white' : 'bg-gray-100 text-text-secondary'"
+            @click="toggleUncategorized"
+          >☐ 未分类</button>
           <p v-if="categoryStore.categories.length === 0" class="text-xs text-text-secondary">暂无分类</p>
         </div>
       </div>

@@ -155,6 +155,7 @@ export const useTransactionStore = defineStore("transaction", () => {
       tagIds?: string[];
       categoryIds?: string[];
       memberIds?: string[];
+      uncategorized?: boolean;
     }
   ): Promise<void> {
     _ledgerId = ledgerId;
@@ -199,6 +200,10 @@ export const useTransactionStore = defineStore("transaction", () => {
       const placeholders = opts.memberIds.map(() => "?").join(",");
       sql += ` AND t.user_id IN (${placeholders})`;
       params.push(...opts.memberIds);
+    }
+
+    if (opts?.uncategorized) {
+      sql += " AND (t.category_id IS NULL OR NOT EXISTS(SELECT 1 FROM categories c WHERE c.id=t.category_id AND c.is_deleted=0))";
     }
 
     sql += " GROUP BY t.id ORDER BY t.occurred_at DESC, t.created_at DESC";

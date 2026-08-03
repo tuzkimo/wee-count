@@ -379,3 +379,27 @@ describe("transactionStore", () => {
     });
   });
 });
+
+describe("fetchAll uncategorized filter", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it("appends uncategorized condition when opt set", async () => {
+    mockDb.select.mockResolvedValue([]);
+    const store = useTransactionStore();
+    await store.fetchAll("pl-1", { uncategorized: true });
+    const sql = mockDb.select.mock.calls[0][0] as string;
+    expect(sql).toContain("NOT EXISTS(SELECT 1 FROM categories c WHERE c.id=t.category_id AND c.is_deleted=0)");
+    expect(sql).toContain("t.category_id IS NULL");
+  });
+
+  it("omits condition when opt absent", async () => {
+    mockDb.select.mockResolvedValue([]);
+    const store = useTransactionStore();
+    await store.fetchAll("pl-1", {});
+    const sql = mockDb.select.mock.calls[0][0] as string;
+    expect(sql).not.toContain("uncategor");
+  });
+});
