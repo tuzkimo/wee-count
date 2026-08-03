@@ -71,10 +71,13 @@
 - LoginPage：改为手动输入用户名（本地账户登录）
 - MePage：显示在线/本地模式状态，配置在线同步入口，团队管理（创建/加入团队、成员管理），登出功能；在线服务降级时（`isOnlineBound && !isOnline`）同步状态显示「在线服务暂不可用，正在自动重连」，团队入口隐藏并替换为文字提示，退出在线同步仍可用
 
-### Phase 5：报表功能（设计阶段）
+### Phase 5：报表功能（已完成）
+- `/reports` 单页滚动仪表盘：总览卡片（收入/支出/结余 + 环比）、收支趋势折线、分类占比环形图 + 排行列表、账户净资产曲线
+- 周期切换：月 / 季 / 年 / 近12月 四档，◀ ▶ 平移，中心标签显示当前周期；切换时保留旧数据防闪烁
+- 自绘 SVG 图表（`LineChart` / `DonutChart`，几何纯函数抽到 `src/utils/chart.ts`），零图表库依赖
+- 点分类 / 未分类下钻流水：复用 FilterPage + TransactionList 管道（筛选链路新增「未分类」透传）；环形图「其他」合并项不可下钻
+- 本地 SQLite 聚合服务层（`src/services/reports.ts` + `src/composables/useReports.ts`）：0 schema 变更、0 后端改动、0 新依赖；按本地时区归桶
 - 设计文档：`docs/superpowers/specs/2026-08-03-reports-design.md`
-- MVP：/reports 单页滚动仪表盘（总览卡片+收支趋势+分类占比+账户净资产曲线），周期月/季/年/近12月切换，自绘 SVG 图表，点分类下钻流水
-- 已定架构：本地 SQLite 聚合服务层、0 schema 变更、0 后端改动、0 新依赖
 
 ### Phase 4-G：头像裁剪与 data URL 存储（已完成）
 - 头像统一存 `avatar_url` 为 data URL（与 emoji 同路），本地/在线一致；在线模式经 `auth.updateProfile` 同步到 `users.avatar_url`
@@ -96,7 +99,7 @@
 | `/accounts` | AccountList | 账户列表 + 净资产汇总 |
 | `/accounts/:id` | TransactionList | 账户详情（余额 + 流水，自动过滤） |
 | `/accounts/:id/edit` | AccountEdit | 账户编辑页 |
-| `/reports` | ReportsPage | 报表页（占位） |
+| `/reports` | ReportsPage | 报表页：周期切换 + 总览/趋势/分类/资产仪表盘 |
 | `/me` | MePage | 我的页：用户信息/同步状态/团队管理/登出 |
 | `/login` | LoginPage | 本地账户登录（用户名+密码） |
 | `/welcome` | WelcomePage | 首次启动创建本地账户 |

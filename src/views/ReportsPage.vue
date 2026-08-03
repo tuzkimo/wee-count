@@ -21,14 +21,14 @@ const breakdown = computed(() =>
   breakdownType.value === "expense" ? data.value?.breakdownExpense : data.value?.breakdownIncome
 );
 
-const INCOME_COLOR = "#16a34a";
-const EXPENSE_COLOR = "#dc2626";
+const INCOME_COLOR = "#22c55e";
+const EXPENSE_COLOR = "#ef4444";
 const NET_COLOR = "#3b82f6";
 
-// 分类 12 色板占位（Task 8 用 dataviz 校验色板替换）；"其他" 恒灰
+// 8 槽分类色板（dataviz 校验）；"其他" 恒灰，排行超 8 项循环用色
 const PALETTE = [
-  "#f97316", "#3b82f6", "#10b981", "#ef4444", "#8b5cf6", "#f59e0b",
-  "#14b8a6", "#6366f1", "#84cc16", "#ec4899", "#06b6d4", "#a855f7",
+  "#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+  "#e87ba4", "#008300", "#4a3aa7", "#e34948",
 ];
 function segmentColor(seg: { id: string | null; isMerge?: boolean }, i: number): string {
   if (seg.isMerge) return "#9ca3af";
