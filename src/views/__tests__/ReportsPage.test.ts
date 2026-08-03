@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { ref, computed } from "vue";
+import { toLocalDatetimeString } from "@/utils/datetime";
 import type { ReportData } from "@/services/reports";
 
 const setUnit = vi.fn(); const shift = vi.fn();
@@ -67,9 +68,14 @@ describe("ReportsPage", () => {
     const w = mount(ReportsPage, { global: { stubs: { LineChart: true, DonutChart: true } } });
     await flushPromises();
     await w.find(".category-list li").trigger("click");
+    const { start, end } = data.value!.range;
     expect(push).toHaveBeenCalledWith({
       path: "/filter",
-      query: expect.objectContaining({ categories: "c1" }),
+      query: {
+        categories: "c1",
+        dateFrom: toLocalDatetimeString(start),
+        dateTo: toLocalDatetimeString(end), // 排他区间 [start, end) 精确边界，非 end-1ms
+      },
     });
   });
 });

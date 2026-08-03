@@ -4,7 +4,7 @@ export function computeLinePoints(
   values: number[], w: number, h: number, pad: number, max?: number
 ): Pt[] {
   const n = values.length;
-  const maxVal = max ?? (Math.max(0, ...values) || 1);
+  const maxVal = (max ?? Math.max(0, ...values)) || 1;
   const innerW = w - pad * 2;
   const innerH = h - pad * 2;
   return values.map((v, i) => {

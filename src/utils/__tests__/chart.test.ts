@@ -24,6 +24,10 @@ describe("computeLinePoints", () => {
     expect(pts[0].y).toBeGreaterThan(pts[0].y - 100); // 5/100 → 靠近底边
     expect(pts[0].y).toBe(90 - 80 * 0.05); // 90 - (100-2*10)*0.05
   });
+  it("handles an explicit max of 0 without divide-by-zero", () => {
+    const pts = computeLinePoints([0], 200, 100, 10, 0);
+    expect(pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
+  });
 });
 
 describe("niceTicks", () => {

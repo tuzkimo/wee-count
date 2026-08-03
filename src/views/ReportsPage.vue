@@ -51,7 +51,7 @@ function onSegmentClick(seg: { id: string | null }): void {
   const { start, end } = data.value.range;
   const q: Record<string, string> = {
     dateFrom: toLocalDatetimeString(start),
-    dateTo: toLocalDatetimeString(new Date(end.getTime() - 1)),
+    dateTo: toLocalDatetimeString(end),
   };
   if (seg.id === null) q.uncategorized = "1";
   else q.categories = seg.id;
@@ -62,6 +62,16 @@ function netAssetValue(): string {
   const v = data.value?.netAsset.values;
   return v && v.length > 0 ? formatMoney(v[v.length - 1]) : "0.00";
 }
+
+function hasAnyNonZero(arr: number[]): boolean {
+  return arr.some((v) => v !== 0);
+}
+
+const balanceDeltaPct = computed<number | null>(() => {
+  const d = data.value;
+  if (!d || d.prevTotals.balance === 0) return null;
+  return Math.round(((d.totals.balance - d.prevTotals.balance) / d.prevTotals.balance) * 1000) / 10;
+});
 </script>
 
 <template>
@@ -118,7 +128,9 @@ function netAssetValue(): string {
           <div class="rounded-2xl bg-surface p-3">
             <p class="text-xs text-text-secondary">结余</p>
             <p class="mt-1 text-lg font-semibold text-text">{{ formatMoney(data.totals.balance) }}</p>
-            <p class="mt-0.5 text-xs text-text-secondary">比上周期</p>
+            <p class="mt-0.5 text-xs" :class="(balanceDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
+              {{ balanceDeltaPct === null ? "—" : `${balanceDeltaPct > 0 ? "+" : ""}${balanceDeltaPct}%` }}
+            </p>
           </div>
         </section>
 
@@ -126,7 +138,7 @@ function netAssetValue(): string {
         <section class="mb-4 rounded-2xl bg-surface p-4">
           <h2 class="mb-2 text-sm font-semibold text-text">收支趋势</h2>
           <LineChart
-            v-if="data.trend.labels.length > 0"
+            v-if="hasAnyNonZero(data.trend.income) || hasAnyNonZero(data.trend.expense)"
             :labels="data.trend.labels"
             :series="[
               { name: '收入', color: INCOME_COLOR, values: data.trend.income },
@@ -183,7 +195,7 @@ function netAssetValue(): string {
             </span>
           </div>
           <LineChart
-            v-if="data.netAsset.values.length > 0"
+            v-if="hasAnyNonZero(data.netAsset.values)"
             :labels="data.netAsset.labels"
             :series="[{ name: '净资产', color: NET_COLOR, values: data.netAsset.values }]"
           />

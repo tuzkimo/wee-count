@@ -17,14 +17,18 @@ export function useReports() {
     return computeDeltas(d.totals, d.prevTotals);
   });
 
+  let reloadSeq = 0;
   async function reload(): Promise<void> {
     const ledgerId = ledgerStore.currentLedgerId;
     if (!ledgerId) { data.value = null; return; }
+    const seq = ++reloadSeq;
     loading.value = true;
     try {
-      data.value = await getReportData(ledgerId, unit.value, offset.value);
+      const result = await getReportData(ledgerId, unit.value, offset.value);
+      if (seq !== reloadSeq) return; // 过期响应丢弃，防旧响应后到覆盖新值
+      data.value = result;
     } finally {
-      loading.value = false;
+      if (seq === reloadSeq) loading.value = false;
     }
   }
 
