@@ -33,10 +33,17 @@ describe("computeRange", () => {
     expect(computeRange("year", 0).granularity).toBe("month");
     expect(computeRange("twelveMonths", 0).granularity).toBe("month");
   });
-  it("twelveMonths window is 12 months ending at current month start", () => {
+  it("twelveMonths window includes the current month and spans 12 months", () => {
+    const now = new Date();
     const r = computeRange("twelveMonths", 0);
+    // 结束 = 下月首日（窗口含当前月）
+    expect(r.range.end.getFullYear() * 12 + r.range.end.getMonth()
+      - (now.getFullYear() * 12 + now.getMonth())).toBe(1);
+    // 跨度 12 个月
     expect(r.range.end.getFullYear() * 12 + r.range.end.getMonth()
       - (r.range.start.getFullYear() * 12 + r.range.start.getMonth())).toBe(12);
+    // 标签为 "YYYY年M月–YYYY年M月"
+    expect(r.label).toMatch(/^\d{4}年\d{1,2}月–\d{4}年\d{1,2}月$/);
   });
 });
 

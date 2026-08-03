@@ -58,12 +58,13 @@ export function computeRange(unit: PeriodUnit, offset: number): {
       granularity,
     };
   }
-  // twelveMonths: 窗口 = 截止上月末的 12 个月，offset 按 12 个月平移
+  // twelveMonths: 窗口 = 含当前月的近 12 个月（end = 下月首日），offset 按 12 个月平移
   const anchor = addMonths(thisMonth, offset * 12);
-  const start = addMonths(anchor, -12);
-  const lastShown = addMonths(anchor, -1);
+  const end = addMonths(anchor, 1);
+  const start = addMonths(end, -12);
+  const lastShown = addMonths(end, -1); // 即 anchor，标签末月
   return {
-    range: { start, end: anchor },
+    range: { start, end },
     prevRange: { start: addMonths(start, -12), end: start },
     label: `${start.getFullYear()}年${start.getMonth() + 1}月–${lastShown.getFullYear()}年${lastShown.getMonth() + 1}月`,
     granularity,
