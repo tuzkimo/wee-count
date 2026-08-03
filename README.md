@@ -71,6 +71,11 @@
 - LoginPage：改为手动输入用户名（本地账户登录）
 - MePage：显示在线/本地模式状态，配置在线同步入口，团队管理（创建/加入团队、成员管理），登出功能；在线服务降级时（`isOnlineBound && !isOnline`）同步状态显示「在线服务暂不可用，正在自动重连」，团队入口隐藏并替换为文字提示，退出在线同步仍可用
 
+### Phase 5：报表功能（设计阶段）
+- 设计文档：`docs/superpowers/specs/2026-08-03-reports-design.md`
+- MVP：/reports 单页滚动仪表盘（总览卡片+收支趋势+分类占比+账户净资产曲线），周期月/季/年/近12月切换，自绘 SVG 图表，点分类下钻流水
+- 已定架构：本地 SQLite 聚合服务层、0 schema 变更、0 后端改动、0 新依赖
+
 ### Phase 4-G：头像裁剪与 data URL 存储（已完成）
 - 头像统一存 `avatar_url` 为 data URL（与 emoji 同路），本地/在线一致；在线模式经 `auth.updateProfile` 同步到 `users.avatar_url`
 - 后端迁移 006：`users.avatar_url` 由 `VARCHAR(255)` 改 `TEXT`，容纳 data URL
