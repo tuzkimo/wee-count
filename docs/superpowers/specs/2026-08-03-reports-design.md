@@ -67,7 +67,9 @@
 
 ### 时区归桶
 
-SQL 只按 UTC 日/月聚合出少量行，JS 侧复用 `utcToLocalDateKey` 把桶归到本地日/月。所有时区逻辑留在已测的 JS 工具里，SQL 不做时区算术。
+SQL 直接按**本地日/月**聚合，用显式偏移修饰符：`date(occurred_at, '+480 minutes')` / `strftime('%Y-%m', occurred_at, '+480 minutes')`。偏移在每次查询时由 JS 计算（`-new Date().getTimezoneOffset()` 分钟），与范围边界同源，天然一致；值是纯数字派生，直接内联进 SQL，不经过参数绑定。
+
+**为什么不用「UTC 桶 + JS 重归」**：正时区（如东八区）下单个 UTC 日/月桶会横跨两个本地日/月（UTC 08-02 含本地 08-02 早 8 点到 08-03 早 8 点），把整桶归到任一本地桶都会错分，且 UTC 日桶无法拆开重分。必须让 SQL 按本地边界切桶。
 
 ### 4.1 getOverview — 总览卡片
 
@@ -93,8 +95,8 @@ WHERE ledger_id=? AND is_deleted=0 AND type!='transfer'
 GROUP BY bucket ORDER BY bucket
 ```
 
-- `<utc_bucket>`：月档用 `date(occurred_at)`（UTC 日），季/年/近12月档用 `strftime('%Y-%m', occurred_at)`（UTC 月）
-- JS 把 UTC 桶并到本地桶，**补齐无数据的天/月为 0**，折线连续
+- `<bucket>`：月档用 `date(occurred_at, '+480 minutes')`（本地日），季/年/近12月档用 `strftime('%Y-%m', occurred_at, '+480 minutes')`（本地月）；偏移按 §4 时区归桶 实时计算
+- SQL 已按本地边界切桶，JS 只需**补齐无数据的天/月为 0** 保证折线连续
 - 返回 `{ labels: string[], income: number[], expense: number[] }`（补齐后，长度=该周期采样点数）
 
 ### 4.3 getCategoryBreakdown(range, type) — 分类占比
@@ -131,7 +133,7 @@ net_asset(T) = Σ_{created_at ≤ T} 账户期初(资产+, 负债−)
    - 已有账户期初：`SELECT COALESCE(SUM(CASE WHEN category='asset' THEN initial_balance ELSE -initial_balance END),0) FROM accounts WHERE ledger_id=? AND is_deleted=0 AND created_at<=?`（`<= start`）
    - `baseline = 历史流动 + 已有账户期初`
 2. **桶内流动**：复用 getTrend 的桶收入/支出（同 range），JS 逐桶累加
-3. **新增账户期初**：`SELECT <utc_bucket> AS bucket, COALESCE(SUM(CASE WHEN category='asset' THEN initial_balance ELSE -initial_balance END),0) AS initial FROM accounts WHERE ledger_id=? AND is_deleted=0 AND created_at>=? AND created_at<? GROUP BY bucket ORDER BY bucket`（范围内按创建桶分组），在创建桶那一点加进累加（JS 归本地桶）
+3. **新增账户期初**：`SELECT <bucket> AS bucket, COALESCE(SUM(CASE WHEN category='asset' THEN initial_balance ELSE -initial_balance END),0) AS initial FROM accounts WHERE ledger_id=? AND is_deleted=0 AND created_at>=? AND created_at<? GROUP BY bucket ORDER BY bucket`（范围内按本地创建桶分组，`<bucket>` 同 getTrend），在创建桶那一点加进累加
 
 JS 从 baseline 起步逐桶累加 → `{ labels, netAsset: number[] }`。月档 31 点、年档 12 点。
 
