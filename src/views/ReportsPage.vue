@@ -8,7 +8,7 @@ import DonutChart from "@/components/charts/DonutChart.vue";
 import { toLocalDatetimeString } from "@/utils/datetime";
 
 const router = useRouter();
-const { unit, data, breakdownType, deltas, setUnit, shift } = useReports();
+const { unit, data, loading, error, breakdownType, deltas, setUnit, shift, reload } = useReports();
 
 const UNITS: { key: "month" | "quarter" | "year" | "twelveMonths"; label: string }[] = [
   { key: "month", label: "月" },
@@ -102,8 +102,26 @@ const balanceDeltaPct = computed<number | null>(() => {
     </div>
 
     <div class="flex-1 overflow-y-auto px-4 py-4">
+      <!-- 加载中 -->
+      <div v-if="loading && !data" class="py-20 text-center text-sm text-text-secondary">
+        <p class="text-4xl">📊</p>
+        <p class="mt-2">加载中…</p>
+      </div>
+
+      <!-- 错误态：SQL/DB 异常不再伪装成「暂无数据」 -->
+      <div v-else-if="error" class="py-20 text-center text-sm text-text-secondary">
+        <p class="text-4xl">⚠️</p>
+        <p class="mt-2">加载失败</p>
+        <p class="mt-1 break-all px-6 text-xs text-text-secondary">{{ error }}</p>
+        <button
+          data-test="report-retry"
+          class="mt-3 rounded-full bg-primary px-4 py-1.5 text-xs font-medium text-white"
+          @click="reload"
+        >重试</button>
+      </div>
+
       <!-- 空态 -->
-      <div v-if="!data" class="py-20 text-center text-sm text-text-secondary">
+      <div v-else-if="!data" class="py-20 text-center text-sm text-text-secondary">
         <p class="text-4xl">📊</p>
         <p class="mt-2">暂无数据</p>
       </div>

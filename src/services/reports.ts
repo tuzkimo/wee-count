@@ -90,11 +90,11 @@ export function rangeLabels(range: ReportRange, granularity: Granularity): strin
   return out;
 }
 
-function bucketExpr(granularity: Granularity): string {
+function bucketExpr(granularity: Granularity, col = "occurred_at"): string {
   const off = offsetModifier();
   return granularity === "day"
-    ? `date(occurred_at, '${off}')`
-    : `strftime('%Y-%m', occurred_at, '${off}')`;
+    ? `date(${col}, '${off}')`
+    : `strftime('%Y-%m', ${col}, '${off}')`;
 }
 
 export function fillTrend(
@@ -238,7 +238,7 @@ const BASELINE_ACCOUNTS_SQL = `
   FROM accounts WHERE ledger_id=? AND is_deleted=0 AND created_at<=?`;
 
 const INITIALS_SQL = (granularity: Granularity) => `
-  SELECT ${bucketExpr(granularity)} AS bucket,
+  SELECT ${bucketExpr(granularity, "created_at")} AS bucket,
     COALESCE(SUM(CASE WHEN category='asset' THEN initial_balance ELSE -initial_balance END),0) AS v
   FROM accounts WHERE ledger_id=? AND is_deleted=0 AND created_at>=? AND created_at<?
   GROUP BY bucket ORDER BY bucket`;

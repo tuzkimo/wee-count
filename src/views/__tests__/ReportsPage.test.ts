@@ -4,7 +4,7 @@ import { ref, computed } from "vue";
 import { toLocalDatetimeString } from "@/utils/datetime";
 import type { ReportData } from "@/services/reports";
 
-const setUnit = vi.fn(); const shift = vi.fn();
+const setUnit = vi.fn(); const shift = vi.fn(); const reload = vi.fn();
 const push = vi.fn();
 
 function makeData(): ReportData {
@@ -26,13 +26,15 @@ function makeData(): ReportData {
   };
 }
 const data = ref<ReportData | null>(makeData());
+const loading = ref(false);
+const error = ref<string | null>(null);
 
 vi.mock("@/composables/useReports", () => ({
   useReports: () => ({
-    unit: ref("month"), offset: ref(0), loading: ref(false), data,
+    unit: ref("month"), offset: ref(0), loading, data, error,
     breakdownType: ref("expense"),
     deltas: computed(() => ({ incomeDeltaPct: 10, expenseDeltaPct: null })),
-    setUnit, shift, reload: vi.fn(),
+    setUnit, shift, reload,
   }),
 }));
 vi.mock("@/stores/ledger", () => ({
@@ -62,6 +64,27 @@ describe("ReportsPage", () => {
     const w = mount(ReportsPage, { global: { stubs: { LineChart: true, DonutChart: true } } });
     await flushPromises();
     expect(w.text()).toContain("暂无数据");
+    data.value = makeData();
+  });
+  it("shows loading state while loading with no data yet", async () => {
+    data.value = null;
+    loading.value = true;
+    const w = mount(ReportsPage, { global: { stubs: { LineChart: true, DonutChart: true } } });
+    await flushPromises();
+    expect(w.text()).toContain("加载中");
+    loading.value = false;
+    data.value = makeData();
+  });
+  it("shows error state with retry when load failed", async () => {
+    data.value = null;
+    error.value = "no such column: occurred_at";
+    const w = mount(ReportsPage, { global: { stubs: { LineChart: true, DonutChart: true } } });
+    await flushPromises();
+    expect(w.text()).toContain("加载失败");
+    expect(w.text()).toContain("no such column: occurred_at");
+    await w.find('[data-test="report-retry"]').trigger("click");
+    expect(reload).toHaveBeenCalled();
+    error.value = null;
     data.value = makeData();
   });
   it("drills down a category to /filter with preset query", async () => {

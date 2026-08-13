@@ -152,6 +152,36 @@ describe("async aggregations via mocked db", () => {
     const s = await getNetAssetSeries("l1", range, "day");
     expect(s.values[0]).toBe(160);
   });
+  it("getNetAssetSeries initials query buckets on accounts.created_at, not occurred_at", async () => {
+    // 回归：INITIALS_SQL 曾复用 transactions 的 bucketExpr（occurred_at），
+    // 而 accounts 表只有 created_at，真实 SQLite 下会抛 "no such column: occurred_at"，
+    // 导致 getReportData 整体 reject → 报表页 data 为 null → 暂无数据。
+    // day granularity（月报表）
+    mockDb.select
+      .mockResolvedValueOnce([{ v: 0 }])  // historical flows
+      .mockResolvedValueOnce([{ v: 0 }])   // accounts ≤ start
+      .mockResolvedValueOnce([])           // flows in range
+      .mockResolvedValueOnce([]);          // new accounts in range
+    await getNetAssetSeries("l1", range, "day");
+    let sql = mockDb.select.mock.calls[3][0] as string;
+    expect(sql).toContain("FROM accounts");
+    expect(sql).toContain("date(created_at,");
+    expect(sql).not.toContain("occurred_at");
+
+    // month granularity（季/年/近12月报表）
+    mockDb.select.mockClear();
+    mockDb.select
+      .mockResolvedValueOnce([{ v: 0 }])
+      .mockResolvedValueOnce([{ v: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    await getNetAssetSeries("l1", range, "month");
+    sql = mockDb.select.mock.calls[3][0] as string;
+    expect(sql).toContain("FROM accounts");
+    expect(sql).toContain("strftime('%Y-%m', created_at,");
+    expect(sql).not.toContain("occurred_at");
+  });
+
   it("getReportData orchestrates all four datasets", async () => {
     mockDb.select.mockResolvedValue([]);
     const d = await getReportData("l1", "month", 0);
