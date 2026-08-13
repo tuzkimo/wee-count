@@ -87,13 +87,13 @@ describe("ReportsPage", () => {
     error.value = null;
     data.value = makeData();
   });
-  it("drills down a category to /filter with preset query", async () => {
+  it("drills down a category to the transaction list with preset query", async () => {
     const w = mount(ReportsPage, { global: { stubs: { LineChart: true, DonutChart: true } } });
     await flushPromises();
     await w.find(".category-list li").trigger("click");
     const { start, end } = data.value!.range;
     expect(push).toHaveBeenCalledWith({
-      path: "/filter",
+      path: "/",
       query: {
         categories: "c1",
         dateFrom: toLocalDatetimeString(start),

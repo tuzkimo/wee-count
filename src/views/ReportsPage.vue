@@ -55,7 +55,7 @@ function onSegmentClick(seg: { id: string | null }): void {
   };
   if (seg.id === null) q.uncategorized = "1";
   else q.categories = seg.id;
-  void router.push({ path: "/filter", query: q });
+  void router.push({ path: "/", query: q });
 }
 
 function netAssetValue(): string {

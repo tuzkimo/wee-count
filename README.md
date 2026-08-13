@@ -18,6 +18,7 @@
 - 新增 `useKeyboardInset` composable：监听 `window.visualViewport` 的 resize/scroll，返回软键盘占据视口内高度。
 - 修复 `CategorySheet` 进入记账页白屏：`watch(matchedGroupKey)` 注册在 `formName` 声明之前，watch 同步求值 source 触发 `formName` 的 TDZ `ReferenceError`，setup 抛错导致组件挂载失败；已将 watch 移至 `formName` 声明之后，并补 `CategorySheet` 组件单测（11 例，覆盖 TDZ 回归、列表/表单模式、Tab 切换、新建/编辑提交、团队账本权限、关键词匹配）。
 - 修复报表页在有流水时仍显示「暂无数据」：净资产序列的期间新增账户子查询（`INITIALS_SQL`）复用了 transactions 的分桶表达式（硬编码 `occurred_at`），但查询的是 accounts 表（只有 `created_at`），SQLite 抛 `no such column: occurred_at`，经 `getReportData` 的 `Promise.all` 拖垮全部查询后被 `reload()` 静默吞掉。修复：`bucketExpr` 增加列参数，`INITIALS_SQL` 传 `created_at`；同时补两处健壮性——`useReports` 首屏加载前先 `await ledgerStore.init()`（修复冷启动直达报表页因账本未初始化而空态），`reload()` 增加 catch 并把错误暴露到 `error` ref，报表页区分「加载中 / 加载失败(可重试) / 暂无数据」三态。
+- 修复报表页分类下钻跳转目标：点分类 / 未分类此前跳到筛选页（`/filter`，需再点「应用筛选」），现改为直接跳转流水首页（`/`）并透传 `dateFrom` / `dateTo` / `categories` / `uncategorized` 筛选参数，TransactionList 的 `buildFetchOpts` 与 `watch(route.query)` 已能完整消费。
 
 ## 功能状态
 
@@ -76,7 +77,7 @@
 - `/reports` 单页滚动仪表盘：总览卡片（收入/支出/结余 + 环比）、收支趋势折线、分类占比环形图 + 排行列表、账户净资产曲线
 - 周期切换：月 / 季 / 年 / 近12月 四档，◀ ▶ 平移，中心标签显示当前周期；切换时保留旧数据防闪烁
 - 自绘 SVG 图表（`LineChart` / `DonutChart`，几何纯函数抽到 `src/utils/chart.ts`），零图表库依赖
-- 点分类 / 未分类下钻流水：复用 FilterPage + TransactionList 管道（筛选链路新增「未分类」透传）；环形图「其他」合并项不可下钻
+- 点分类 / 未分类下钻流水：直接跳转流水首页（`/`）并透传日期范围 + 分类 / 未分类筛选参数（不经过筛选页）；环形图「其他」合并项不可下钻
 - 本地 SQLite 聚合服务层（`src/services/reports.ts` + `src/composables/useReports.ts`）：0 schema 变更、0 后端改动、0 新依赖；按本地时区归桶
 - 设计文档：`docs/superpowers/specs/2026-08-03-reports-design.md`
 
