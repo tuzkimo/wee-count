@@ -164,3 +164,31 @@ describe("performSync 健壮性", () => {
     expect(getLastSyncedAt()).toBe("T1"); // 游标未推进
   });
 });
+
+describe("applyRemoteChanges 幂等", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+  });
+
+  it("补拉与增量返回同一父行（updated_at 相等）时跳过 UPDATE", async () => {
+    const execute = vi.fn().mockResolvedValue({ rowsAffected: 1, lastInsertId: 1 });
+    const select = vi.fn().mockResolvedValue([{ updated_at: "2026-01-01T00:00:00Z" }]);
+    const { getUserDb } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue({ select, execute } as never);
+
+    const { applyRemoteChanges } = await import("@/services/sync");
+    await applyRemoteChanges({
+      ledgers: [{ id: "l1", name: "x", type: "team", owner_id: null, team_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", is_deleted: false }],
+      accounts: [], tags: [], categories: [], transactions: [], member_aliases: [],
+    });
+
+    // select 返回 updated_at 相等的本地记录 → 不应执行任何 UPDATE / INSERT
+    const writeCalls = execute.mock.calls.filter((c) => {
+      const sql = c[0] as string;
+      return sql.startsWith("UPDATE") || sql.startsWith("INSERT");
+    });
+    expect(writeCalls).toHaveLength(0);
+  });
+});
