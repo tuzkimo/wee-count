@@ -45,6 +45,9 @@ vi.mock("@/db/userDb", () => ({
   closeUserDb: vi.fn(),
 }));
 
+// mock ledger store — 改昵称后应调用 useLedgerStore().init() 刷新内存缓存
+vi.mock("@/stores/ledger", () => ({ useLedgerStore: vi.fn(() => ({ init: vi.fn() })) }));
+
 describe("useAuthStore", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -147,6 +150,28 @@ describe("useAuthStore", () => {
     await vi.waitFor(() => expect(store.mode).toBe("online"));
     expect(store.onlineUser).not.toBeNull();
     expect(store.onlineUser?.id).toBe("s2");
+  });
+
+  it("updateProfile 改昵称后刷新 ledger 内存缓存", async () => {
+    const { useLedgerStore } = await import("@/stores/ledger");
+    const initMock = vi.fn();
+    (useLedgerStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ init: initMock });
+
+    const { getUserDb } = await import("@/db/userDb");
+    (getUserDb as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      execute: vi.fn(),
+      select: vi.fn().mockResolvedValue([]),
+    });
+
+    const store = useAuthStore();
+    store.currentLocalUser = {
+      id: "u1", username: "alice", nickname: "Alice", password_hash: "x",
+      api_url: null, server_user_id: null, avatar_url: null, created_at: "", updated_at: "",
+    };
+    store.mode = "local";
+    await store.updateProfile({ nickname: "Alicia" });
+
+    expect(initMock).toHaveBeenCalled();
   });
 
   it("isOnlineBound 区分纯本地与绑定在线（含降级）", () => {

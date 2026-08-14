@@ -307,6 +307,9 @@ export const useAuthStore = defineStore("auth", () => {
               enqueueSync({ ledgers: rows.map((r) => ({ ...r, is_deleted: !!r.is_deleted })) })
             }
           }
+          // 刷新账本内存缓存，让 UI 立即显示新账本名（否则要等下次 init() 才更新）
+          const { useLedgerStore } = await import("@/stores/ledger");
+          await useLedgerStore().init();
         }
       }
     }
