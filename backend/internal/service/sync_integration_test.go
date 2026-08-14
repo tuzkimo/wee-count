@@ -367,4 +367,12 @@ func TestIntegration_MemberCannotChangeLedgerOwnership(t *testing.T) {
 	if gotTeam == nil || *gotTeam != teamID {
 		t.Fatalf("team_id 应保持 %s，got %v", teamID, gotTeam)
 	}
+
+	var gotName string
+	if err := pool.QueryRow(ctx, "SELECT name FROM ledgers WHERE id = $1", ledgerID).Scan(&gotName); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "被抢" {
+		t.Fatalf("merge 应实际执行（name 应为「被抢」），got %q", gotName)
+	}
 }
