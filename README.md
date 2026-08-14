@@ -18,6 +18,7 @@
 - 跨账号串数据：登出/切用户不清空模块级 `pendingChanges`，用户 A 的积压变更会被当 B 的推到 B 账号；新增 `clearPendingSync()` 并在 logout/unbindOnline 调用。
 - LWW 误判「行不存在」：6 个 `lwwMerge*` 用 `err != nil` 判定「不存在→INSERT」，把真实 DB 错误误判；统一改 `errors.Is(err, pgx.ErrNoRows)`。
 - 增量游标竞态：`ServerTime` 在读取远程变更之后才取 `time.Now()`，提交落在「读完成→取游标」窗口的变更会被下次增量跳过；改为在读取前取样，残留的客户端时钟偏移问题另立架构级任务（服务端权威游标）。
+- 后端同步层架构级收口（复盘第三节）：6 份 `lwwMerge*` 样板抽 `mergeByKey` 通用骨架（category 查重分支保留），消灭「ErrNoRows 误判/return err 混淆」类 bug；增量游标改 `REPEATABLE READ` 只读事务取快照时间，消除「读↔取游标」竞态（客户端时钟偏移仍另立服务端权威游标任务）；补 testcontainers 真 Postgres 集成测试 5 条（`go test -tags integration`）网住真实 SQL 语义类 bug。
 
 ### 安全 / 越权（2026-08-14 复盘修复）
 
