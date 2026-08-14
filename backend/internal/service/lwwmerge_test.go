@@ -139,16 +139,89 @@ func TestLwwMergeCategoryDuplicateOlderSkips(t *testing.T) {
 func TestLwwMergeLedgerReturnsRealScanError(t *testing.T) {
 	s := &SyncService{}
 	realErr := errors.New("connection reset by peer")
-	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{scanErr: realErr}}}
+	fq := &fakeQuerier{rows: []pgx.Row{
+		fakeRow{vals: []any{true}}, // canReadLedger：有权限
+		fakeRow{scanErr: realErr},  // mergeByKey：真实 DB 错误
+	}}
 
 	l := model.Ledger{ID: "L1", Name: "账本", Type: "personal", UpdatedAt: time.Now()}
 
-	err := s.lwwMergeLedger(context.Background(), fq, l)
+	err := s.lwwMergeLedger(context.Background(), fq, "user-1", l)
 	if !errors.Is(err, realErr) {
 		t.Fatalf("应透传真实 DB 错误，got %v", err)
 	}
 	if len(fq.execs) != 0 {
 		t.Fatalf("真实错误不应触发 INSERT，但执行了 %d 次 Exec", len(fq.execs))
+	}
+}
+
+// 归属加固：UPDATE 不得含 owner_id/team_id。
+func TestLwwMergeLedgerUpdateExcludesOwnership(t *testing.T) {
+	s := &SyncService{}
+	now := time.Now()
+	fq := &fakeQuerier{rows: []pgx.Row{
+		fakeRow{vals: []any{true}},                // canReadLedger：有权限
+		fakeRow{vals: []any{now.Add(-time.Hour)}}, // mergeByKey：已存在且更旧 → UPDATE
+	}}
+
+	l := model.Ledger{ID: "L1", Name: "账本", Type: "personal", OwnerID: "attacker", UpdatedAt: now}
+
+	if err := s.lwwMergeLedger(context.Background(), fq, "user-1", l); err != nil {
+		t.Fatal(err)
+	}
+	if len(fq.execs) == 0 {
+		t.Fatal("应执行 UPDATE")
+	}
+	upd := fq.execs[0]
+	if !strings.Contains(upd.sql, "UPDATE ledgers") {
+		t.Fatalf("首条应为 UPDATE，got %s", upd.sql)
+	}
+	if strings.Contains(upd.sql, "owner_id") || strings.Contains(upd.sql, "team_id") {
+		t.Fatalf("UPDATE 不得含归属字段，got %s", upd.sql)
+	}
+}
+
+// 归属加固：INSERT 强制 owner=userID、team_id=NULL（防御性，实际因 canReadLedger 拒绝不存在账本而不可达）。
+func TestLwwMergeLedgerInsertForcesOwner(t *testing.T) {
+	s := &SyncService{}
+	fq := &fakeQuerier{rows: []pgx.Row{
+		fakeRow{vals: []any{true}},      // canReadLedger：有权限
+		fakeRow{scanErr: pgx.ErrNoRows}, // mergeByKey：不存在 → INSERT
+	}}
+
+	l := model.Ledger{ID: "L1", Name: "账本", Type: "personal", OwnerID: "attacker", UpdatedAt: time.Now()}
+
+	if err := s.lwwMergeLedger(context.Background(), fq, "user-1", l); err != nil {
+		t.Fatal(err)
+	}
+	if len(fq.execs) == 0 {
+		t.Fatal("应执行 INSERT")
+	}
+	ins := fq.execs[0]
+	if !strings.Contains(ins.sql, "INSERT INTO ledgers") {
+		t.Fatalf("首条应为 INSERT，got %s", ins.sql)
+	}
+	if len(ins.args) < 4 || ins.args[3] != "user-1" {
+		t.Fatalf("owner_id 应强制为 user-1，got %v", ins.args)
+	}
+	if !strings.Contains(ins.sql, "NULL") {
+		t.Fatalf("team_id 应为 NULL，got %s", ins.sql)
+	}
+}
+
+// 无权限：canReadLedger 返回 ErrNotLedgerMember，merge 不执行。
+func TestLwwMergeLedgerUnauthorized(t *testing.T) {
+	s := &SyncService{}
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{vals: []any{false}}}} // canReadLedger：无权限
+
+	l := model.Ledger{ID: "L1", Name: "账本", Type: "personal", UpdatedAt: time.Now()}
+
+	err := s.lwwMergeLedger(context.Background(), fq, "user-1", l)
+	if !errors.Is(err, ErrNotLedgerMember) {
+		t.Fatalf("无权限应返回 ErrNotLedgerMember，got %v", err)
+	}
+	if len(fq.execs) != 0 {
+		t.Fatalf("无权限不应执行任何写，execs=%v", fq.execs)
 	}
 }
 

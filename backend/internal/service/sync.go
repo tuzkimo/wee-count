@@ -136,12 +136,12 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 	}
 	defer tx.Rollback(ctx)
 
-	// ledgers
+	// ledgers：lwwMergeLedger 内部 canReadLedger 自鉴权，无权限返回 ErrNotLedgerMember 跳过。
 	for _, l := range changes.Ledgers {
-		if !ledgerSet[l.ID] {
-			continue
-		}
-		if err := s.lwwMergeLedger(ctx, tx, l); err != nil {
+		if err := s.lwwMergeLedger(ctx, tx, userID, l); err != nil {
+			if errors.Is(err, ErrNotLedgerMember) {
+				continue
+			}
 			return err
 		}
 	}
@@ -197,21 +197,24 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 	return tx.Commit(ctx)
 }
 
-func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, l model.Ledger) error {
+func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, userID string, l model.Ledger) error {
+	if err := canReadLedger(ctx, tx, userID, l.ID); err != nil {
+		return err // ErrNotLedgerMember 由调用方决定跳过还是失败
+	}
 	return mergeByKey(ctx, tx, l.UpdatedAt,
 		"SELECT updated_at FROM ledgers WHERE id = $1", []any{l.ID},
 		func() error {
 			_, err := tx.Exec(ctx,
 				`INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-				l.ID, l.Name, l.Type, l.OwnerID, l.TeamID, l.CreatedAt, l.UpdatedAt, l.IsDeleted,
+				 VALUES ($1,$2,$3,$4,NULL,$5,$6,$7)`,
+				l.ID, l.Name, l.Type, userID, l.CreatedAt, l.UpdatedAt, l.IsDeleted,
 			)
 			return err
 		},
 		func() error {
 			_, err := tx.Exec(ctx,
-				`UPDATE ledgers SET name=$1, type=$2, owner_id=$3, team_id=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
-				l.Name, l.Type, l.OwnerID, l.TeamID, l.UpdatedAt, l.IsDeleted, l.ID,
+				`UPDATE ledgers SET name=$1, type=$2, updated_at=$3, is_deleted=$4 WHERE id=$5`,
+				l.Name, l.Type, l.UpdatedAt, l.IsDeleted, l.ID,
 			)
 			return err
 		},
