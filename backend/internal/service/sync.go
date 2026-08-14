@@ -21,6 +21,28 @@ type dbQuerier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// mergeByKey 是各实体 LWW merge 的公共骨架：
+//   1) 按主键查 updated_at
+//   2) 不存在(ErrNoRows) → insert()
+//   3) 真实错误 → 直接透传（不误判为「不存在」）
+//   4) 存在但 incoming 更旧/相同 → 跳过
+//   5) incoming 更新 → update()
+func mergeByKey(ctx context.Context, tx dbQuerier, incoming time.Time,
+	keySQL string, keyArgs []any, insert, update func() error) error {
+	var remote time.Time
+	err := tx.QueryRow(ctx, keySQL, keyArgs...).Scan(&remote)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return insert()
+	}
+	if err != nil {
+		return err
+	}
+	if !incoming.After(remote) {
+		return nil
+	}
+	return update()
+}
+
 type SyncService struct {
 	pool *pgxpool.Pool
 }
@@ -165,77 +187,66 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 }
 
 func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, l model.Ledger) error {
-	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx, "SELECT updated_at FROM ledgers WHERE id = $1", l.ID).Scan(&remoteUpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx,
-			`INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-			l.ID, l.Name, l.Type, l.OwnerID, l.TeamID, l.CreatedAt, l.UpdatedAt, l.IsDeleted,
-		)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	if !l.UpdatedAt.After(remoteUpdatedAt) {
-		return nil
-	}
-	_, err = tx.Exec(ctx,
-		`UPDATE ledgers SET name=$1, type=$2, owner_id=$3, team_id=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
-		l.Name, l.Type, l.OwnerID, l.TeamID, l.UpdatedAt, l.IsDeleted, l.ID,
+	return mergeByKey(ctx, tx, l.UpdatedAt,
+		"SELECT updated_at FROM ledgers WHERE id = $1", []any{l.ID},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+				l.ID, l.Name, l.Type, l.OwnerID, l.TeamID, l.CreatedAt, l.UpdatedAt, l.IsDeleted,
+			)
+			return err
+		},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`UPDATE ledgers SET name=$1, type=$2, owner_id=$3, team_id=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
+				l.Name, l.Type, l.OwnerID, l.TeamID, l.UpdatedAt, l.IsDeleted, l.ID,
+			)
+			return err
+		},
 	)
-	return err
 }
 
 func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, a model.Account) error {
-	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx, "SELECT updated_at FROM accounts WHERE id = $1", a.ID).Scan(&remoteUpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Not exists → INSERT
-		_, err = tx.Exec(ctx,
-			`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			a.ID, a.LedgerID, a.OwnerID, a.Name, a.Type, a.Category, a.InitialBalance,
-			a.CreditLimit, a.RepaymentDay, a.Color, a.CreatedAt, a.UpdatedAt, a.IsDeleted,
-		)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	// Exists → LWW comparison
-	if !a.UpdatedAt.After(remoteUpdatedAt) {
-		return nil // server version is newer or same, skip
-	}
-	_, err = tx.Exec(ctx,
-		`UPDATE accounts SET name=$1, type=$2, category=$3, initial_balance=$4, credit_limit=$5, repayment_day=$6, color=$7, updated_at=$8, is_deleted=$9 WHERE id=$10`,
-		a.Name, a.Type, a.Category, a.InitialBalance, a.CreditLimit, a.RepaymentDay, a.Color, a.UpdatedAt, a.IsDeleted, a.ID,
+	return mergeByKey(ctx, tx, a.UpdatedAt,
+		"SELECT updated_at FROM accounts WHERE id = $1", []any{a.ID},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+				a.ID, a.LedgerID, a.OwnerID, a.Name, a.Type, a.Category, a.InitialBalance,
+				a.CreditLimit, a.RepaymentDay, a.Color, a.CreatedAt, a.UpdatedAt, a.IsDeleted,
+			)
+			return err
+		},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`UPDATE accounts SET name=$1, type=$2, category=$3, initial_balance=$4, credit_limit=$5, repayment_day=$6, color=$7, updated_at=$8, is_deleted=$9 WHERE id=$10`,
+				a.Name, a.Type, a.Category, a.InitialBalance, a.CreditLimit, a.RepaymentDay, a.Color, a.UpdatedAt, a.IsDeleted, a.ID,
+			)
+			return err
+		},
 	)
-	return err
 }
 
 func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag) error {
-	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx, "SELECT updated_at FROM tags WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx,
-			`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5)`,
-			t.ID, t.LedgerID, t.Name, t.UpdatedAt, t.IsDeleted,
-		)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	if !t.UpdatedAt.After(remoteUpdatedAt) {
-		return nil
-	}
-	_, err = tx.Exec(ctx,
-		`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
-		t.Name, t.UpdatedAt, t.IsDeleted, t.ID,
+	return mergeByKey(ctx, tx, t.UpdatedAt,
+		"SELECT updated_at FROM tags WHERE id = $1", []any{t.ID},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5)`,
+				t.ID, t.LedgerID, t.Name, t.UpdatedAt, t.IsDeleted,
+			)
+			return err
+		},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
+				t.Name, t.UpdatedAt, t.IsDeleted, t.ID,
+			)
+			return err
+		},
 	)
-	return err
 }
 
 func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c model.Category) error {
