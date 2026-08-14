@@ -57,7 +57,14 @@ func (h *TeamHandler) Invite(w http.ResponseWriter, r *http.Request) {
 
 	code, err := h.svc.CreateInvite(r.Context(), userID, teamID)
 	if err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+		switch {
+		case errors.Is(err, service.ErrTeamNotFound):
+			writeError(w, http.StatusNotFound, "team not found")
+		case errors.Is(err, service.ErrNotTeamOwner):
+			writeError(w, http.StatusForbidden, "only team owner can create invite")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 
@@ -86,7 +93,14 @@ func (h *TeamHandler) Join(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.svc.JoinByInvite(r.Context(), userID, req.InviteCode)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		switch {
+		case errors.Is(err, service.ErrInviteInvalid):
+			writeError(w, http.StatusBadRequest, "invalid or expired invite code")
+		case errors.Is(err, service.ErrAlreadyMember):
+			writeError(w, http.StatusConflict, "already a member of this team")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 

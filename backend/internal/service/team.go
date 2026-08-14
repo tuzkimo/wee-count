@@ -11,14 +11,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"wee-count/backend/internal/model"
 )
 
-// ErrNotTeamMember 表示调用者不是该团队成员（越权防护）。
-var ErrNotTeamMember = errors.New("not a team member")
+var (
+	// ErrNotTeamMember 表示调用者不是该团队成员（越权防护）。
+	ErrNotTeamMember = errors.New("not a team member")
+	ErrTeamNotFound  = errors.New("team not found")
+	ErrNotTeamOwner  = errors.New("only team owner can create invite")
+	ErrInviteInvalid = errors.New("invalid or expired invite code")
+	ErrAlreadyMember = errors.New("already a member of this team")
+)
 
 type TeamService struct {
 	pool  *pgxpool.Pool
@@ -92,11 +99,14 @@ func (s *TeamService) CreateInvite(ctx context.Context, userID, teamID string) (
 	// verify team exists and user is owner
 	var createdBy string
 	err := s.pool.QueryRow(ctx, "SELECT created_by FROM teams WHERE id = $1", teamID).Scan(&createdBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrTeamNotFound
+	}
 	if err != nil {
-		return "", fmt.Errorf("team not found: %w", err)
+		return "", fmt.Errorf("query team: %w", err)
 	}
 	if createdBy != userID {
-		return "", fmt.Errorf("only team owner can create invite")
+		return "", ErrNotTeamOwner
 	}
 
 	code, err := generateInviteCode()
@@ -117,7 +127,7 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 	key := fmt.Sprintf("invite:%s", code)
 	val, err := s.redis.Get(ctx, key).Result()
 	if err == redis.Nil {
-		return nil, fmt.Errorf("invalid or expired invite code")
+		return nil, ErrInviteInvalid
 	}
 	if err != nil {
 		return nil, fmt.Errorf("redis get: %w", err)
@@ -125,7 +135,7 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 
 	parts := strings.SplitN(val, ":", 2)
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid invite data")
+		return nil, ErrInviteInvalid
 	}
 	teamID := parts[0]
 
@@ -141,7 +151,7 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 		return nil, err
 	}
 	if exists {
-		return nil, fmt.Errorf("already a member of this team")
+		return nil, ErrAlreadyMember
 	}
 
 	now := time.Now().UTC()
