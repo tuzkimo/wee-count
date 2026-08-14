@@ -2,14 +2,24 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wee-count/backend/internal/model"
 )
+
+// dbQuerier 是同步服务所需的最小数据库接口：生产传 pgxpool.Pool / pgx.Tx，
+// 测试注入 fake，避免引入重型 DB mock 依赖。
+type dbQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 type SyncService struct {
 	pool *pgxpool.Pool
@@ -28,18 +38,23 @@ func (s *SyncService) Sync(ctx context.Context, userID string, req model.SyncReq
 	}
 
 	// 2. Apply local changes (LWW merge)
-	if err := s.applyLocalChanges(ctx, ledgerIDs, req.LocalChanges); err != nil {
+	if err := s.applyLocalChanges(ctx, userID, ledgerIDs, req.LocalChanges); err != nil {
 		return nil, fmt.Errorf("applyLocalChanges: %w", err)
 	}
 
-	// 3. Fetch remote changes
-	remoteChanges, err := s.getRemoteChanges(ctx, ledgerIDs, req.LastSyncedAt)
+	// 3. 游标必须在读取远程变更之前取样，而非之后：否则「读完成」与「取游标」之间
+	//    提交的变更会因 updated_at < 游标 被下次增量永久跳过。
+	//    注：LWW 用客户端 updated_at，彻底根治客户端时钟偏移需服务端权威游标（另立任务）。
+	serverTime := time.Now().UTC()
+
+	// 4. Fetch remote changes
+	remoteChanges, err := s.getRemoteChanges(ctx, userID, ledgerIDs, req.LastSyncedAt)
 	if err != nil {
 		return nil, fmt.Errorf("getRemoteChanges: %w", err)
 	}
 
 	return &model.SyncResponse{
-		ServerTime:    time.Now().UTC(),
+		ServerTime:    serverTime,
 		RemoteChanges: remoteChanges,
 	}, nil
 }
@@ -76,7 +91,7 @@ func (s *SyncService) getUserLedgerIDs(ctx context.Context, userID string) ([]st
 }
 
 // applyLocalChanges applies local changes with LWW merge per entity type
-func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string, changes model.SyncPayload) error {
+func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledgerIDs []string, changes model.SyncPayload) error {
 	ledgerSet := make(map[string]bool, len(ledgerIDs))
 	for _, id := range ledgerIDs {
 		ledgerSet[id] = true
@@ -138,9 +153,10 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string,
 		}
 	}
 
-	// member_aliases (global, not ledger-scoped)
+	// member_aliases (global, not ledger-scoped)：setter 以服务端当前用户为准，忽略客户端值，
+	// 防止伪造 setter 写他人别名。
 	for _, ma := range changes.MemberAliases {
-		if err := s.lwwMergeMemberAlias(ctx, tx, ma); err != nil {
+		if err := s.lwwMergeMemberAlias(ctx, tx, userID, ma); err != nil {
 			return err
 		}
 	}
@@ -148,15 +164,18 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, ledgerIDs []string,
 	return tx.Commit(ctx)
 }
 
-func (s *SyncService) lwwMergeLedger(ctx context.Context, tx pgx.Tx, l model.Ledger) error {
+func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, l model.Ledger) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM ledgers WHERE id = $1", l.ID).Scan(&remoteUpdatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at, is_deleted)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 			l.ID, l.Name, l.Type, l.OwnerID, l.TeamID, l.CreatedAt, l.UpdatedAt, l.IsDeleted,
 		)
+		return err
+	}
+	if err != nil {
 		return err
 	}
 	if !l.UpdatedAt.After(remoteUpdatedAt) {
@@ -169,10 +188,10 @@ func (s *SyncService) lwwMergeLedger(ctx context.Context, tx pgx.Tx, l model.Led
 	return err
 }
 
-func (s *SyncService) lwwMergeAccount(ctx context.Context, tx pgx.Tx, a model.Account) error {
+func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, a model.Account) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM accounts WHERE id = $1", a.ID).Scan(&remoteUpdatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// Not exists → INSERT
 		_, err = tx.Exec(ctx,
 			`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted)
@@ -180,6 +199,9 @@ func (s *SyncService) lwwMergeAccount(ctx context.Context, tx pgx.Tx, a model.Ac
 			a.ID, a.LedgerID, a.OwnerID, a.Name, a.Type, a.Category, a.InitialBalance,
 			a.CreditLimit, a.RepaymentDay, a.Color, a.CreatedAt, a.UpdatedAt, a.IsDeleted,
 		)
+		return err
+	}
+	if err != nil {
 		return err
 	}
 	// Exists → LWW comparison
@@ -193,14 +215,17 @@ func (s *SyncService) lwwMergeAccount(ctx context.Context, tx pgx.Tx, a model.Ac
 	return err
 }
 
-func (s *SyncService) lwwMergeTag(ctx context.Context, tx pgx.Tx, t model.Tag) error {
+func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM tags WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5)`,
 			t.ID, t.LedgerID, t.Name, t.UpdatedAt, t.IsDeleted,
 		)
+		return err
+	}
+	if err != nil {
 		return err
 	}
 	if !t.UpdatedAt.After(remoteUpdatedAt) {
@@ -213,10 +238,10 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx pgx.Tx, t model.Tag) e
 	return err
 }
 
-func (s *SyncService) lwwMergeCategory(ctx context.Context, tx pgx.Tx, c model.Category) error {
+func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c model.Category) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM categories WHERE id = $1", c.ID).Scan(&remoteUpdatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// 检查同账本下是否已有同名同类型分类（客户端清数据重绑会重新生成 UUID）
 		var dupID string
 		var dupUpdatedAt time.Time
@@ -231,14 +256,19 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx pgx.Tx, c model.C
 					`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
 					c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted, dupID,
 				)
+				return err
 			}
-			return err
+			// 本地更旧：跳过，不报错（此前误把外层 pgx.ErrNoRows 当错误返回，导致同步 500）
+			return nil
 		}
 		// 无重复，正常插入
 		_, err = tx.Exec(ctx,
 			`INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			c.ID, c.LedgerID, c.OwnerID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
 		)
+		return err
+	}
+	if err != nil {
 		return err
 	}
 	if !c.UpdatedAt.After(remoteUpdatedAt) {
@@ -251,10 +281,10 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx pgx.Tx, c model.C
 	return err
 }
 
-func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx pgx.Tx, t model.Transaction) error {
+func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, t model.Transaction) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM transactions WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, note, occurred_at, created_at, updated_at, is_deleted)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
@@ -264,6 +294,8 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx pgx.Tx, t mode
 		if err != nil {
 			return err
 		}
+	} else if err != nil {
+		return err
 	} else {
 		if !t.UpdatedAt.After(remoteUpdatedAt) {
 			return nil
@@ -277,27 +309,25 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx pgx.Tx, t mode
 		}
 	}
 
-	// sync tags: delete old associations, insert new ones
-	if len(t.TagIDs) > 0 {
-		_, err = tx.Exec(ctx, "DELETE FROM transaction_tags WHERE transaction_id = $1", t.ID)
+	// sync tags: 无条件先删旧关联再插新（空标签也要清空，否则旧标签会被回传「复活」）
+	_, err = tx.Exec(ctx, "DELETE FROM transaction_tags WHERE transaction_id = $1", t.ID)
+	if err != nil {
+		return err
+	}
+	for _, tagID := range t.TagIDs {
+		_, err = tx.Exec(ctx,
+			"INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+			t.ID, tagID,
+		)
 		if err != nil {
 			return err
-		}
-		for _, tagID := range t.TagIDs {
-			_, err = tx.Exec(ctx,
-				"INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-				t.ID, tagID,
-			)
-			if err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
 // getRemoteChanges returns changes in all user-accessible ledgers with updated_at > since
-func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, since time.Time) (model.SyncPayload, error) {
+func (s *SyncService) getRemoteChanges(ctx context.Context, userID string, ledgerIDs []string, since time.Time) (model.SyncPayload, error) {
 	if len(ledgerIDs) == 0 {
 		return model.SyncPayload{}, nil
 	}
@@ -339,8 +369,8 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, 
 	}
 	payload.Transactions = transactions
 
-	// member_aliases (global, not ledger-scoped)
-	aliases, err := s.queryMemberAliases(ctx, since)
+	// member_aliases (global, not ledger-scoped)：仅返回当前用户设的别名，防越权读他人数据
+	aliases, err := s.queryMemberAliases(ctx, s.pool, userID, since)
 	if err != nil {
 		return payload, err
 	}
@@ -619,17 +649,20 @@ func (s *SyncService) queryTagsByIDs(ctx context.Context, ids []string) ([]model
 	return tags, rows.Err()
 }
 
-func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx pgx.Tx, ma model.MemberAlias) error {
+func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx dbQuerier, setterUserID string, ma model.MemberAlias) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx,
 		"SELECT updated_at FROM member_aliases WHERE setter_user_id = $1 AND target_user_id = $2",
-		ma.SetterUserID, ma.TargetUserID,
+		setterUserID, ma.TargetUserID,
 	).Scan(&remoteUpdatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at) VALUES ($1,$2,$3,$4)`,
-			ma.SetterUserID, ma.TargetUserID, ma.AliasName, ma.UpdatedAt,
+			setterUserID, ma.TargetUserID, ma.AliasName, ma.UpdatedAt,
 		)
+		return err
+	}
+	if err != nil {
 		return err
 	}
 	if !ma.UpdatedAt.After(remoteUpdatedAt) {
@@ -637,15 +670,15 @@ func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx pgx.Tx, ma mod
 	}
 	_, err = tx.Exec(ctx,
 		`UPDATE member_aliases SET alias_name=$1, updated_at=$2 WHERE setter_user_id=$3 AND target_user_id=$4`,
-		ma.AliasName, ma.UpdatedAt, ma.SetterUserID, ma.TargetUserID,
+		ma.AliasName, ma.UpdatedAt, setterUserID, ma.TargetUserID,
 	)
 	return err
 }
 
-func (s *SyncService) queryMemberAliases(ctx context.Context, since time.Time) ([]model.MemberAlias, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT setter_user_id, target_user_id, alias_name, updated_at FROM member_aliases WHERE updated_at > $1`,
-		since,
+func (s *SyncService) queryMemberAliases(ctx context.Context, q dbQuerier, userID string, since time.Time) ([]model.MemberAlias, error) {
+	rows, err := q.Query(ctx,
+		`SELECT setter_user_id, target_user_id, alias_name, updated_at FROM member_aliases WHERE setter_user_id = $1 AND updated_at > $2`,
+		userID, since,
 	)
 	if err != nil {
 		return nil, err
