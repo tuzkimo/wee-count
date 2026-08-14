@@ -202,6 +202,12 @@ func (s *AuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*m
 		return nil, ErrInvalidToken
 	}
 
+	// 只接受 refresh token：access token 的 typ=access，不能当 refresh 用换新 token
+	// （否则拿到 15 分钟有效的 access 即可无限续期）。
+	if typ, _ := claims["typ"].(string); typ != "refresh" {
+		return nil, ErrInvalidToken
+	}
+
 	userID, ok := claims["sub"].(string)
 	if !ok {
 		return nil, ErrInvalidToken
@@ -262,6 +268,7 @@ func (s *AuthService) generateTokens(userID string) (string, string, error) {
 
 	accessClaims := jwt.MapClaims{
 		"sub": userID,
+		"typ": "access",
 		"iat": now.Unix(),
 		"exp": now.Add(15 * time.Minute).Unix(),
 	}
@@ -272,6 +279,7 @@ func (s *AuthService) generateTokens(userID string) (string, string, error) {
 
 	refreshClaims := jwt.MapClaims{
 		"sub": userID,
+		"typ": "refresh",
 		"iat": now.Unix(),
 		"exp": now.Add(30 * 24 * time.Hour).Unix(),
 	}

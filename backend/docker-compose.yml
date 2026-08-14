@@ -4,9 +4,9 @@ services:
     build: .
     ports: ["8080:8080"]
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://wee:wee@postgres:5432/wee-count?sslmode=disable}
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-wee}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wee-count}?sslmode=disable}
       REDIS_URL: ${REDIS_URL:-redis:6379}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://tauri.localhost}
     depends_on:
       postgres:
@@ -18,7 +18,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-wee}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wee}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-wee-count}
     ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]

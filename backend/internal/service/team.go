@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -15,6 +16,9 @@ import (
 
 	"wee-count/backend/internal/model"
 )
+
+// ErrNotTeamMember 表示调用者不是该团队成员（越权防护）。
+var ErrNotTeamMember = errors.New("not a team member")
 
 type TeamService struct {
 	pool  *pgxpool.Pool
@@ -189,9 +193,28 @@ type TeamMember struct {
 	JoinedAt  time.Time `json:"joined_at"`
 }
 
-func (s *TeamService) ListMembers(ctx context.Context, teamID string) ([]TeamMember, error) {
+// ensureTeamMember 校验 userID 是否属于 teamID，非成员返回 ErrNotTeamMember。
+func (s *TeamService) ensureTeamMember(ctx context.Context, q dbQuerier, userID, teamID string) error {
+	var isMember bool
+	err := q.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)", teamID, userID,
+	).Scan(&isMember)
+	if err != nil {
+		return fmt.Errorf("check membership: %w", err)
+	}
+	if !isMember {
+		return ErrNotTeamMember
+	}
+	return nil
+}
+
+func (s *TeamService) ListMembers(ctx context.Context, userID, teamID string) ([]TeamMember, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("team id is required")
+	}
+	// 越权防护：仅团队成员可查看成员列表
+	if err := s.ensureTeamMember(ctx, s.pool, userID, teamID); err != nil {
+		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT u.id, u.username, u.nickname, u.avatar_url, tm.role, tm.joined_at

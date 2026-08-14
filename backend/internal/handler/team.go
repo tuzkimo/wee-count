@@ -3,6 +3,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -93,10 +94,15 @@ func (h *TeamHandler) Join(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TeamHandler) Members(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r.Context())
 	teamID := chi.URLParam(r, "id")
-	members, err := h.svc.ListMembers(r.Context(), teamID)
+	members, err := h.svc.ListMembers(r.Context(), userID, teamID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		if errors.Is(err, service.ErrNotTeamMember) {
+			writeError(w, http.StatusForbidden, "not a team member")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to list members")
 		return
 	}
 	writeJSON(w, http.StatusOK, members)
