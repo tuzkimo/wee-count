@@ -135,7 +135,7 @@ func TestIntegration_LwwMergeLedger_NewerWins(t *testing.T) {
 	// 更新的版本覆盖
 	newer := now.Add(time.Hour)
 	l := model.Ledger{ID: ledgerID, Name: "新名", Type: "personal", OwnerID: userID, CreatedAt: now, UpdatedAt: newer, IsDeleted: false}
-	if err := s.lwwMergeLedger(ctx, pool, l); err != nil {
+	if err := s.lwwMergeLedger(ctx, pool, userID, l); err != nil {
 		t.Fatal(err)
 	}
 	var name string
@@ -148,7 +148,7 @@ func TestIntegration_LwwMergeLedger_NewerWins(t *testing.T) {
 
 	// 更旧的版本跳过
 	older := model.Ledger{ID: ledgerID, Name: "旧名", Type: "personal", OwnerID: userID, CreatedAt: now, UpdatedAt: now.Add(-time.Hour), IsDeleted: false}
-	if err := s.lwwMergeLedger(ctx, pool, older); err != nil {
+	if err := s.lwwMergeLedger(ctx, pool, userID, older); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, "SELECT name FROM ledgers WHERE id=$1", ledgerID).Scan(&name); err != nil {
@@ -309,5 +309,62 @@ func TestIntegration_Sync_ReturnsCursorAndRemoteChanges(t *testing.T) {
 	}
 	if !foundTx {
 		t.Fatalf("应返回成员写的流水，got %+v", resp.RemoteChanges.Transactions)
+	}
+}
+
+func TestIntegration_MemberCannotChangeLedgerOwnership(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	ownerID := seedUser(t, pool, now)
+	memberID := seedUser(t, pool, now)
+
+	teamID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO teams (id, name, created_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5)`,
+		teamID, "团队", ownerID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{ownerID, memberID} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO team_members (team_id, user_id, role, joined_at) VALUES ($1,$2,'member',$3)`,
+			teamID, uid, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ledgerID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO ledgers (id, name, type, team_id, owner_id, created_at, updated_at) VALUES ($1,$2,'team',$3,$4,$5,$6)`,
+		ledgerID, "共享账本", teamID, ownerID, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// member 推送一条试图改归属的账本变更：owner_id 改成自己、team_id 改成另一个团队
+	evilTeamID := uuid.New().String()
+	evilLedger := model.Ledger{
+		ID: ledgerID, Name: "被抢", Type: "personal",
+		OwnerID: memberID, TeamID: &evilTeamID,
+		CreatedAt: now, UpdatedAt: now.Add(time.Hour), IsDeleted: false,
+	}
+	if _, err := s.Sync(ctx, memberID, model.SyncRequest{
+		LastSyncedAt: now.Add(-time.Hour),
+		LocalChanges: model.SyncPayload{Ledgers: []model.Ledger{evilLedger}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 归属不得改变
+	var gotOwner string
+	var gotTeam *string
+	if err := pool.QueryRow(ctx, "SELECT owner_id, team_id FROM ledgers WHERE id = $1", ledgerID).Scan(&gotOwner, &gotTeam); err != nil {
+		t.Fatal(err)
+	}
+	if gotOwner != ownerID {
+		t.Fatalf("owner_id 应保持 %s，got %s", ownerID, gotOwner)
+	}
+	if gotTeam == nil || *gotTeam != teamID {
+		t.Fatalf("team_id 应保持 %s，got %v", teamID, gotTeam)
 	}
 }
