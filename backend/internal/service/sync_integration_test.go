@@ -13,6 +13,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"wee-count/backend/internal/database"
+	"wee-count/backend/internal/model"
 )
 
 var (
@@ -91,7 +92,7 @@ func seedTag(t *testing.T, pool *pgxpool.Pool, ledgerID string, now time.Time) s
 	id := uuid.New().String()
 	if _, err := pool.Exec(context.Background(),
 		`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,false)`,
-		id, ledgerID, "标签", now); err != nil {
+		id, ledgerID, "标签-"+id, now); err != nil {
 		t.Fatalf("seedTag: %v", err)
 	}
 	return id
@@ -119,5 +120,157 @@ func TestIntegration_Smoke(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("transactions 表应存在，count=%d", n)
+	}
+}
+
+func TestIntegration_LwwMergeLedger_NewerWins(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+
+	// 更新的版本覆盖
+	newer := now.Add(time.Hour)
+	l := model.Ledger{ID: ledgerID, Name: "新名", Type: "personal", OwnerID: userID, CreatedAt: now, UpdatedAt: newer, IsDeleted: false}
+	if err := s.lwwMergeLedger(ctx, pool, l); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	if err := pool.QueryRow(ctx, "SELECT name FROM ledgers WHERE id=$1", ledgerID).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "新名" {
+		t.Fatalf("更新的版本应覆盖，got name=%q", name)
+	}
+
+	// 更旧的版本跳过
+	older := model.Ledger{ID: ledgerID, Name: "旧名", Type: "personal", OwnerID: userID, CreatedAt: now, UpdatedAt: now.Add(-time.Hour), IsDeleted: false}
+	if err := s.lwwMergeLedger(ctx, pool, older); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT name FROM ledgers WHERE id=$1", ledgerID).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "新名" {
+		t.Fatalf("更旧的版本应跳过，got name=%q", name)
+	}
+}
+
+func TestIntegration_QueryTransactions_TagIDs(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+	txID := seedTransaction(t, pool, ledgerID, userID, now)
+	tag1 := seedTag(t, pool, ledgerID, now)
+	tag2 := seedTag(t, pool, ledgerID, now)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1,$2),($1,$3)`,
+		txID, tag1, tag2); err != nil {
+		t.Fatal(err)
+	}
+
+	txs, err := s.queryTransactions(ctx, pool, []string{ledgerID}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tx := range txs {
+		if tx.ID == txID {
+			got = tx.TagIDs
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("应扫出 2 个标签，got %v（若此处失败：pgx 可能无法把 uuid[] 扫进 []string，见下一步说明）", got)
+	}
+}
+
+func TestIntegration_LwwMergeTransaction_EmptyTagsClears(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+	txID := seedTransaction(t, pool, ledgerID, userID, now)
+	tag := seedTag(t, pool, ledgerID, now)
+	if _, err := pool.Exec(ctx, `INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1,$2)`, txID, tag); err != nil {
+		t.Fatal(err)
+	}
+
+	// 带空标签的新版本 merge，应清掉旧关联
+	tx := model.Transaction{ID: txID, LedgerID: ledgerID, UserID: userID, Type: "expense", Amount: 10, OccurredAt: now, CreatedAt: now, UpdatedAt: now.Add(time.Hour), TagIDs: []string{}}
+	if err := s.lwwMergeTransaction(ctx, pool, tx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM transaction_tags WHERE transaction_id=$1", txID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("空标签应清空旧关联，残留 %d 条", n)
+	}
+}
+
+func TestIntegration_LwwMergeCategory_DuplicateOlderSkips(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO categories (id, ledger_id, owner_id, name, type, updated_at, is_deleted)
+		 VALUES ($1,$2,$3,'餐饮','expense',$4,false)`,
+		uuid.New().String(), ledgerID, userID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// 新 UUID、同名同类型、但更旧 → 应跳过且不报错、不新增行
+	older := model.Category{ID: uuid.New().String(), LedgerID: ledgerID, OwnerID: userID, Name: "餐饮", Type: "expense", UpdatedAt: now.Add(-time.Hour)}
+	if err := s.lwwMergeCategory(ctx, pool, older); err != nil {
+		t.Fatalf("更旧的重复分类应跳过不报错，got %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM categories WHERE ledger_id=$1 AND name='餐饮'", ledgerID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("不应新增重复分类，count=%d", n)
+	}
+}
+
+func TestIntegration_Sync_ReturnsCursorAndRemoteChanges(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+
+	resp, err := s.Sync(ctx, userID, model.SyncRequest{LastSyncedAt: now.Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ServerTime.IsZero() {
+		t.Fatal("ServerTime 应为非零快照游标")
+	}
+	found := false
+	for _, l := range resp.RemoteChanges.Ledgers {
+		if l.ID == ledgerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应返回种子账本，got %+v", resp.RemoteChanges.Ledgers)
 	}
 }
