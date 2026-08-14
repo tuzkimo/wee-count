@@ -134,6 +134,9 @@ func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, er
 		}
 		ledgers = append(ledgers, l)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ledgers: %w", err)
+	}
 
 	// teams are ledgers with type='team'
 	var teams []model.Ledger
