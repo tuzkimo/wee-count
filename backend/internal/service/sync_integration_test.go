@@ -187,7 +187,14 @@ func TestIntegration_QueryTransactions_TagIDs(t *testing.T) {
 		}
 	}
 	if len(got) != 2 {
-		t.Fatalf("应扫出 2 个标签，got %v（若此处失败：pgx 可能无法把 uuid[] 扫进 []string，见下一步说明）", got)
+		t.Fatalf("应扫出 2 个标签，got %v", got)
+	}
+	gotSet := map[string]bool{}
+	for _, id := range got {
+		gotSet[id] = true
+	}
+	if !gotSet[tag1] || !gotSet[tag2] {
+		t.Fatalf("TagIDs 应包含 tag1 和 tag2，got %v", got)
 	}
 }
 
@@ -254,23 +261,53 @@ func TestIntegration_Sync_ReturnsCursorAndRemoteChanges(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	userID := seedUser(t, pool, now)
-	ledgerID := seedLedger(t, pool, userID, now)
+	ownerID := seedUser(t, pool, now)
+	memberID := seedUser(t, pool, now)
 
-	resp, err := s.Sync(ctx, userID, model.SyncRequest{LastSyncedAt: now.Add(-time.Hour)})
+	// 建团队 + 团队账本，owner 与 member 都是成员
+	teamID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO teams (id, name, created_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5)`,
+		teamID, "团队", ownerID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{ownerID, memberID} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO team_members (team_id, user_id, role, joined_at) VALUES ($1,$2,'member',$3)`,
+			teamID, uid, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ledgerID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO ledgers (id, name, type, team_id, owner_id, created_at, updated_at) VALUES ($1,$2,'team',$3,$4,$5,$6)`,
+		ledgerID, "共享账本", teamID, ownerID, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// member 往团队账本写一笔流水（他人的变更）
+	txID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO transactions (id, ledger_id, user_id, amount, type, occurred_at, created_at, updated_at) VALUES ($1,$2,$3,$4,'expense',$5,$5,$5)`,
+		txID, ledgerID, memberID, 20, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// owner 同步，游标早于这笔流水，应收到这笔「他人变更」
+	resp, err := s.Sync(ctx, ownerID, model.SyncRequest{LastSyncedAt: now.Add(-time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.ServerTime.IsZero() {
 		t.Fatal("ServerTime 应为非零快照游标")
 	}
-	found := false
-	for _, l := range resp.RemoteChanges.Ledgers {
-		if l.ID == ledgerID {
-			found = true
+	foundTx := false
+	for _, tx := range resp.RemoteChanges.Transactions {
+		if tx.ID == txID {
+			foundTx = true
 		}
 	}
-	if !found {
-		t.Fatalf("应返回种子账本，got %+v", resp.RemoteChanges.Ledgers)
+	if !foundTx {
+		t.Fatalf("应返回成员写的流水，got %+v", resp.RemoteChanges.Transactions)
 	}
 }
