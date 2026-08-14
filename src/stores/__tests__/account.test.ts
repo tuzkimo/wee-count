@@ -213,7 +213,15 @@ describe("accountStore", () => {
   });
 
   describe("remove", () => {
+    it("should throw error when account has related transactions", async () => {
+      mockDb.select.mockResolvedValueOnce([{ count: 3 }]);
+      const store = useAccountStore();
+      await expect(store.remove("a1")).rejects.toThrow("该账户下有 3 笔交易，无法删除");
+      expect(mockDb.execute).not.toHaveBeenCalled();
+    });
+
     it("should soft-delete and refresh list", async () => {
+      mockDb.select.mockResolvedValueOnce([{ count: 0 }]);
       mockDb.execute.mockResolvedValueOnce(undefined);
       mockDb.select.mockResolvedValueOnce([]);
 
@@ -231,6 +239,7 @@ describe("accountStore", () => {
       mockDb.execute.mockReset();
       const acc = { ...makeAccount({ id: "a1" }), is_deleted: 0 };
       mockDb.select.mockResolvedValueOnce([acc]); // 初始 fetchAll 填充 store
+      mockDb.select.mockResolvedValueOnce([{ count: 0 }]); // COUNT 校验（在 remove 内，先于 execute）
       mockDb.execute.mockResolvedValueOnce(undefined); // 软删除
       mockDb.select.mockResolvedValueOnce([]); // 刷新（已删除，列表空）
 

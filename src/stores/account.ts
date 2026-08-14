@@ -197,6 +197,13 @@ export const useAccountStore = defineStore("account", () => {
   async function remove(id: string): Promise<void> {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
+    const txs = await db.select<{ count: number }[]>(
+      "SELECT COUNT(*) AS count FROM transactions WHERE (from_account_id = ? OR to_account_id = ?) AND is_deleted = 0",
+      [id, id],
+    );
+    if (txs[0].count > 0) {
+      throw new Error(`该账户下有 ${txs[0].count} 笔交易，无法删除`);
+    }
     const now = new Date().toISOString();
     await db.execute(
       "UPDATE accounts SET is_deleted = 1, updated_at = ? WHERE id = ?",
