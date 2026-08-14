@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -71,9 +72,11 @@ func main() {
 		// refresh 不限流：客户端静默续期高频，不参与暴力破解面
 		r.Post("/auth/refresh", authH.Refresh)
 
-		// 登录/注册按 IP 限流，防暴力破解
+		// 登录/注册按 IP 限流，防暴力破解。
+		// key 取自 r.RemoteAddr，由全局 middleware.RealIP 从 X-Forwarded-For 解析；
+		// 若服务直连客户端会因 header 可伪造而绕过，后续可按部署改用 chi v5.3.0+ ClientIPFrom* 收紧。
 		r.Group(func(r chi.Router) {
-			r.Use(httprate.LimitByIP(10, time.Minute))
+			r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
 			r.Post("/auth/login", authH.Login)
 			r.Post("/auth/register", authH.Register)
 		})
@@ -88,9 +91,10 @@ func main() {
 			r.Post("/teams/{id}/invite", teamH.Invite)
 			r.Get("/teams/{id}/members", teamH.Members)
 
-			// 邀请码 6 位（10^6 空间）可被登录用户离线爆破入组，故 join 也限流
+			// 邀请码 6 位（10^6 空间）可被登录用户离线爆破入组，故 join 也限流。
+			// key 信任模型同上：取自 r.RemoteAddr，由全局 middleware.RealIP 解析。
 			r.Group(func(r chi.Router) {
-				r.Use(httprate.LimitByIP(10, time.Minute))
+				r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
 				r.Post("/teams/join", teamH.Join)
 			})
 		})
@@ -100,4 +104,15 @@ func main() {
 	if err := http.ListenAndServe(":"+cfg.Port, r); err != nil {
 		log.Fatalf("http.ListenAndServe: %v", err)
 	}
+}
+
+// clientIPKey 从 r.RemoteAddr 提取限流 key（等价旧 httprate.KeyByIP/LimitByIP 行为）：
+// key 取自 r.RemoteAddr，由全局 middleware.RealIP 从 X-Forwarded-For 解析；
+// 若服务直连客户端，header 可被伪造从而绕过限流，后续可按部署改用 chi v5.3.0+ ClientIPFrom* 收紧。
+func clientIPKey(r *http.Request) (string, error) {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	return httprate.CanonicalizeIP(ip), nil
 }
