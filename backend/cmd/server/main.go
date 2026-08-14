@@ -106,9 +106,10 @@ func main() {
 	}
 }
 
-// clientIPKey 从 r.RemoteAddr 提取限流 key（等价旧 httprate.KeyByIP/LimitByIP 行为）：
-// key 取自 r.RemoteAddr，由全局 middleware.RealIP 从 X-Forwarded-For 解析；
-// 若服务直连客户端，header 可被伪造从而绕过限流，后续可按部署改用 chi v5.3.0+ ClientIPFrom* 收紧。
+// clientIPKey 从 r.RemoteAddr 提取限流 key。代码等价旧 httprate.KeyByIP，但
+// 因全局 middleware.RealIP 已把 r.RemoteAddr 改写为 X-Forwarded-For 解析值，
+// 实际等效于已弃用的 KeyByRealIP（header 可伪造，见 httprate deprecated.go 的 GHSA 告警）。
+// 后续可按部署改用 chi v5.3.0+ ClientIPFrom* + LimitBy(GetClientIP) 收紧。
 func clientIPKey(r *http.Request) (string, error) {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
