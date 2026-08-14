@@ -1,5 +1,6 @@
 // src/services/api.ts
 import type { TeamMember } from "@/types";
+import { readRefreshToken, writeRefreshToken, deleteRefreshToken } from "./tokenStorage";
 
 let baseUrl: string | null = null
 
@@ -39,21 +40,21 @@ export async function fetchWithTimeout(
 export function setTokens(access: string, refresh: string): void {
   accessToken = access
   refreshToken = refresh
-  localStorage.setItem("refresh_token", refresh)
+  void writeRefreshToken(refresh)
 }
 
 export function clearTokens(): void {
   accessToken = null
   refreshToken = null
-  localStorage.removeItem("refresh_token")
+  void deleteRefreshToken()
 }
 
-export function getStoredRefreshToken(): string | null {
-  return localStorage.getItem("refresh_token")
+export async function getStoredRefreshToken(): Promise<string | null> {
+  return readRefreshToken()
 }
 
 async function refreshAccessToken(): Promise<boolean> {
-  const stored = getStoredRefreshToken()
+  const stored = await getStoredRefreshToken()
   if (!stored || !baseUrl) return false
 
   try {
@@ -66,7 +67,7 @@ async function refreshAccessToken(): Promise<boolean> {
     const data = await res.json()
     accessToken = data.access_token
     refreshToken = data.refresh_token
-    localStorage.setItem("refresh_token", data.refresh_token)
+    void writeRefreshToken(data.refresh_token)
     return true
   } catch {
     return false
@@ -108,7 +109,7 @@ export async function apiFetch<T = unknown>(
 }
 
 export function isLoggedIn(): boolean {
-  return accessToken !== null || getStoredRefreshToken() !== null
+  return accessToken !== null || refreshToken !== null
 }
 
 // --- Auth helpers ---
@@ -180,7 +181,7 @@ export async function updateProfile(data: UpdateProfileRequest): Promise<User> {
 }
 
 export async function tryRestoreSession(): Promise<User | null> {
-  const stored = getStoredRefreshToken()
+  const stored = await getStoredRefreshToken()
   if (!stored || !baseUrl) return null
 
   try {
@@ -193,7 +194,7 @@ export async function tryRestoreSession(): Promise<User | null> {
     const data = await res.json()
     accessToken = data.access_token
     refreshToken = data.refresh_token
-    localStorage.setItem('refresh_token', data.refresh_token)
+    void writeRefreshToken(data.refresh_token)
     return data.user
   } catch {
     return null
