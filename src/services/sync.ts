@@ -149,7 +149,13 @@ export async function performSync(): Promise<boolean> {
     return false;
   }
 
-  await applyRemoteChanges(res.data.remote_changes);
+  try {
+    await applyRemoteChanges(res.data.remote_changes);
+  } catch (e) {
+    console.warn("[sync] applyRemoteChanges failed:", e);
+    await markSyncResult(false);
+    return false;
+  }
   setLastSyncedAt(res.data.server_time);
 
   // 通知 TransactionList 刷新

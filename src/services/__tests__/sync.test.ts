@@ -5,6 +5,9 @@ const getCurrentUserId = vi.fn<(typeof import("@/db/userDb"))["getCurrentUserId"
 vi.mock("@/db/userDb", () => ({
   getUserDb: vi.fn(),
   getCurrentUserId: () => getCurrentUserId(),
+  getMemberAlias: vi.fn(),
+  setMemberAlias: vi.fn(),
+  getMemberAliases: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/services/api", () => ({
@@ -119,5 +122,45 @@ describe("enqueueSync 降级模式", () => {
 
     expect(apiFetch).toHaveBeenCalled();
     vi.useRealTimers();
+  });
+});
+
+describe("performSync 健壮性", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+  });
+
+  it("applyRemoteChanges 抛异常时游标不推进且 lastSyncFailed 置位", async () => {
+    const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
+    useAuthStoreMock.mockReturnValue(authState);
+
+    setLastSyncedAt("T1");
+    const { apiFetch } = await import("@/services/api");
+    vi.mocked(apiFetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: {
+        server_time: "T2",
+        remote_changes: {
+          ledgers: [{ id: "l1", name: "x", type: "team", owner_id: null, team_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", is_deleted: false }],
+          accounts: [], tags: [], categories: [], transactions: [], member_aliases: [],
+        },
+      },
+    } as never);
+
+    // 让 applyRemoteChanges 内部的 db.select reject，模拟外键违反抛异常
+    const { getUserDb } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue({
+      select: vi.fn().mockRejectedValue(new Error("FOREIGN KEY constraint failed")),
+      execute: vi.fn(),
+    } as never);
+
+    const { performSync } = await import("@/services/sync");
+    await performSync();
+
+    expect(authState.lastSyncFailed).toBe(true);
+    expect(getLastSyncedAt()).toBe("T1"); // 游标未推进
   });
 });
