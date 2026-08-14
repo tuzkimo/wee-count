@@ -504,3 +504,44 @@ func (s *SyncService) queryMemberAliases(ctx context.Context, since time.Time) (
 	}
 	return aliases, rows.Err()
 }
+
+// collectReferencedIDs 收集增量结果集里所有外键目标的 id。
+// 增量按 updated_at > since 分表过滤会漏掉「子表记录引用的父行」，
+// 这些父行需按 id 反查补齐，避免客户端外键缺失卡死。
+func collectReferencedIDs(
+	accounts []model.Account,
+	categories []model.Category,
+	tags []model.Tag,
+	transactions []model.Transaction,
+) (ledgerIDs, accountIDs, categoryIDs, tagIDs map[string]bool) {
+	ledgerIDs = map[string]bool{}
+	accountIDs = map[string]bool{}
+	categoryIDs = map[string]bool{}
+	tagIDs = map[string]bool{}
+
+	for _, a := range accounts {
+		ledgerIDs[a.LedgerID] = true
+	}
+	for _, c := range categories {
+		ledgerIDs[c.LedgerID] = true
+	}
+	for _, t := range tags {
+		ledgerIDs[t.LedgerID] = true
+	}
+	for _, tx := range transactions {
+		ledgerIDs[tx.LedgerID] = true
+		if tx.FromAccountID != nil {
+			accountIDs[*tx.FromAccountID] = true
+		}
+		if tx.ToAccountID != nil {
+			accountIDs[*tx.ToAccountID] = true
+		}
+		if tx.CategoryID != nil {
+			categoryIDs[*tx.CategoryID] = true
+		}
+		for _, tagID := range tx.TagIDs {
+			tagIDs[tagID] = true
+		}
+	}
+	return
+}
