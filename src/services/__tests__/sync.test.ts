@@ -180,7 +180,7 @@ describe("applyRemoteChanges 幂等", () => {
 
     const { applyRemoteChanges } = await import("@/services/sync");
     await applyRemoteChanges({
-      ledgers: [{ id: "l1", name: "x", type: "team", owner_id: null, team_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", is_deleted: false }],
+      ledgers: [{ id: "l1", name: "x", type: "team", owner_id: "u1", team_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", is_deleted: false }],
       accounts: [], tags: [], categories: [], transactions: [], member_aliases: [],
     });
 

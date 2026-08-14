@@ -403,3 +403,39 @@ describe("fetchAll uncategorized filter", () => {
     expect(sql).not.toContain("uncategor");
   });
 });
+
+describe("remove/batchRemove 推完整墓碑", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it("删除时应推送完整流水对象而非部分字段（防零值覆盖）", async () => {
+    mockDb.execute.mockResolvedValue(undefined);
+    // 首次 fetchAll 返回完整流水（含 tags）
+    mockDb.select.mockResolvedValueOnce([{
+      ...makeTx({ id: "tx-1", amount: 100, type: "expense" }),
+      is_deleted: 0,
+      category_name: "餐饮", category_type: "expense", category_icon: "🍜", category_sort_order: 1,
+      tag_ids: "tag-1", tag_names: "午餐",
+      from_account_name: "招行", from_account_type: "bank", from_account_color: "#ef4444",
+      to_account_name: null, to_account_type: null, to_account_color: null,
+    }]);
+    // remove 内部 fetchAll 重读返回空
+    mockDb.select.mockResolvedValueOnce([]);
+
+    const store = useTransactionStore();
+    await store.fetchAll("pl-1");
+    vi.mocked(enqueueSync).mockClear();
+
+    await store.remove("tx-1");
+
+    expect(enqueueSync).toHaveBeenCalledOnce();
+    const payload = vi.mocked(enqueueSync).mock.calls[0][0];
+    const tx = payload.transactions![0];
+    expect(tx.is_deleted).toBe(true);
+    expect(tx.amount).toBe(100); // 完整字段保留，而非被后端零值覆盖
+    expect(tx.type).toBe("expense");
+    expect(tx.tag_ids).toEqual(["tag-1"]);
+  });
+});

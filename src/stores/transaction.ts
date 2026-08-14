@@ -76,6 +76,7 @@ function assembleTransaction(row: TransactionRow): Transaction {
     tx.tags = ids.map((id, i) => ({ id, name: names[i] ?? "", ledger_id: "", updated_at: "", is_deleted: false }));
   } else {
     tx.tags = [];
+    tx.tag_ids = [];
   }
 
   if (row.from_account_id && row.from_account_name) {
@@ -340,6 +341,9 @@ export const useTransactionStore = defineStore("transaction", () => {
   async function remove(id: string): Promise<void> {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
+    // 删除前取完整行，入队推完整对象（仿 account.ts）：只传 id/is_deleted/updated_at
+    // 会让后端整行 LWW UPDATE 用零值覆盖 amount/type/occurred_at 等字段。
+    const existing = transactions.value.find((t) => t.id === id);
     const now = new Date().toISOString();
     await db.execute(
       "UPDATE transactions SET is_deleted = 1, updated_at = ? WHERE id = ?",
@@ -351,14 +355,14 @@ export const useTransactionStore = defineStore("transaction", () => {
       await accountStore.fetchAll(_ledgerId);
     }
 
-    // Trigger sync with tombstone
+    // Trigger sync with full tombstone
     const authStore = useAuthStore();
-    if (authStore.isAuthenticated) {
+    if (authStore.isAuthenticated && existing) {
       enqueueSync({
         accounts: [],
         tags: [],
         categories: [],
-        transactions: [{ id, is_deleted: true, updated_at: now } as Transaction],
+        transactions: [{ ...existing, is_deleted: true, updated_at: now }],
       });
     }
   }
@@ -367,6 +371,8 @@ export const useTransactionStore = defineStore("transaction", () => {
     if (ids.length === 0) return;
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
+    // 删除前取完整行（仿 account.ts），避免推部分墓碑被后端零值覆盖。
+    const existing = transactions.value.filter((t) => ids.includes(t.id));
     const now = new Date().toISOString();
     const placeholders = ids.map(() => "?").join(",");
     await db.execute(
@@ -379,15 +385,14 @@ export const useTransactionStore = defineStore("transaction", () => {
       await accountStore.fetchAll(_ledgerId);
     }
 
-    // Trigger sync with tombstones
+    // Trigger sync with full tombstones
     const authStore = useAuthStore();
-    if (authStore.isAuthenticated) {
-      const now = new Date().toISOString();
+    if (authStore.isAuthenticated && existing.length > 0) {
       enqueueSync({
         accounts: [],
         tags: [],
         categories: [],
-        transactions: ids.map(id => ({ id, is_deleted: true, updated_at: now } as Transaction)),
+        transactions: existing.map((t) => ({ ...t, is_deleted: true, updated_at: now })),
       });
     }
   }

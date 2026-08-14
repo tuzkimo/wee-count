@@ -56,6 +56,18 @@ export function setLastSyncedAt(time: string): void {
 }
 
 /**
+ * 清空待推送队列与定时器。登出/切用户时必须调用，否则模块级 pendingChanges
+ * 会把用户 A 积压的本地变更当作 B 的 local_changes 推到 B 账号（跨账号串数据）。
+ */
+export function clearPendingSync(): void {
+  pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+}
+
+/**
  * Enqueue local changes into sync queue, debounced 3 seconds
  */
 export function enqueueSync(changes: Partial<SyncPayload>): void {
@@ -82,7 +94,7 @@ async function performSyncIfOnline(): Promise<void> {
   } catch {
     return; // auth store 尚未初始化
   }
-  performSync();
+  void performSync().catch(() => {});
 }
 
 function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
@@ -134,13 +146,23 @@ export async function performSync(): Promise<boolean> {
     console.warn("[sync] collectMemberAliasesForSync failed:", e);
   }
 
-  const res = await apiFetch<SyncResponse>("/sync", {
-    method: "POST",
-    body: JSON.stringify({
-      last_synced_at: lastSyncedAt,
-      local_changes: changes,
-    } as SyncRequest),
-  });
+  let res: { ok: boolean; status: number; data?: SyncResponse; error?: string };
+  try {
+    res = await apiFetch<SyncResponse>("/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        last_synced_at: lastSyncedAt,
+        local_changes: changes,
+      } as SyncRequest),
+    });
+  } catch (e) {
+    // 网络异常/超时：apiFetch 会 throw（而非返回 {ok:false}）。此时 pendingChanges 已在上面清空，
+    // 必须回队变更并标记失败，否则变更从队列丢失且 UI 误报「已同步」。
+    console.warn("[sync] performSync network error:", e);
+    mergeChanges(pendingChanges, changes);
+    await markSyncResult(false);
+    return false;
+  }
 
   if (!res.ok || !res.data) {
     console.warn("[sync] performSync failed:", res.status, res.error);
@@ -274,14 +296,17 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
     const local = await db.select<{ updated_at: string }[]>(
       "SELECT updated_at FROM transactions WHERE id = ?", [tx.id]
     );
-    if (local.length === 0) {
+    const shouldInsert = local.length === 0;
+    const shouldUpdate = !shouldInsert && tx.updated_at > local[0].updated_at;
+
+    if (shouldInsert) {
       await db.execute(
         `INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, occurred_at, created_at, updated_at, is_deleted)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [tx.id, tx.ledger_id, tx.user_id, tx.amount, tx.type, tx.from_account_id, tx.to_account_id,
          tx.category_id, tx.occurred_at, tx.created_at, tx.updated_at, tx.is_deleted ? 1 : 0]
       );
-    } else if (tx.updated_at > local[0].updated_at) {
+    } else if (shouldUpdate) {
       await db.execute(
         `UPDATE transactions SET amount=?, type=?, from_account_id=?, to_account_id=?, category_id=?, occurred_at=?, updated_at=?, is_deleted=? WHERE id=?`,
         [tx.amount, tx.type, tx.from_account_id, tx.to_account_id, tx.category_id, tx.occurred_at,
@@ -289,9 +314,11 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
       );
     }
 
-    if (tx.tag_ids) {
+    // 标签重建仅在「插入」或「本地更旧被覆盖」时进行（遵循 LWW）；远端更旧时跳过，
+    // 避免旧标签回滚本地较新的标签改动。tag_ids 缺失（后端 omitempty 空数组）视作空，用于清空。
+    if (shouldInsert || shouldUpdate) {
       await db.execute("DELETE FROM transaction_tags WHERE transaction_id = ?", [tx.id]);
-      for (const tagID of tx.tag_ids) {
+      for (const tagID of tx.tag_ids ?? []) {
         await db.execute(
           "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)",
           [tx.id, tagID]

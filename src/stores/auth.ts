@@ -12,7 +12,7 @@ import {
 } from "@/db/meta";
 import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
 import * as api from "@/services/api";
-import { performSync } from "@/services/sync";
+import { performSync, clearPendingSync } from "@/services/sync";
 import type { Ledger } from "@/types";
 
 export type AuthMode = 'none' | 'local' | 'online'
@@ -144,6 +144,7 @@ export const useAuthStore = defineStore("auth", () => {
   function logout(): void {
     stopOnlineRecovery();
     closeUserDb();
+    clearPendingSync(); // 清空待推送队列，避免下个账号误推上一个账号的变更
     // 不再调用 api.clearTokens() — refresh_token 保留以便下次登录自动恢复在线会话
     currentLocalUser.value = null;
     onlineUser.value = null;
@@ -167,6 +168,7 @@ export const useAuthStore = defineStore("auth", () => {
     };
 
     api.clearTokens();
+    clearPendingSync(); // 断开在线绑定，清空待推送队列
     onlineUser.value = null;
     mode.value = 'local';
     lastSyncFailed.value = false;
