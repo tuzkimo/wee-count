@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronDown, Filter, Plus, Pencil, ListChecks, Trash2, Circle, CheckCircle } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
@@ -147,6 +147,10 @@ const totalIncome = computed(() => transactionStore.totalIncome);
 const totalExpense = computed(() => transactionStore.totalExpense);
 const totalBalance = computed(() => totalIncome.value - totalExpense.value);
 
+function closeLedgerSwitcher() {
+  showLedgerSwitcher.value = false;
+}
+
 onMounted(async () => {
   await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -174,9 +178,11 @@ onMounted(async () => {
   isLoading.value = false;
 
   // 点击外部关闭账本切换下拉
-  document.addEventListener("click", () => {
-    showLedgerSwitcher.value = false;
-  });
+  document.addEventListener("click", closeLedgerSwitcher);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("click", closeLedgerSwitcher);
 });
 
 function switchLedger(id: string) {
