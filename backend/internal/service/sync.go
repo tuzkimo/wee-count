@@ -293,10 +293,8 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c mode
 }
 
 func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, t model.Transaction) error {
-	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx, "SELECT updated_at FROM transactions WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx,
+	insert := func() error {
+		_, err := tx.Exec(ctx,
 			`INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, note, occurred_at, created_at, updated_at, is_deleted)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 			t.ID, t.LedgerID, t.UserID, t.Amount, t.Type, t.FromAccountID, t.ToAccountID,
@@ -305,32 +303,33 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, t m
 		if err != nil {
 			return err
 		}
-	} else if err != nil {
-		return err
-	} else {
-		if !t.UpdatedAt.After(remoteUpdatedAt) {
-			return nil
-		}
-		_, err = tx.Exec(ctx,
+		return syncTransactionTags(ctx, tx, t.ID, t.TagIDs)
+	}
+	update := func() error {
+		_, err := tx.Exec(ctx,
 			`UPDATE transactions SET amount=$1, type=$2, from_account_id=$3, to_account_id=$4, category_id=$5, note=$6, occurred_at=$7, updated_at=$8, is_deleted=$9 WHERE id=$10`,
 			t.Amount, t.Type, t.FromAccountID, t.ToAccountID, t.CategoryID, t.Note, t.OccurredAt, t.UpdatedAt, t.IsDeleted, t.ID,
 		)
 		if err != nil {
 			return err
 		}
+		return syncTransactionTags(ctx, tx, t.ID, t.TagIDs)
 	}
+	return mergeByKey(ctx, tx, t.UpdatedAt,
+		"SELECT updated_at FROM transactions WHERE id = $1", []any{t.ID},
+		insert, update,
+	)
+}
 
-	// sync tags: 无条件先删旧关联再插新（空标签也要清空，否则旧标签会被回传「复活」）
-	_, err = tx.Exec(ctx, "DELETE FROM transaction_tags WHERE transaction_id = $1", t.ID)
-	if err != nil {
+// syncTransactionTags 无条件先删旧关联再插新（空标签也要清空，否则旧标签会被回传「复活」）。
+func syncTransactionTags(ctx context.Context, tx dbQuerier, txID string, tagIDs []string) error {
+	if _, err := tx.Exec(ctx, "DELETE FROM transaction_tags WHERE transaction_id = $1", txID); err != nil {
 		return err
 	}
-	for _, tagID := range t.TagIDs {
-		_, err = tx.Exec(ctx,
+	for _, tagID := range tagIDs {
+		if _, err := tx.Exec(ctx,
 			"INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-			t.ID, tagID,
-		)
-		if err != nil {
+			txID, tagID); err != nil {
 			return err
 		}
 	}
@@ -661,29 +660,24 @@ func (s *SyncService) queryTagsByIDs(ctx context.Context, ids []string) ([]model
 }
 
 func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx dbQuerier, setterUserID string, ma model.MemberAlias) error {
-	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx,
+	return mergeByKey(ctx, tx, ma.UpdatedAt,
 		"SELECT updated_at FROM member_aliases WHERE setter_user_id = $1 AND target_user_id = $2",
-		setterUserID, ma.TargetUserID,
-	).Scan(&remoteUpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx,
-			`INSERT INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at) VALUES ($1,$2,$3,$4)`,
-			setterUserID, ma.TargetUserID, ma.AliasName, ma.UpdatedAt,
-		)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	if !ma.UpdatedAt.After(remoteUpdatedAt) {
-		return nil
-	}
-	_, err = tx.Exec(ctx,
-		`UPDATE member_aliases SET alias_name=$1, updated_at=$2 WHERE setter_user_id=$3 AND target_user_id=$4`,
-		ma.AliasName, ma.UpdatedAt, setterUserID, ma.TargetUserID,
+		[]any{setterUserID, ma.TargetUserID},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO member_aliases (setter_user_id, target_user_id, alias_name, updated_at) VALUES ($1,$2,$3,$4)`,
+				setterUserID, ma.TargetUserID, ma.AliasName, ma.UpdatedAt,
+			)
+			return err
+		},
+		func() error {
+			_, err := tx.Exec(ctx,
+				`UPDATE member_aliases SET alias_name=$1, updated_at=$2 WHERE setter_user_id=$3 AND target_user_id=$4`,
+				ma.AliasName, ma.UpdatedAt, setterUserID, ma.TargetUserID,
+			)
+			return err
+		},
 	)
-	return err
 }
 
 func (s *SyncService) queryMemberAliases(ctx context.Context, q dbQuerier, userID string, since time.Time) ([]model.MemberAlias, error) {
