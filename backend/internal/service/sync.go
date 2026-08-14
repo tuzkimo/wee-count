@@ -346,7 +346,79 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, ledgerIDs []string, 
 	}
 	payload.MemberAliases = aliases
 
+	// 引用闭包：增量返回的子表记录引用的父行（ledger/account/category/tag）
+	// 可能 updated_at 早于 since 而未被增量返回，导致客户端外键缺失卡死。按 id 反查补齐。
+	if err := s.backfillReferenced(ctx, &payload); err != nil {
+		return payload, err
+	}
+
 	return payload, nil
+}
+
+// unseenKeys 返回 m 中不在 seen 里的 key 组成的 slice（用于补拉去重）。
+func unseenKeys(m, seen map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		if !seen[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// backfillReferenced 补齐增量结果里子表记录引用的父行。
+// 只反查「增量结果里还没有」的 id，避免重复返回（前端 LWW 也能幂等兜底）。
+func (s *SyncService) backfillReferenced(ctx context.Context, payload *model.SyncPayload) error {
+	refLedgers, refAccounts, refCategories, refTags := collectReferencedIDs(
+		payload.Accounts, payload.Categories, payload.Tags, payload.Transactions,
+	)
+
+	seenLedgers := map[string]bool{}
+	for _, l := range payload.Ledgers {
+		seenLedgers[l.ID] = true
+	}
+	seenAccounts := map[string]bool{}
+	for _, a := range payload.Accounts {
+		seenAccounts[a.ID] = true
+	}
+	seenCategories := map[string]bool{}
+	for _, c := range payload.Categories {
+		seenCategories[c.ID] = true
+	}
+	seenTags := map[string]bool{}
+	for _, t := range payload.Tags {
+		seenTags[t.ID] = true
+	}
+
+	if ids := unseenKeys(refLedgers, seenLedgers); len(ids) > 0 {
+		extra, err := s.queryLedgersByIDs(ctx, ids)
+		if err != nil {
+			return err
+		}
+		payload.Ledgers = append(payload.Ledgers, extra...)
+	}
+	if ids := unseenKeys(refAccounts, seenAccounts); len(ids) > 0 {
+		extra, err := s.queryAccountsByIDs(ctx, ids)
+		if err != nil {
+			return err
+		}
+		payload.Accounts = append(payload.Accounts, extra...)
+	}
+	if ids := unseenKeys(refCategories, seenCategories); len(ids) > 0 {
+		extra, err := s.queryCategoriesByIDs(ctx, ids)
+		if err != nil {
+			return err
+		}
+		payload.Categories = append(payload.Categories, extra...)
+	}
+	if ids := unseenKeys(refTags, seenTags); len(ids) > 0 {
+		extra, err := s.queryTagsByIDs(ctx, ids)
+		if err != nil {
+			return err
+		}
+		payload.Tags = append(payload.Tags, extra...)
+	}
+	return nil
 }
 
 func (s *SyncService) queryLedgers(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Ledger, error) {
@@ -459,6 +531,92 @@ func (s *SyncService) queryTransactions(ctx context.Context, ledgerIDs []string,
 		transactions = append(transactions, t)
 	}
 	return transactions, rows.Err()
+}
+
+func (s *SyncService) queryLedgersByIDs(ctx context.Context, ids []string) ([]model.Ledger, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, type, owner_id, team_id, created_at, updated_at, is_deleted
+		 FROM ledgers WHERE id = ANY($1)`,
+		ids,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ledgers []model.Ledger
+	for rows.Next() {
+		var l model.Ledger
+		if err := rows.Scan(&l.ID, &l.Name, &l.Type, &l.OwnerID, &l.TeamID, &l.CreatedAt, &l.UpdatedAt, &l.IsDeleted); err != nil {
+			return nil, err
+		}
+		ledgers = append(ledgers, l)
+	}
+	return ledgers, rows.Err()
+}
+
+func (s *SyncService) queryAccountsByIDs(ctx context.Context, ids []string) ([]model.Account, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted
+		 FROM accounts WHERE id = ANY($1)`,
+		ids,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []model.Account
+	for rows.Next() {
+		var a model.Account
+		if err := rows.Scan(&a.ID, &a.LedgerID, &a.OwnerID, &a.Name, &a.Type, &a.Category, &a.InitialBalance, &a.CreditLimit, &a.RepaymentDay, &a.Color, &a.CreatedAt, &a.UpdatedAt, &a.IsDeleted); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
+}
+
+func (s *SyncService) queryCategoriesByIDs(ctx context.Context, ids []string) ([]model.Category, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE id = ANY($1)`,
+		ids,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []model.Category
+	for rows.Next() {
+		var c model.Category
+		if err := rows.Scan(&c.ID, &c.LedgerID, &c.OwnerID, &c.Name, &c.Type, &c.Icon, &c.SortOrder, &c.UpdatedAt, &c.IsDeleted); err != nil {
+			return nil, err
+		}
+		categories = append(categories, c)
+	}
+	return categories, rows.Err()
+}
+
+func (s *SyncService) queryTagsByIDs(ctx context.Context, ids []string) ([]model.Tag, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, ledger_id, name, updated_at, is_deleted FROM tags WHERE id = ANY($1)`,
+		ids,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []model.Tag
+	for rows.Next() {
+		var t model.Tag
+		if err := rows.Scan(&t.ID, &t.LedgerID, &t.Name, &t.UpdatedAt, &t.IsDeleted); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	return tags, rows.Err()
 }
 
 func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx pgx.Tx, ma model.MemberAlias) error {
