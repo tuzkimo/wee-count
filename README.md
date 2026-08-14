@@ -27,6 +27,20 @@
 - Tauri CSP 为空：`csp: null`，已补严格 CSP（`script-src 'self'` 阻断内联脚本注入，`connect-src` 放行 http/https 供动态 API 地址）。
 - docker-compose 弱默认密钥：`JWT_SECRET`/`POSTGRES_PASSWORD` 去掉弱默认值，改 `${VAR:?}` 强制注入。
 
+### 中危修复（2026-08-14 复盘修复）
+
+- 流水列表点击监听器未清理：`TransactionList` 的 `document.addEventListener("click")` 无 `onUnmounted` 移除，每次进首页叠加监听器并持有已卸载组件 ref；现抽 `closeLedgerSwitcher` 具名函数并在 `onUnmounted` 移除。
+- 全站无速率限制：登录/注册可暴力破解、6 位邀请码（10^6 空间）可被登录用户离线爆破入组；现用 `httprate.LimitBy` 按 IP 对 `/auth/login`、`/auth/register`、`/teams/join` 限流 10 次/分钟（限流 key 经 `middleware.RealIP` 解析，可被 `X-Forwarded-For` 伪造，后续需按部署改用 chi v5.3.0+ `ClientIPFrom*` 收紧信任模型）。
+- refresh_token 明文存 localStorage：设备 root 后可取走冒充用户；现迁出 webview 可达的 localStorage 至 Tauri 原生 store（`tauri-plugin-store`，非 Tauri 环境回落 localStorage），封堵 XSS 直接取 token 的路径（仍为明文持久化，对 root 不构成终极防护）。
+- 同步失败无自动重试：`performSync` 失败只回队不重武装定时器，「断网编辑→恢复」不自动补推；现失败后按指数退避（5s→60s 上限）自动重试，成功重置计数。
+- 改昵称不刷新账本内存缓存：`updateProfile` 改名后账本名要等下次 `init()` 才更新；现改名后刷新 ledgerStore 缓存。
+- 软删账户不校验关联流水：`accountStore.remove` 无 COUNT 校验，软删后名下流水成孤儿；现与 `categoryStore.remove` 一致，有活跃流水时拒绝删除。
+- LWW 时间戳字符串字典序比较：空格格式（`datetime('now')`）与 ISO 格式因 `" " < "T"` 恒判「更旧」，且 `firstFullSync` 未归一化致旧数据首同步可能 400；现加 `compareTimestamp` 按 epoch 比较并归一化 firstFullSync 出口时间戳。
+- 错误回显泄露内部细节：`Invite`/`Join`/`UpdateProfile` 用 `err.Error()` 原样回显 redis/pgx 内部错误，且 403/400/500 状态码混用；现定义哨兵错误并按语义映射 404/403/400/409/500，统一通用文案。
+- `GetMe` 漏查 `rows.Err()`：迭代中途错误被静默吞掉返回截断结果；现已补检查。
+- 缺复合索引：`categories(ledger_id, updated_at)`、`ledgers(team_id)`、`team_members(user_id)` 缺失致团队/账本多了全表扫；迁移 007 补齐。
+- （本次跳过）Docker 供应链项（`GOSUMDB=off`、以 root 运行、端口绑 0.0.0.0、Redis 无密码）：经确认留作后续处理。
+
 - 流水列表按天分组改用本地时区取日期 key，修复东八区 0–8 点流水被归到上一天的问题。
 - 编辑收入类型流水时，分类不再被默认分类覆盖，正确回显原分类。
 - 编辑收入类型流水时，保存校验不再因 `from_account_id` 为空而静默失败，可正常保存。
