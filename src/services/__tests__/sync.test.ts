@@ -30,7 +30,7 @@ vi.mock("@/stores/auth", () => ({
   useAuthStore: () => useAuthStoreMock(),
 }));
 
-import { enqueueSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp, compareTimestamp } from "@/services/sync";
+import { enqueueSync, clearPendingSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp, compareTimestamp } from "@/services/sync";
 
 describe("sync cursor is per-user", () => {
   beforeEach(() => {
@@ -174,6 +174,35 @@ describe("performSync 健壮性", () => {
 
     expect(authState.lastSyncFailed).toBe(true);
     expect(getLastSyncedAt()).toBe("T1"); // 游标未推进
+  });
+});
+
+describe("performSync 失败自动重试", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+    clearPendingSync(); // 重置模块级 retryAttempt 与泄漏的 syncTimer，避免上一用例影响退避时长
+  });
+
+  it("网络异常失败后，退避后重新触发 performSync", async () => {
+    vi.useFakeTimers();
+    const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
+    useAuthStoreMock.mockReturnValue(authState);
+    setLastSyncedAt("T1");
+    const { apiFetch } = await import("@/services/api");
+    // 第一次失败，第二次成功
+    (apiFetch as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ ok: true, status: 200, data: { server_time: "T2", remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } } });
+
+    const { performSync } = await import("@/services/sync");
+    await performSync(); // 失败
+    expect(authState.lastSyncFailed).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5000); // 触发第一次退避重试
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 });
 

@@ -30,6 +30,7 @@ interface SyncResponse {
 }
 
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
 let pendingChanges: SyncPayload = {
   ledgers: [],
   accounts: [],
@@ -61,6 +62,7 @@ export function setLastSyncedAt(time: string): void {
  */
 export function clearPendingSync(): void {
   pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
+  retryAttempt = 0;
   if (syncTimer) {
     clearTimeout(syncTimer);
     syncTimer = null;
@@ -97,6 +99,18 @@ async function performSyncIfOnline(): Promise<void> {
   void performSync().catch(() => {});
 }
 
+// 同步失败后按指数退避重新武装定时器：5s → 10s → 20s → 60s（上限）。
+// performSyncIfOnline 内部已按 isOnline 守卫，非 online 时静默跳过，等会话恢复再推。
+function scheduleRetry(): void {
+  if (syncTimer) clearTimeout(syncTimer);
+  const delay = Math.min(5000 * Math.pow(2, retryAttempt), 60000);
+  retryAttempt++;
+  syncTimer = setTimeout(() => {
+    syncTimer = null;
+    void performSyncIfOnline();
+  }, delay);
+}
+
 function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
   for (const key of ["ledgers", "accounts", "tags", "categories", "transactions", "member_aliases"] as const) {
     const targetArr = target[key] as Array<{ id: string; updated_at: string }>;
@@ -130,8 +144,10 @@ export async function performSync(): Promise<boolean> {
     } catch (e) {
       console.warn('[sync] firstFullSync failed:', e)
       await markSyncResult(false)
+      scheduleRetry()
       return false
     }
+    retryAttempt = 0;
     await markSyncResult(true)
     return true
   }
@@ -161,6 +177,7 @@ export async function performSync(): Promise<boolean> {
     console.warn("[sync] performSync network error:", e);
     mergeChanges(pendingChanges, changes);
     await markSyncResult(false);
+    scheduleRetry();
     return false;
   }
 
@@ -168,6 +185,7 @@ export async function performSync(): Promise<boolean> {
     console.warn("[sync] performSync failed:", res.status, res.error);
     mergeChanges(pendingChanges, changes);
     await markSyncResult(false)
+    scheduleRetry();
     return false;
   }
 
@@ -176,6 +194,7 @@ export async function performSync(): Promise<boolean> {
   } catch (e) {
     console.warn("[sync] applyRemoteChanges failed:", e);
     await markSyncResult(false);
+    scheduleRetry();
     return false;
   }
   setLastSyncedAt(res.data.server_time);
@@ -183,6 +202,7 @@ export async function performSync(): Promise<boolean> {
   // 通知 TransactionList 刷新
   const { useAuthStore } = await import("@/stores/auth");
   useAuthStore().notifySyncComplete();
+  retryAttempt = 0;
   await markSyncResult(true)
   return true;
 }
