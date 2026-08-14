@@ -64,19 +64,30 @@ func (s *SyncService) Sync(ctx context.Context, userID string, req model.SyncReq
 		return nil, fmt.Errorf("applyLocalChanges: %w", err)
 	}
 
-	// 3. 游标必须在读取远程变更之前取样，而非之后：否则「读完成」与「取游标」之间
-	//    提交的变更会因 updated_at < 游标 被下次增量永久跳过。
-	//    注：LWW 用客户端 updated_at，彻底根治客户端时钟偏移需服务端权威游标（另立任务）。
-	serverTime := time.Now().UTC()
+	// 3. 读 + 游标推进放入单个 REPEATABLE READ 只读事务，游标取事务快照时间，
+	//    消除「读完成 ↔ 取游标」之间的竞态。now() 返回事务起始时间，恒 ≤ 快照，
+	//    故下次 since=cursor 只会多读、不会漏读（LWW 幂等兜底）。
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin read tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
 
-	// 4. Fetch remote changes
-	remoteChanges, err := s.getRemoteChanges(ctx, userID, ledgerIDs, req.LastSyncedAt)
+	remoteChanges, err := s.getRemoteChanges(ctx, tx, userID, ledgerIDs, req.LastSyncedAt)
 	if err != nil {
 		return nil, fmt.Errorf("getRemoteChanges: %w", err)
 	}
 
+	var cursor time.Time
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&cursor); err != nil {
+		return nil, fmt.Errorf("read cursor: %w", err)
+	}
+
 	return &model.SyncResponse{
-		ServerTime:    serverTime,
+		ServerTime:    cursor,
 		RemoteChanges: remoteChanges,
 	}, nil
 }
@@ -337,7 +348,7 @@ func syncTransactionTags(ctx context.Context, tx dbQuerier, txID string, tagIDs 
 }
 
 // getRemoteChanges returns changes in all user-accessible ledgers with updated_at > since
-func (s *SyncService) getRemoteChanges(ctx context.Context, userID string, ledgerIDs []string, since time.Time) (model.SyncPayload, error) {
+func (s *SyncService) getRemoteChanges(ctx context.Context, q dbQuerier, userID string, ledgerIDs []string, since time.Time) (model.SyncPayload, error) {
 	if len(ledgerIDs) == 0 {
 		return model.SyncPayload{}, nil
 	}
@@ -345,42 +356,42 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, userID string, ledge
 	payload := model.SyncPayload{}
 
 	// ledgers
-	ledgers, err := s.queryLedgers(ctx, ledgerIDs, since)
+	ledgers, err := s.queryLedgers(ctx, q, ledgerIDs, since)
 	if err != nil {
 		return payload, err
 	}
 	payload.Ledgers = ledgers
 
 	// accounts
-	accounts, err := s.queryAccounts(ctx, ledgerIDs, since)
+	accounts, err := s.queryAccounts(ctx, q, ledgerIDs, since)
 	if err != nil {
 		return payload, err
 	}
 	payload.Accounts = accounts
 
 	// tags
-	tags, err := s.queryTags(ctx, ledgerIDs, since)
+	tags, err := s.queryTags(ctx, q, ledgerIDs, since)
 	if err != nil {
 		return payload, err
 	}
 	payload.Tags = tags
 
 	// categories
-	categories, err := s.queryCategories(ctx, since, ledgerIDs)
+	categories, err := s.queryCategories(ctx, q, since, ledgerIDs)
 	if err != nil {
 		return payload, err
 	}
 	payload.Categories = categories
 
 	// transactions
-	transactions, err := s.queryTransactions(ctx, ledgerIDs, since)
+	transactions, err := s.queryTransactions(ctx, q, ledgerIDs, since)
 	if err != nil {
 		return payload, err
 	}
 	payload.Transactions = transactions
 
 	// member_aliases (global, not ledger-scoped)：仅返回当前用户设的别名，防越权读他人数据
-	aliases, err := s.queryMemberAliases(ctx, s.pool, userID, since)
+	aliases, err := s.queryMemberAliases(ctx, q, userID, since)
 	if err != nil {
 		return payload, err
 	}
@@ -388,7 +399,7 @@ func (s *SyncService) getRemoteChanges(ctx context.Context, userID string, ledge
 
 	// 引用闭包：增量返回的子表记录引用的父行（ledger/account/category/tag）
 	// 可能 updated_at 早于 since 而未被增量返回，导致客户端外键缺失卡死。按 id 反查补齐。
-	if err := s.backfillReferenced(ctx, &payload); err != nil {
+	if err := s.backfillReferenced(ctx, q, &payload); err != nil {
 		return payload, err
 	}
 
@@ -408,7 +419,7 @@ func unseenKeys(m, seen map[string]bool) []string {
 
 // backfillReferenced 补齐增量结果里子表记录引用的父行。
 // 只反查「增量结果里还没有」的 id，避免重复返回（前端 LWW 也能幂等兜底）。
-func (s *SyncService) backfillReferenced(ctx context.Context, payload *model.SyncPayload) error {
+func (s *SyncService) backfillReferenced(ctx context.Context, q dbQuerier, payload *model.SyncPayload) error {
 	refLedgers, refAccounts, refCategories, refTags := collectReferencedIDs(
 		payload.Accounts, payload.Categories, payload.Tags, payload.Transactions,
 	)
@@ -431,28 +442,28 @@ func (s *SyncService) backfillReferenced(ctx context.Context, payload *model.Syn
 	}
 
 	if ids := unseenKeys(refLedgers, seenLedgers); len(ids) > 0 {
-		extra, err := s.queryLedgersByIDs(ctx, ids)
+		extra, err := s.queryLedgersByIDs(ctx, q, ids)
 		if err != nil {
 			return err
 		}
 		payload.Ledgers = append(payload.Ledgers, extra...)
 	}
 	if ids := unseenKeys(refAccounts, seenAccounts); len(ids) > 0 {
-		extra, err := s.queryAccountsByIDs(ctx, ids)
+		extra, err := s.queryAccountsByIDs(ctx, q, ids)
 		if err != nil {
 			return err
 		}
 		payload.Accounts = append(payload.Accounts, extra...)
 	}
 	if ids := unseenKeys(refCategories, seenCategories); len(ids) > 0 {
-		extra, err := s.queryCategoriesByIDs(ctx, ids)
+		extra, err := s.queryCategoriesByIDs(ctx, q, ids)
 		if err != nil {
 			return err
 		}
 		payload.Categories = append(payload.Categories, extra...)
 	}
 	if ids := unseenKeys(refTags, seenTags); len(ids) > 0 {
-		extra, err := s.queryTagsByIDs(ctx, ids)
+		extra, err := s.queryTagsByIDs(ctx, q, ids)
 		if err != nil {
 			return err
 		}
@@ -461,8 +472,8 @@ func (s *SyncService) backfillReferenced(ctx context.Context, payload *model.Syn
 	return nil
 }
 
-func (s *SyncService) queryLedgers(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Ledger, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryLedgers(ctx context.Context, q dbQuerier, ledgerIDs []string, since time.Time) ([]model.Ledger, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, name, type, owner_id, team_id, created_at, updated_at, is_deleted
 		 FROM ledgers WHERE id = ANY($1) AND updated_at > $2`,
 		ledgerIDs, since,
@@ -483,10 +494,10 @@ func (s *SyncService) queryLedgers(ctx context.Context, ledgerIDs []string, sinc
 	return ledgers, rows.Err()
 }
 
-func (s *SyncService) queryAccounts(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Account, error) {
+func (s *SyncService) queryAccounts(ctx context.Context, q dbQuerier, ledgerIDs []string, since time.Time) ([]model.Account, error) {
 	query := `SELECT id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted
 		FROM accounts WHERE ledger_id = ANY($1) AND updated_at > $2`
-	rows, err := s.pool.Query(ctx, query, ledgerIDs, since)
+	rows, err := q.Query(ctx, query, ledgerIDs, since)
 	if err != nil {
 		return nil, err
 	}
@@ -503,8 +514,8 @@ func (s *SyncService) queryAccounts(ctx context.Context, ledgerIDs []string, sin
 	return accounts, rows.Err()
 }
 
-func (s *SyncService) queryTags(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Tag, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryTags(ctx context.Context, q dbQuerier, ledgerIDs []string, since time.Time) ([]model.Tag, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, ledger_id, name, updated_at, is_deleted FROM tags WHERE ledger_id = ANY($1) AND updated_at > $2`,
 		ledgerIDs, since,
 	)
@@ -524,8 +535,8 @@ func (s *SyncService) queryTags(ctx context.Context, ledgerIDs []string, since t
 	return tags, rows.Err()
 }
 
-func (s *SyncService) queryCategories(ctx context.Context, since time.Time, ledgerIDs []string) ([]model.Category, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryCategories(ctx context.Context, q dbQuerier, since time.Time, ledgerIDs []string) ([]model.Category, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE updated_at > $1 AND ledger_id = ANY($2)`,
 		since, ledgerIDs,
 	)
@@ -545,8 +556,8 @@ func (s *SyncService) queryCategories(ctx context.Context, since time.Time, ledg
 	return categories, rows.Err()
 }
 
-func (s *SyncService) queryTransactions(ctx context.Context, ledgerIDs []string, since time.Time) ([]model.Transaction, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryTransactions(ctx context.Context, q dbQuerier, ledgerIDs []string, since time.Time) ([]model.Transaction, error) {
+	rows, err := q.Query(ctx,
 		`SELECT t.id, t.ledger_id, t.user_id, t.amount, t.type, t.from_account_id, t.to_account_id, t.category_id, t.note, t.occurred_at, t.created_at, t.updated_at, t.is_deleted,
 		 COALESCE(array_agg(tg.tag_id) FILTER (WHERE tg.tag_id IS NOT NULL), '{}') AS tag_ids
 		 FROM transactions t
@@ -573,8 +584,8 @@ func (s *SyncService) queryTransactions(ctx context.Context, ledgerIDs []string,
 	return transactions, rows.Err()
 }
 
-func (s *SyncService) queryLedgersByIDs(ctx context.Context, ids []string) ([]model.Ledger, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryLedgersByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Ledger, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, name, type, owner_id, team_id, created_at, updated_at, is_deleted
 		 FROM ledgers WHERE id = ANY($1)`,
 		ids,
@@ -595,8 +606,8 @@ func (s *SyncService) queryLedgersByIDs(ctx context.Context, ids []string) ([]mo
 	return ledgers, rows.Err()
 }
 
-func (s *SyncService) queryAccountsByIDs(ctx context.Context, ids []string) ([]model.Account, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryAccountsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Account, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted
 		 FROM accounts WHERE id = ANY($1)`,
 		ids,
@@ -617,8 +628,8 @@ func (s *SyncService) queryAccountsByIDs(ctx context.Context, ids []string) ([]m
 	return accounts, rows.Err()
 }
 
-func (s *SyncService) queryCategoriesByIDs(ctx context.Context, ids []string) ([]model.Category, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryCategoriesByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Category, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted FROM categories WHERE id = ANY($1)`,
 		ids,
 	)
@@ -638,8 +649,8 @@ func (s *SyncService) queryCategoriesByIDs(ctx context.Context, ids []string) ([
 	return categories, rows.Err()
 }
 
-func (s *SyncService) queryTagsByIDs(ctx context.Context, ids []string) ([]model.Tag, error) {
-	rows, err := s.pool.Query(ctx,
+func (s *SyncService) queryTagsByIDs(ctx context.Context, q dbQuerier, ids []string) ([]model.Tag, error) {
+	rows, err := q.Query(ctx,
 		`SELECT id, ledger_id, name, updated_at, is_deleted FROM tags WHERE id = ANY($1)`,
 		ids,
 	)
