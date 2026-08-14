@@ -1,4 +1,3 @@
-// backend/internal/service/authz.go
 package service
 
 import (
@@ -29,6 +28,24 @@ func canReadLedger(ctx context.Context, q dbQuerier, userID, ledgerID string) er
 	}
 	if !ok {
 		return ErrNotLedgerMember
+	}
+	return nil
+}
+
+// ErrNotTeamMember 表示调用者不是该团队成员（越权防护）。
+var ErrNotTeamMember = errors.New("not a team member")
+
+// canReadTeam 校验 userID 是否属于 teamID，非成员返回 ErrNotTeamMember。
+func canReadTeam(ctx context.Context, q dbQuerier, userID, teamID string) error {
+	var ok bool
+	err := q.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)",
+		teamID, userID).Scan(&ok)
+	if err != nil {
+		return fmt.Errorf("check team membership: %w", err)
+	}
+	if !ok {
+		return ErrNotTeamMember
 	}
 	return nil
 }
