@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const getCurrentUserId = vi.fn<(typeof import("@/db/userDb"))["getCurrentUserId"]>(() => null);
 
@@ -142,6 +142,12 @@ describe("performSync 健壮性", () => {
     localStorage.clear();
     getCurrentUserId.mockReturnValue("u1");
     vi.clearAllMocks();
+  });
+
+  // 失败路径会 scheduleRetry() 武装真实 setTimeout（本 describe 不用 fake timers），
+  // 必须在收尾清理，否则活着的定时器会在后续用例/收尾时触发，甚至级联出新的 scheduleRetry。
+  afterEach(() => {
+    clearPendingSync();
   });
 
   it("applyRemoteChanges 抛异常时游标不推进且 lastSyncFailed 置位", async () => {
