@@ -27,6 +27,7 @@
 - member_aliases 无隔离：写入信任客户端 setter、读取全局返回所有别名；现强制 setter=当前用户并按 setter 过滤。
 - Tauri CSP 为空：`csp: null`，已补严格 CSP（`script-src 'self'` 阻断内联脚本注入，`connect-src` 放行 http/https 供动态 API 地址）。
 - docker-compose 弱默认密钥：`JWT_SECRET`/`POSTGRES_PASSWORD` 去掉弱默认值，改 `${VAR:?}` 强制注入。
+- 授权原语收口：抽 `canReadTeam`/`canReadLedger` 两个鉴权原语（`authz.go`），`ListMembers` 与同步写路径强制调用；封死账本归属覆写——`lwwMergeLedger` 不再接受客户端 `owner_id`/`team_id`，归属只由服务端 Register/CreateTeam 决定。
 
 ### 中危修复（2026-08-14 复盘修复）
 
