@@ -9,6 +9,24 @@
 
 ## 已知问题修复记录
 
+### 同步正确性（2026-08-14 复盘修复）
+
+- 清空流水标签不同步：前端 `assembleTransaction` 无标签时不设 `tag_ids`，后端 `lwwMergeTransaction` 用 `len(t.TagIDs) > 0` 守卫跳过删旧关联，导致清空标签后旧标签被回传「复活」。修复：后端无条件先删旧关联再插新；前端 `applyRemoteChanges` 标签重建移入「插入/覆盖」分支（远端更旧时不再回滚本地标签，`tag_ids` 缺失视作空用于清空）。
+- 同步确定性 500：`lwwMergeCategory` 命中同名同类型分类且本地更旧时误返回外层 `pgx.ErrNoRows`，整个同步 500 卡死；改为跳过返回 nil。
+- 网络异常丢队列：`performSync` 的 `apiFetch` 无 try/catch，断网/超时 throw 时已清空的 `pendingChanges` 不回队、UI 误报「已同步」；现包 try/catch 回队变更并标记失败。
+- 流水删除数据污染：`remove`/`batchRemove` 只推 `{id, is_deleted, updated_at}` 部分墓碑，后端整行 LWW UPDATE 用零值覆盖 amount/type/occurred_at 等字段；现仿 account.ts 推完整对象。
+- 跨账号串数据：登出/切用户不清空模块级 `pendingChanges`，用户 A 的积压变更会被当 B 的推到 B 账号；新增 `clearPendingSync()` 并在 logout/unbindOnline 调用。
+- LWW 误判「行不存在」：6 个 `lwwMerge*` 用 `err != nil` 判定「不存在→INSERT」，把真实 DB 错误误判；统一改 `errors.Is(err, pgx.ErrNoRows)`。
+- 增量游标竞态：`ServerTime` 在读取远程变更之后才取 `time.Now()`，提交落在「读完成→取游标」窗口的变更会被下次增量跳过；改为在读取前取样，残留的客户端时钟偏移问题另立架构级任务（服务端权威游标）。
+
+### 安全 / 越权（2026-08-14 复盘修复）
+
+- 团队成员越权（IDOR）：`ListMembers` 不校验调用者归属，任意登录用户可按 team_id 枚举任意团队的成员 PII；现校验调用者必须是团队成员，非成员返回 403。
+- access/refresh token 混用：`Refresh` 不区分 token 类型，access token 可当 refresh 无限续期；签发时加 `typ` 声明并在 `Refresh` 强制 `typ=="refresh"`。
+- member_aliases 无隔离：写入信任客户端 setter、读取全局返回所有别名；现强制 setter=当前用户并按 setter 过滤。
+- Tauri CSP 为空：`csp: null`，已补严格 CSP（`script-src 'self'` 阻断内联脚本注入，`connect-src` 放行 http/https 供动态 API 地址）。
+- docker-compose 弱默认密钥：`JWT_SECRET`/`POSTGRES_PASSWORD` 去掉弱默认值，改 `${VAR:?}` 强制注入。
+
 - 流水列表按天分组改用本地时区取日期 key，修复东八区 0–8 点流水被归到上一天的问题。
 - 编辑收入类型流水时，分类不再被默认分类覆盖，正确回显原分类。
 - 编辑收入类型流水时，保存校验不再因 `from_account_id` 为空而静默失败，可正常保存。
