@@ -30,7 +30,7 @@ vi.mock("@/stores/auth", () => ({
   useAuthStore: () => useAuthStoreMock(),
 }));
 
-import { enqueueSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp } from "@/services/sync";
+import { enqueueSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp, compareTimestamp } from "@/services/sync";
 
 describe("sync cursor is per-user", () => {
   beforeEach(() => {
@@ -71,6 +71,18 @@ describe("toIsoTimestamp", () => {
   it("leaves already-ISO timestamps untouched", () => {
     const iso = "2026-07-10T02:31:59.123Z";
     expect(toIsoTimestamp(iso)).toBe(iso);
+  });
+});
+
+describe("compareTimestamp", () => {
+  it("空格格式与 ISO 格式按真实时间比较，而非字典序", () => {
+    // " " (0x20) < "T" (0x54)：字典序会把空格格式误判为「更旧」
+    const space = "2026-07-10 02:31:59";      // 等价 ISO 2026-07-10T02:31:59Z
+    const iso = "2026-07-10T02:30:00Z";
+    expect(compareTimestamp(space, iso)).toBeGreaterThan(0);
+  });
+  it("相等时间返回 0", () => {
+    expect(compareTimestamp("2026-07-10T02:31:59Z", "2026-07-10 02:31:59")).toBe(0);
   });
 });
 

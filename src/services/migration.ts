@@ -1,6 +1,7 @@
 // src/services/migration.ts
 import { getUserDb } from '@/db/userDb'
 import { apiFetch } from '@/services/api'
+import { toIsoTimestamp } from '@/services/sync'
 
 // 将本地数据迁移到新的 server_ledger_id
 export async function migrateLocalDataToServer(
@@ -57,6 +58,15 @@ export async function migrateLocalDataToServer(
 }
 
 // 首次全量上传
+function normalizeTimestamps(r: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...r };
+  for (const k of ["created_at", "updated_at", "occurred_at"] as const) {
+    const v = out[k];
+    if (typeof v === "string") out[k] = toIsoTimestamp(v);
+  }
+  return out;
+}
+
 export async function firstFullSync(): Promise<void> {
   const db = getUserDb()
   if (!db) return // ponytail: no local session, nothing to sync
@@ -81,12 +91,12 @@ export async function firstFullSync(): Promise<void> {
 
   // SQLite 中 is_deleted 存的是 INTEGER 0/1，后端期望 bool
   const toBool = (v: unknown): boolean => v === 1 || v === true
-  const ledgers = rawLedgers.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
-  const accounts = rawAccounts.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
-  const categories = rawCategories.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
-  const tags = rawTags.map(r => ({ ...r, is_deleted: toBool(r.is_deleted) }))
+  const ledgers = rawLedgers.map(r => ({ ...normalizeTimestamps(r), is_deleted: toBool(r.is_deleted) }))
+  const accounts = rawAccounts.map(r => ({ ...normalizeTimestamps(r), is_deleted: toBool(r.is_deleted) }))
+  const categories = rawCategories.map(r => ({ ...normalizeTimestamps(r), is_deleted: toBool(r.is_deleted) }))
+  const tags = rawTags.map(r => ({ ...normalizeTimestamps(r), is_deleted: toBool(r.is_deleted) }))
   const transactions = rawTransactions.map(r => ({
-    ...r,
+    ...normalizeTimestamps(r),
     is_deleted: toBool(r.is_deleted),
     tag_ids: tagMap[r.id as string] ?? [],
   }))

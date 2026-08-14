@@ -217,7 +217,7 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
         [ledger.id, ledger.name, ledger.type, ledger.owner_id ?? null, ledger.team_id ?? null,
          ledger.created_at, ledger.updated_at, ledger.is_deleted ? 1 : 0]
       );
-    } else if (ledger.updated_at > local[0].updated_at) {
+    } else if (compareTimestamp(ledger.updated_at, local[0].updated_at) > 0) {
       await db.execute(
         `UPDATE ledgers SET name=?, type=?, owner_id=?, team_id=?, updated_at=?, is_deleted=? WHERE id=?`,
         [ledger.name, ledger.type, ledger.owner_id ?? null, ledger.team_id ?? null,
@@ -239,7 +239,7 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
          account.category, account.initial_balance, account.credit_limit, account.repayment_day,
          account.color, account.created_at, account.updated_at, account.is_deleted ? 1 : 0]
       );
-    } else if (account.updated_at > local[0].updated_at) {
+    } else if (compareTimestamp(account.updated_at, local[0].updated_at) > 0) {
       await db.execute(
         `UPDATE accounts SET name=?, type=?, category=?, initial_balance=?, credit_limit=?, repayment_day=?, color=?, updated_at=?, is_deleted=? WHERE id=?`,
         [account.name, account.type, account.category, account.initial_balance, account.credit_limit,
@@ -257,7 +257,7 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
         "INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?)",
         [tag.id, tag.ledger_id, tag.name, tag.updated_at, tag.is_deleted ? 1 : 0]
       );
-    } else if (tag.updated_at > local[0].updated_at) {
+    } else if (compareTimestamp(tag.updated_at, local[0].updated_at) > 0) {
       await db.execute(
         "UPDATE tags SET name=?, updated_at=?, is_deleted=? WHERE id=?",
         [tag.name, tag.updated_at, tag.is_deleted ? 1 : 0, tag.id]
@@ -284,7 +284,7 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
         "INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [cat.id, cat.ledger_id, cat.owner_id, cat.name, cat.type, cat.icon, cat.sort_order, cat.updated_at, cat.is_deleted ? 1 : 0]
       );
-    } else if (cat.updated_at > local[0].updated_at) {
+    } else if (compareTimestamp(cat.updated_at, local[0].updated_at) > 0) {
       await db.execute(
         "UPDATE categories SET name=?, type=?, icon=?, sort_order=?, updated_at=?, is_deleted=? WHERE id=?",
         [cat.name, cat.type, cat.icon, cat.sort_order, cat.updated_at, cat.is_deleted ? 1 : 0, cat.id]
@@ -297,7 +297,7 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
       "SELECT updated_at FROM transactions WHERE id = ?", [tx.id]
     );
     const shouldInsert = local.length === 0;
-    const shouldUpdate = !shouldInsert && tx.updated_at > local[0].updated_at;
+    const shouldUpdate = !shouldInsert && compareTimestamp(tx.updated_at, local[0].updated_at) > 0;
 
     if (shouldInsert) {
       await db.execute(
@@ -377,4 +377,9 @@ export function toIsoTimestamp(v: string): string {
   const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(v);
   if (m) return `${m[1]}T${m[2]}${m[3] ?? ""}Z`;
   return v;
+}
+
+// 归一化后按 epoch 毫秒比较，消除 " " vs "T" 字典序误判与毫秒位差异。
+export function compareTimestamp(a: string, b: string): number {
+  return new Date(toIsoTimestamp(a)).getTime() - new Date(toIsoTimestamp(b)).getTime();
 }
