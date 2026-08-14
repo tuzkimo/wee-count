@@ -5,10 +5,12 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/go-chi/httprate"
 
 	"wee-count/backend/internal/config"
 	"wee-count/backend/internal/database"
@@ -66,10 +68,15 @@ func main() {
 	}))
 
 	r.Route("/api/v1", func(r chi.Router) {
-		// public
-		r.Post("/auth/register", authH.Register)
-		r.Post("/auth/login", authH.Login)
+		// refresh 不限流：客户端静默续期高频，不参与暴力破解面
 		r.Post("/auth/refresh", authH.Refresh)
+
+		// 登录/注册按 IP 限流，防暴力破解
+		r.Group(func(r chi.Router) {
+			r.Use(httprate.LimitByIP(10, time.Minute))
+			r.Post("/auth/login", authH.Login)
+			r.Post("/auth/register", authH.Register)
+		})
 
 		// protected
 		r.Group(func(r chi.Router) {
@@ -79,8 +86,13 @@ func main() {
 			r.Post("/sync", syncH.Sync)
 			r.Post("/teams", teamH.Create)
 			r.Post("/teams/{id}/invite", teamH.Invite)
-			r.Post("/teams/join", teamH.Join)
 			r.Get("/teams/{id}/members", teamH.Members)
+
+			// 邀请码 6 位（10^6 空间）可被登录用户离线爆破入组，故 join 也限流
+			r.Group(func(r chi.Router) {
+				r.Use(httprate.LimitByIP(10, time.Minute))
+				r.Post("/teams/join", teamH.Join)
+			})
 		})
 	})
 
