@@ -39,6 +39,8 @@ let pendingChanges: SyncPayload = {
   transactions: [],
   member_aliases: [],
 };
+let isSyncing = false;
+let syncQueued = false;
 
 // 游标按本地用户隔离：每个用户有独立 SQLite（{userId}.db），各自数据进度不同，
 // 不能共享一个 last_synced_at，否则 A 同步推进游标后，B 切回来按新游标增量同步，
@@ -63,6 +65,8 @@ export function setLastSyncedAt(time: string): void {
 export function clearPendingSync(): void {
   pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
   retryAttempt = 0;
+  isSyncing = false;
+  syncQueued = false;
   if (syncTimer) {
     clearTimeout(syncTimer);
     syncTimer = null;
@@ -130,10 +134,31 @@ function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
 }
 
 /**
- * Execute sync: send local changes to server, receive and merge remote changes.
- * 返回是否同步成功（含首次全量同步）；失败时本地变更已重新入队待重试。
+ * 同步入口（带互斥）：并发调用时，在途的同步不会被重复执行；若在途期间又有同步请求，
+ * 标记 syncQueued，待本次结束后补跑一次，避免变更卡在 pendingChanges 里。
  */
 export async function performSync(): Promise<boolean> {
+  if (isSyncing) {
+    syncQueued = true;
+    return false;
+  }
+  isSyncing = true;
+  try {
+    return await doSync();
+  } finally {
+    isSyncing = false;
+    if (syncQueued) {
+      syncQueued = false;
+      void performSync();
+    }
+  }
+}
+
+/**
+ * 执行一次同步：发送本地变更、接收并合并远程变更。
+ * 返回是否同步成功（含首次全量同步）；失败时本地变更已重新入队待重试。
+ */
+async function doSync(): Promise<boolean> {
   const lastSyncedAt = getLastSyncedAt();
 
   // 从未同步成功过，做全量上传

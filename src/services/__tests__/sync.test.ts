@@ -239,3 +239,50 @@ describe("applyRemoteChanges 幂等", () => {
     expect(writeCalls).toHaveLength(0);
   });
 });
+
+describe("performSync 互斥（重入保护）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+    clearPendingSync();
+  });
+
+  afterEach(() => {
+    clearPendingSync();
+  });
+
+  it("在途同步期间再次调用返回 false，且完成后补跑积压的同步", async () => {
+    const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
+    useAuthStoreMock.mockReturnValue(authState);
+    setLastSyncedAt("T1");
+
+    const { apiFetch } = await import("@/services/api");
+    const okResp = (server_time: string) => ({
+      ok: true,
+      status: 200,
+      data: { server_time, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } },
+    });
+    let resolveFirst!: (v: unknown) => void;
+    const gate = new Promise((res) => { resolveFirst = res; });
+    vi.mocked(apiFetch)
+      .mockReturnValueOnce(gate as never)          // 第一次（在途，挂起）
+      .mockResolvedValue(okResp("T3") as never);   // 补跑（第二次）
+
+    const { performSync } = await import("@/services/sync");
+    const first = performSync();
+    const second = performSync();
+
+    // 第二次在途调用被跳过
+    expect(await second).toBe(false);
+
+    // 第一次在途 sync 最终只打一次 apiFetch（此时仍在途）
+    await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+
+    // 第一次完成 → finally 里 syncQueued 触发补跑
+    resolveFirst(okResp("T2"));
+    await first;
+
+    await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  });
+});
