@@ -356,16 +356,16 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
 
     if (shouldInsert) {
       await db.execute(
-        `INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, occurred_at, created_at, updated_at, is_deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, note, occurred_at, created_at, updated_at, is_deleted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [tx.id, tx.ledger_id, tx.user_id, tx.amount, tx.type, tx.from_account_id, tx.to_account_id,
-         tx.category_id, tx.occurred_at, tx.created_at, tx.updated_at, tx.is_deleted ? 1 : 0]
+         tx.category_id, tx.note ?? null, tx.occurred_at, tx.created_at, tx.updated_at, tx.is_deleted ? 1 : 0]
       );
     } else if (shouldUpdate) {
       await db.execute(
-        `UPDATE transactions SET amount=?, type=?, from_account_id=?, to_account_id=?, category_id=?, occurred_at=?, updated_at=?, is_deleted=? WHERE id=?`,
-        [tx.amount, tx.type, tx.from_account_id, tx.to_account_id, tx.category_id, tx.occurred_at,
-         tx.updated_at, tx.is_deleted ? 1 : 0, tx.id]
+        `UPDATE transactions SET amount=?, type=?, from_account_id=?, to_account_id=?, category_id=?, note=?, occurred_at=?, updated_at=?, is_deleted=? WHERE id=?`,
+        [tx.amount, tx.type, tx.from_account_id, tx.to_account_id, tx.category_id, tx.note ?? null,
+         tx.occurred_at, tx.updated_at, tx.is_deleted ? 1 : 0, tx.id]
       );
     }
 

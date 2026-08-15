@@ -268,6 +268,29 @@ describe("applyRemoteChanges 幂等", () => {
       expect.anything()
     );
   });
+
+  it("远端交易合并时保留 note 字段", async () => {
+    const execute = vi.fn().mockResolvedValue({ rowsAffected: 1, lastInsertId: 1 });
+    const select = vi.fn().mockResolvedValue([]); // 本地不存在 → INSERT
+    const { getUserDb } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue({ select, execute } as never);
+
+    const { applyRemoteChanges } = await import("@/services/sync");
+    await applyRemoteChanges({
+      ledgers: [], accounts: [], tags: [], categories: [],
+      transactions: [{
+        id: "t1", ledger_id: "L1", user_id: "u1", amount: 10, type: "expense",
+        from_account_id: null, to_account_id: null, category_id: null,
+        note: "午餐", occurred_at: "2026-07-11T00:00:00Z", created_at: "2026-07-11T00:00:00Z",
+        updated_at: "2026-07-11T00:00:00Z", is_deleted: false,
+      }],
+      member_aliases: [],
+    });
+
+    const insertCall = execute.mock.calls.find((c) => String(c[0]).startsWith("INSERT INTO transactions"));
+    expect(insertCall).toBeTruthy();
+    expect(String(insertCall![0])).toContain("note");
+  });
 });
 
 describe("performSync 互斥（重入保护）", () => {
