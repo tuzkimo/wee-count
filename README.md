@@ -16,6 +16,7 @@
 - 输入校验缺失 + 账号枚举：各 handler `Decode` 无 body 上限，超长 username/nickname 直冲 DB 500；register 返回 409「已注册」可被逐名探测。现加 `http.MaxBytesReader`（1MB）+ 字段长度校验（≤100），注册话术改「用户名不可用」。
 - 邀请码先消费：`JoinByInvite` 在校验成员资格与 INSERT 之前就 `redis.Del`，已成员重进/DB 失败白白烧码；现移到成功加入之后消费。
 - Register TOCTOU：`SELECT EXISTS` 查重与 INSERT 分离，并发同名注册撞唯一约束返回 500；现捕获 `23505` 返回 409。
+- 标签同名去重：`lwwMergeTag` 在 id 未命中时按 `(ledger_id, name, is_deleted=FALSE)` 查重，命中则 UPDATE 旧行而非 INSERT，避免 `UNIQUE(ledger_id,name)` 冲突毒化同步。
 
 ### 同步正确性（2026-08-14 复盘修复）
 

@@ -246,23 +246,43 @@ func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, a model
 }
 
 func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag) error {
-	return mergeByKey(ctx, tx, t.UpdatedAt,
-		"SELECT updated_at FROM tags WHERE id = $1", []any{t.ID},
-		func() error {
-			_, err := tx.Exec(ctx,
-				`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5)`,
-				t.ID, t.LedgerID, t.Name, t.UpdatedAt, t.IsDeleted,
-			)
-			return err
-		},
-		func() error {
-			_, err := tx.Exec(ctx,
-				`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
-				t.Name, t.UpdatedAt, t.IsDeleted, t.ID,
-			)
-			return err
-		},
-	)
+	var remoteUpdatedAt time.Time
+	err := tx.QueryRow(ctx, "SELECT updated_at FROM tags WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 同名同账本未删除标签（清数据重绑会重新生成 UUID）：改 UPDATE 旧行而非 INSERT
+		var dupID string
+		var dupUpdatedAt time.Time
+		dupErr := tx.QueryRow(ctx,
+			`SELECT id, updated_at FROM tags WHERE ledger_id = $1 AND name = $2 AND is_deleted = FALSE LIMIT 1`,
+			t.LedgerID, t.Name,
+		).Scan(&dupID, &dupUpdatedAt)
+		if dupErr == nil {
+			if t.UpdatedAt.After(dupUpdatedAt) {
+				_, err = tx.Exec(ctx,
+					`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
+					t.Name, t.UpdatedAt, t.IsDeleted, dupID)
+				return err
+			}
+			return nil // 本地更旧：跳过
+		}
+		if !errors.Is(dupErr, pgx.ErrNoRows) {
+			return dupErr // 真实 DB 错误，透传
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5)`,
+			t.ID, t.LedgerID, t.Name, t.UpdatedAt, t.IsDeleted)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if !t.UpdatedAt.After(remoteUpdatedAt) {
+		return nil
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
+		t.Name, t.UpdatedAt, t.IsDeleted, t.ID)
+	return err
 }
 
 func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c model.Category) error {

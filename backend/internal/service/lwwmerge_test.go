@@ -281,3 +281,25 @@ func TestQueryMemberAliasesFiltersBySetter(t *testing.T) {
 		t.Fatalf("应传 userID 作为 setter 过滤参数，got %v", q.args)
 	}
 }
+
+// 同名同账本标签（UUID 不同）应 UPDATE 旧行而非 INSERT，避免 UNIQUE(ledger_id,name) 冲突毒化同步。
+func TestLwwMergeTagDuplicateNameUpdatesExisting(t *testing.T) {
+	s := &SyncService{}
+	now := time.Now()
+	fq := &fakeQuerier{rows: []pgx.Row{
+		fakeRow{scanErr: pgx.ErrNoRows},                      // 按 id 查不存在
+		fakeRow{vals: []any{"dup-tag", now.Add(-time.Hour)}}, // 同名命中（id, updated_at）
+	}}
+
+	tg := model.Tag{ID: "new-uuid", LedgerID: "L1", Name: "餐饮", UpdatedAt: now}
+
+	if err := s.lwwMergeTag(context.Background(), fq, tg); err != nil {
+		t.Fatal(err)
+	}
+	if !fq.execSQLContains("UPDATE tags") {
+		t.Fatalf("同名标签应 UPDATE 旧行，但未执行 UPDATE；execs=%v", fq.execs)
+	}
+	if fq.execSQLContains("INSERT INTO tags") {
+		t.Fatalf("同名标签不应 INSERT；execs=%v", fq.execs)
+	}
+}
