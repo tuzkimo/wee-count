@@ -123,8 +123,9 @@ export async function firstFullSync(): Promise<void> {
   if (resp.data?.remote_changes) {
     const { applyRemoteChanges } = await import('@/services/sync')
     await applyRemoteChanges(resp.data.remote_changes as import('@/services/sync').SyncPayload)
-    const { setLastSyncedAt } = await import('@/services/sync')
+    const { setLastSyncedAt, setLastSyncedTimeNow } = await import('@/services/sync')
     setLastSyncedAt(String(resp.data.server_seq))
+    setLastSyncedTimeNow()
   }
 
   // 通知 TransactionList 刷新

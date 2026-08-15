@@ -4,7 +4,7 @@ import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useLedgerStore } from "@/stores/ledger";
-import { performSync, getLastSyncedAt } from "@/services/sync";
+import { performSync, getLastSyncedTime } from "@/services/sync";
 import { ChevronRight, LogOut, Plus, UserPlus, Users } from "lucide-vue-next";
 
 const router = useRouter();
@@ -130,7 +130,7 @@ function handleLogout(): void {
         <span class="text-sm" :class="auth.lastSyncFailed ? 'text-red-500' : 'text-text-secondary'">
           <template v-if="auth.isSyncing">同步中...</template>
           <template v-else-if="auth.lastSyncFailed">同步失败，点击重试</template>
-          <template v-else>已同步 {{ getLastSyncedAt() ? new Date(getLastSyncedAt()!).toLocaleString() : "从未同步" }}</template>
+          <template v-else>已同步 {{ getLastSyncedTime() ? new Date(getLastSyncedTime()!).toLocaleString() : "从未同步" }}</template>
         </span>
       </button>
       <div

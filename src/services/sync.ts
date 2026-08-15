@@ -70,6 +70,27 @@ function setLastSyncedAtFor(uid: string | null, time: string): void {
   localStorage.setItem(cursorKeyFor(uid), time);
 }
 
+// 「上次同步时间」与 seq 游标解耦：getLastSyncedAt 存的是 server_seq 整数串（如 "5"），
+// 直接 new Date("5") 会被解析成 1970 年 1 月，不能拿来展示「上次同步时间」。
+// 这里用独立 key 存 wall-clock 时间，供 UI 展示。
+function lastSyncedTimeKeyFor(uid: string | null): string {
+  return uid ? `last_synced_time:${uid}` : "last_synced_time";
+}
+
+export function getLastSyncedTime(): string | null {
+  return localStorage.getItem(lastSyncedTimeKeyFor(getCurrentUserId()));
+}
+
+function setLastSyncedTimeFor(uid: string | null, time: string): void {
+  localStorage.setItem(lastSyncedTimeKeyFor(uid), time);
+}
+
+// 供 migration.ts 的 firstFullSync 复用：直接用当前 uid 写当前 wall-clock 时间，
+// 避免 migration.ts 反向静态 import 造成循环依赖。
+export function setLastSyncedTimeNow(): void {
+  setLastSyncedTimeFor(getCurrentUserId(), new Date().toISOString());
+}
+
 /**
  * 清空待推送队列与定时器。登出/切用户时必须调用，否则模块级 pendingChanges
  * 会把用户 A 积压的本地变更当作 B 的 local_changes 推到 B 账号（跨账号串数据）。
@@ -238,6 +259,7 @@ async function doSync(): Promise<boolean> {
     return false;
   }
   setLastSyncedAtFor(uid, String(res.data.server_seq));
+  setLastSyncedTimeFor(uid, new Date().toISOString());
 
   // 通知 TransactionList 刷新
   const { useAuthStore } = await import("@/stores/auth");

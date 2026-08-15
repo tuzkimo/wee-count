@@ -53,6 +53,13 @@ func (s *TeamService) CreateTeam(ctx context.Context, userID string, name string
 	}
 	defer tx.Rollback(ctx)
 
+	// 串行化所有写 ledgers 的事务：nextval 按「调用序」而非「提交序」赋值，并发写事务
+	// 交错提交时会出现「低 seq 晚提交」被已推进的游标跳过（漏同步）。与 sync.go 同一把
+	// advisory xact lock（897753），保证一次只有一个写事务在途，使 seq 序 = 提交序。
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(897753)"); err != nil {
+		return nil, fmt.Errorf("acquire sync write lock: %w", err)
+	}
+
 	now := time.Now().UTC()
 	teamID := uuid.New().String()
 	ledgerID := uuid.New().String()
