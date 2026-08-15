@@ -322,7 +322,7 @@ func TestLwwMergeMemberAliasForcesSetter(t *testing.T) {
 func TestQueryMemberAliasesFiltersBySetter(t *testing.T) {
 	s := &SyncService{}
 	fq := &fakeQuerier{}
-	since := time.Now().Add(-time.Hour)
+	var since int64
 
 	if _, err := s.queryMemberAliases(context.Background(), fq, "real-user", since); err != nil {
 		t.Fatal(err)

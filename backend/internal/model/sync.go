@@ -3,12 +3,12 @@ package model
 import "time"
 
 type SyncRequest struct {
-	LastSyncedAt time.Time   `json:"last_synced_at"`
-	LocalChanges SyncPayload `json:"local_changes"`
+	LastServerSeq int64       `json:"last_server_seq"`
+	LocalChanges  SyncPayload `json:"local_changes"`
 }
 
 type SyncResponse struct {
-	ServerTime    time.Time  `json:"server_time"`
+	ServerSeq     int64       `json:"server_seq"`
 	RemoteChanges SyncPayload `json:"remote_changes"`
 }
 

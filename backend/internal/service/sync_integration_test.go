@@ -176,7 +176,7 @@ func TestIntegration_QueryTransactions_TagIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	txs, err := s.queryTransactions(ctx, pool, []string{ledgerID}, now.Add(-time.Hour))
+	txs, err := s.queryTransactions(ctx, pool, []string{ledgerID}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,12 +294,12 @@ func TestIntegration_Sync_ReturnsCursorAndRemoteChanges(t *testing.T) {
 	}
 
 	// owner 同步，游标早于这笔流水，应收到这笔「他人变更」
-	resp, err := s.Sync(ctx, ownerID, model.SyncRequest{LastSyncedAt: now.Add(-time.Hour)})
+	resp, err := s.Sync(ctx, ownerID, model.SyncRequest{LastServerSeq: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.ServerTime.IsZero() {
-		t.Fatal("ServerTime 应为非零快照游标")
+	if resp.ServerSeq == 0 {
+		t.Fatal("ServerSeq 应为非零快照游标")
 	}
 	foundTx := false
 	for _, tx := range resp.RemoteChanges.Transactions {
@@ -349,7 +349,7 @@ func TestIntegration_MemberCannotChangeLedgerOwnership(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now.Add(time.Hour), IsDeleted: false,
 	}
 	if _, err := s.Sync(ctx, memberID, model.SyncRequest{
-		LastSyncedAt: now.Add(-time.Hour),
+		LastServerSeq: 0,
 		LocalChanges: model.SyncPayload{Ledgers: []model.Ledger{evilLedger}},
 	}); err != nil {
 		t.Fatal(err)
@@ -404,7 +404,7 @@ func TestIntegration_TagDedupRemapsTransactionTags(t *testing.T) {
 	incomingTagID := uuid.New().String()
 	txID := uuid.New().String()
 	if _, err := s.Sync(ctx, userID, model.SyncRequest{
-		LastSyncedAt: now.Add(-time.Hour),
+		LastServerSeq: 0,
 		LocalChanges: model.SyncPayload{
 			Tags: []model.Tag{{ID: incomingTagID, LedgerID: ledgerID, Name: "餐饮", UpdatedAt: now.Add(time.Hour), IsDeleted: false}},
 			Transactions: []model.Transaction{{
