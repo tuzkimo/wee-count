@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,5 +65,44 @@ func TestInsertUserNonUniqueErrorWraps(t *testing.T) {
 	}
 	if errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("非 23505 错误不应映射为 ErrUsernameTaken，got %v", err)
+	}
+}
+
+// 经邀请加入的成员（非 owner）重启后，GetMe 应能拿到共享团队账本：
+// 账本查询口径须与 sync 的 getUserLedgerIDs 一致（owner UNION team_members）。
+func TestGetMeIncludesTeamMemberSharedLedger(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	fq := &fakeQuerier{
+		rows: []pgx.Row{
+			fakeRow{vals: []any{"member-1", "member", "成员", nil, now, now}}, // user
+		},
+		query: &fakeRows{rows: [][]any{
+			{"L1", "共享账本", "team", "team-1", "owner-1", now, now, false},
+		}},
+	}
+
+	resp, err := getMe(context.Background(), fq, "member-1")
+	if err != nil {
+		t.Fatalf("getMe: %v", err)
+	}
+
+	if len(resp.Ledgers) != 1 || resp.Ledgers[0].ID != "L1" || resp.Ledgers[0].Type != "team" {
+		t.Fatalf("ledgers 应包含成员非 owner 的共享账本 L1，got %+v", resp.Ledgers)
+	}
+	if len(resp.Teams) != 1 || resp.Teams[0].ID != "L1" {
+		t.Fatalf("teams 应从同一批里筛出 type='team' 的 L1，got %+v", resp.Teams)
+	}
+
+	// 账本查询须 JOIN team_members（owner UNION 成员），与 sync 的 getUserLedgerIDs 口径一致。
+	if len(fq.queries) == 0 {
+		t.Fatal("应执行账本 Query")
+	}
+	q := fq.queries[0]
+	if !strings.Contains(q.sql, "JOIN team_members") {
+		t.Fatalf("账本查询应 JOIN team_members，got %s", q.sql)
+	}
+	if len(q.args) < 1 || q.args[0] != "member-1" {
+		t.Fatalf("应以当前 userID 过滤，got %v", q.args)
 	}
 }

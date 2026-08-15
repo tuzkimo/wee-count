@@ -123,8 +123,14 @@ type MeResponse struct {
 }
 
 func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, error) {
+	return getMe(ctx, s.pool, userID)
+}
+
+// getMe 查询用户及其可见账本。账本查询口径需与 SyncService.getUserLedgerIDs 一致
+// （owner 或 team 成员）。抽成独立函数注入 dbQuerier，便于单测覆盖而不依赖真实 DB。
+func getMe(ctx context.Context, q dbQuerier, userID string) (*MeResponse, error) {
 	var user model.User
-	err := s.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT id, username, nickname, avatar_url, created_at, updated_at FROM users WHERE id = $1`,
 		userID,
 	).Scan(&user.ID, &user.Username, &user.Nickname, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
@@ -132,9 +138,15 @@ func (s *AuthService) GetMe(ctx context.Context, userID string) (*MeResponse, er
 		return nil, fmt.Errorf("query user: %w", err)
 	}
 
-	rows, err := s.pool.Query(ctx,
+	rows, err := q.Query(ctx,
 		`SELECT id, name, type, team_id, owner_id, created_at, updated_at, is_deleted
-		 FROM ledgers WHERE owner_id = $1 AND is_deleted = FALSE`, userID,
+		 FROM ledgers WHERE owner_id = $1 AND is_deleted = FALSE
+		 UNION
+		 SELECT l.id, l.name, l.type, l.team_id, l.owner_id, l.created_at, l.updated_at, l.is_deleted
+		 FROM ledgers l
+		 JOIN team_members tm ON l.team_id = tm.team_id
+		 WHERE tm.user_id = $1 AND l.is_deleted = FALSE`,
+		userID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query ledgers: %w", err)

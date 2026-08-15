@@ -17,6 +17,7 @@
 - 邀请码先消费：`JoinByInvite` 在校验成员资格与 INSERT 之前就 `redis.Del`，已成员重进/DB 失败白白烧码；现移到成功加入之后消费。
 - Register TOCTOU：`SELECT EXISTS` 查重与 INSERT 分离，并发同名注册撞唯一约束返回 500；现捕获 `23505` 返回 409。
 - 标签同名去重：`lwwMergeTag` 在 id 未命中时按 `(ledger_id, name, is_deleted=FALSE)` 查重，命中则 UPDATE 旧行而非 INSERT，避免 `UNIQUE(ledger_id,name)` 冲突毒化同步。
+- `GetMe` 账本口径与 sync 不一致：`GetMe` 只按 `owner_id` 查账本，经邀请加入的成员重启后拿不到共享账本；现改 owner UNION team_members（与 `getUserLedgerIDs` 同款口径）。
 
 ### 同步正确性（2026-08-14 复盘修复）
 
