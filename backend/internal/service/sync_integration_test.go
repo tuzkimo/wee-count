@@ -427,3 +427,93 @@ func TestIntegration_TagDedupRemapsTransactionTags(t *testing.T) {
 		t.Fatalf("transaction_tags 应重映射到旧标签 %s，got %s", existingTagID, gotTagID)
 	}
 }
+
+// 写库应给行 bump 新的 server_seq（单调递增）。
+func TestIntegration_WriteBumpsServerSeq(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+
+	var before int64
+	if err := pool.QueryRow(ctx,
+		"SELECT COALESCE(MAX(server_seq), 0) FROM transactions").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	txID := uuid.New().String()
+	if _, err := s.Sync(ctx, userID, model.SyncRequest{
+		LastServerSeq: before,
+		LocalChanges: model.SyncPayload{
+			Transactions: []model.Transaction{{
+				ID: txID, LedgerID: ledgerID, UserID: userID, Amount: 10, Type: "expense",
+				OccurredAt: now, CreatedAt: now, UpdatedAt: now,
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var seq int64
+	if err := pool.QueryRow(ctx,
+		"SELECT server_seq FROM transactions WHERE id = $1", txID).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq <= before {
+		t.Fatalf("写库应 bump server_seq，got %d（before=%d）", seq, before)
+	}
+}
+
+// 离线编辑的旧 updated_at 流水，因写库 bump 了 server_seq，其他设备仍能增量拉到。
+func TestIntegration_OldUpdatedAtStillPulledByServerSeq(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+
+	// 设备 B 当前游标 = 此刻全局最大 server_seq
+	var cursor int64
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(MAX(s),0) FROM (
+		SELECT MAX(server_seq) s FROM ledgers UNION ALL SELECT MAX(server_seq) FROM accounts
+		UNION ALL SELECT MAX(server_seq) FROM categories UNION ALL SELECT MAX(server_seq) FROM tags
+		UNION ALL SELECT MAX(server_seq) FROM transactions UNION ALL SELECT MAX(server_seq) FROM member_aliases
+	) m`).Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+
+	// 设备 A 离线一周的编辑：updated_at 是很久以前
+	oldTime := now.Add(-7 * 24 * time.Hour)
+	txID := uuid.New().String()
+	if _, err := s.Sync(ctx, userID, model.SyncRequest{
+		LastServerSeq: cursor,
+		LocalChanges: model.SyncPayload{
+			Transactions: []model.Transaction{{
+				ID: txID, LedgerID: ledgerID, UserID: userID, Amount: 20, Type: "expense",
+				OccurredAt: oldTime, CreatedAt: oldTime, UpdatedAt: oldTime,
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 设备 B 以旧游标增量拉，应拉到这笔（即使 updated_at 远早于游标）
+	resp, err := s.Sync(ctx, userID, model.SyncRequest{LastServerSeq: cursor, LocalChanges: model.SyncPayload{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tx := range resp.RemoteChanges.Transactions {
+		if tx.ID == txID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("旧 updated_at 流水应通过 server_seq 被拉到，got %+v", resp.RemoteChanges.Transactions)
+	}
+}
