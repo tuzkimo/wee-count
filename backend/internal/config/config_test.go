@@ -99,3 +99,42 @@ func TestLoadRedisPasswordOptional(t *testing.T) {
 		t.Errorf("expected empty RedisPassword, got %q", cfg.RedisPassword)
 	}
 }
+
+// TrustProxy 是「默认关闭、显式开启」的安全开关：默认不信任反向代理（按 socket peer 限流），
+// 仅在显式设置 TRUST_PROXY 时信任 X-Forwarded-For，否则直连场景可被 header 伪造绕过限流。
+func TestLoadTrustProxyDefaultsToFalse(t *testing.T) {
+	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	os.Setenv("REDIS_URL", "localhost:6379")
+	os.Setenv("JWT_SECRET", "test-secret")
+	os.Unsetenv("TRUST_PROXY")
+	defer os.Unsetenv("DATABASE_URL")
+	defer os.Unsetenv("REDIS_URL")
+	defer os.Unsetenv("JWT_SECRET")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TrustProxy {
+		t.Error("expected TrustProxy to default to false")
+	}
+}
+
+func TestLoadTrustProxyFromEnv(t *testing.T) {
+	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	os.Setenv("REDIS_URL", "localhost:6379")
+	os.Setenv("JWT_SECRET", "test-secret")
+	os.Setenv("TRUST_PROXY", "true")
+	defer os.Unsetenv("DATABASE_URL")
+	defer os.Unsetenv("REDIS_URL")
+	defer os.Unsetenv("JWT_SECRET")
+	defer os.Unsetenv("TRUST_PROXY")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.TrustProxy {
+		t.Error("expected TrustProxy to be true when TRUST_PROXY=true")
+	}
+}

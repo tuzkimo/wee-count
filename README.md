@@ -70,7 +70,7 @@
 ### 中危修复（2026-08-14 复盘修复）
 
 - 流水列表点击监听器未清理：`TransactionList` 的 `document.addEventListener("click")` 无 `onUnmounted` 移除，每次进首页叠加监听器并持有已卸载组件 ref；现抽 `closeLedgerSwitcher` 具名函数并在 `onUnmounted` 移除。
-- 全站无速率限制：登录/注册可暴力破解、6 位邀请码（10^6 空间）可被登录用户离线爆破入组；现用 `httprate.LimitBy` 按 IP 对 `/auth/login`、`/auth/register`、`/teams/join` 限流 10 次/分钟（限流 key 经 `middleware.RealIP` 解析，可被 `X-Forwarded-For` 伪造，后续需按部署改用 chi v5.3.0+ `ClientIPFrom*` 收紧信任模型）。
+- 全站无速率限制：登录/注册可暴力破解、6 位邀请码（10^6 空间）可被登录用户离线爆破入组；现用 `httprate.LimitBy` 按 IP 对 `/auth/login`、`/auth/register`、`/teams/join` 限流 10 次/分钟（限流 key 取自 `r.RemoteAddr`：`TRUST_PROXY=false` 时按 socket peer 计、不可伪造；位于可信反代之后时设 `TRUST_PROXY=true` 才信任 `X-Forwarded-For`）。
 - refresh_token 明文存 localStorage：设备 root 后可取走冒充用户；现迁出 webview 可达的 localStorage 至 Tauri 原生 store（`tauri-plugin-store`，非 Tauri 环境回落 localStorage），封堵 XSS 直接取 token 的路径（仍为明文持久化，对 root 不构成终极防护）。
 - 同步失败无自动重试：`performSync` 失败只回队不重武装定时器，「断网编辑→恢复」不自动补推；现失败后按指数退避（5s→60s 上限）自动重试，成功重置计数。
 - 改昵称不刷新账本内存缓存：`updateProfile` 改名后账本名要等下次 `init()` 才更新；现改名后刷新 ledgerStore 缓存。
@@ -201,6 +201,7 @@
 | `JWT_SECRET` | 是 | — | JWT 签名密钥 |
 | `PORT` | 否 | `8080` | 监听端口 |
 | `CORS_ALLOWED_ORIGINS` | 否 | `http://tauri.localhost,http://localhost:1420` | 允许的来源，逗号分隔，需含 scheme |
+| `TRUST_PROXY` | 否 | `false` | 是否信任反向代理转发的 `X-Forwarded-For`（位于 Caddy 等可信反代之后时设 `true`，直连暴露 8080 时保持 `false`） |
 
 CORS 默认放行 Tauri Android webview 来源（`http://tauri.localhost`）与 Vite dev server（`http://localhost:1420`）。生产环境若需锁定单一来源，显式设置 `CORS_ALLOWED_ORIGINS=http://tauri.localhost` 即可。
 
@@ -227,6 +228,8 @@ CORS_ALLOWED_ORIGINS=http://tauri.localhost
 ```
 
 > `DATABASE_URL` / `REDIS_URL` 不需要手填——compose 用容器服务名 `postgres` / `redis` 拼好默认值透传给 API。
+
+> **限流信任模型**：`TRUST_PROXY` 默认 `false`，登录/注册/入组的按 IP 限流取 socket peer 地址，客户端无法伪造。仅当 API 位于可信反向代理（如 Caddy）之后、由反代改写 `X-Forwarded-For` 时，才设 `TRUST_PROXY=true`；否则攻击者可通过伪造该 header 绕过限流。
 
 ### 3. 启动
 

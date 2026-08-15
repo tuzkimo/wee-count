@@ -14,6 +14,7 @@ type Config struct {
 	JWTSecret          string
 	Port               string
 	CORSAllowedOrigins []string
+	TrustProxy         bool
 }
 
 // defaultCORSOrigins 覆盖开发期与 Android 正式包的来源：
@@ -29,6 +30,7 @@ func Load() (*Config, error) {
 		JWTSecret:          getEnv("JWT_SECRET", ""),
 		Port:               getEnv("PORT", "8080"),
 		CORSAllowedOrigins: parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		TrustProxy:         getEnvBool("TRUST_PROXY", false),
 	}
 
 	missing := []string{}
@@ -53,6 +55,21 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getEnvBool 解析布尔环境变量："1"/"true"/"yes"/"on"（大小写不敏感）为真，其余为假。
+// 空值回落到 fallback。用于 TRUST_PROXY 这类「默认关闭、显式开启」的安全开关。
+func getEnvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseCORSOrigins 解析逗号分隔的 CORS_ALLOWED_ORIGINS；为空时回落到默认集合。

@@ -55,8 +55,13 @@ func main() {
 
 	// router
 	r := chi.NewRouter()
-	// 从 X-Forwarded-For / X-Real-IP 还原真实客户端 IP（Caddy 反代后才有意义）
-	r.Use(middleware.RealIP)
+	// 仅在显式声明信任反向代理时启用 RealIP：它会用 X-Forwarded-For / X-Real-IP 改写
+	// r.RemoteAddr。若服务被直接访问（未走 Caddy 等反代），客户端可伪造该 header 让每次
+	// 请求换个 IP，从而绕过下面按 IP 的登录/注册/入组限流。默认不信任，按 socket peer 限流；
+	// 处于可信反代之后时设 TRUST_PROXY=true 才恢复按真实客户端 IP 限流。
+	if cfg.TrustProxy {
+		r.Use(middleware.RealIP)
+	}
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
@@ -73,8 +78,8 @@ func main() {
 		r.Post("/auth/refresh", authH.Refresh)
 
 		// 登录/注册按 IP 限流，防暴力破解。
-		// key 取自 r.RemoteAddr，由全局 middleware.RealIP 从 X-Forwarded-For 解析；
-		// 若服务直连客户端会因 header 可伪造而绕过，后续可按部署改用 chi v5.3.0+ ClientIPFrom* 收紧。
+		// key 取自 r.RemoteAddr：启用 TRUST_PROXY 时由 middleware.RealIP 从 X-Forwarded-For 解析，
+		// 未启用时即 socket peer 地址（客户端无法伪造）。
 		r.Group(func(r chi.Router) {
 			r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
 			r.Post("/auth/login", authH.Login)
@@ -92,7 +97,7 @@ func main() {
 			r.Get("/teams/{id}/members", teamH.Members)
 
 			// 邀请码 6 位（10^6 空间）可被登录用户离线爆破入组，故 join 也限流。
-			// key 信任模型同上：取自 r.RemoteAddr，由全局 middleware.RealIP 解析。
+			// key 信任模型同上：取自 r.RemoteAddr，按 TRUST_PROXY 决定是否信任 X-Forwarded-For。
 			r.Group(func(r chi.Router) {
 				r.Use(httprate.LimitBy(10, time.Minute, clientIPKey))
 				r.Post("/teams/join", teamH.Join)
@@ -106,10 +111,9 @@ func main() {
 	}
 }
 
-// clientIPKey 从 r.RemoteAddr 提取限流 key。代码等价旧 httprate.KeyByIP，但
-// 因全局 middleware.RealIP 已把 r.RemoteAddr 改写为 X-Forwarded-For 解析值，
-// 实际等效于已弃用的 KeyByRealIP（header 可伪造，见 httprate deprecated.go 的 GHSA 告警）。
-// 后续可按部署改用 chi v5.3.0+ ClientIPFrom* + LimitBy(GetClientIP) 收紧。
+// clientIPKey 从 r.RemoteAddr 提取限流 key。未启用 TRUST_PROXY 时，r.RemoteAddr 是
+// socket peer 地址（不可被客户端伪造），限流可信；启用后由 middleware.RealIP 改写为
+// X-Forwarded-For 解析值，仅应在服务确实位于可信反代之后时开启。
 func clientIPKey(r *http.Request) (string, error) {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

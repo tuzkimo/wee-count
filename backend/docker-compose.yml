@@ -9,6 +9,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://tauri.localhost}
+      # 服务位于可信反向代理（Caddy 等）之后时设为 true；直连暴露 8080 时保持 false（默认）。
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     depends_on:
       postgres:
         condition: service_healthy
