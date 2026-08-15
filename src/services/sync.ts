@@ -126,7 +126,7 @@ function scheduleRetry(): void {
   }, delay);
 }
 
-function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
+export function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
   for (const key of ["ledgers", "accounts", "tags", "categories", "transactions", "member_aliases"] as const) {
     const targetArr = target[key] as Array<{ id: string; updated_at: string }>;
     const sourceArr = source[key] as Array<{ id: string; updated_at: string }> | undefined;
@@ -134,7 +134,7 @@ function mergeChanges(target: SyncPayload, source: Partial<SyncPayload>): void {
     for (const item of sourceArr) {
       const idx = targetArr.findIndex((t) => t.id === item.id);
       if (idx >= 0) {
-        if (item.updated_at > targetArr[idx].updated_at) {
+        if (compareTimestamp(item.updated_at, targetArr[idx].updated_at) > 0) {
           targetArr[idx] = item;
         }
       } else {

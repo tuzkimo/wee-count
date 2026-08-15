@@ -30,7 +30,8 @@ vi.mock("@/stores/auth", () => ({
   useAuthStore: () => useAuthStoreMock(),
 }));
 
-import { enqueueSync, clearPendingSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp, compareTimestamp } from "@/services/sync";
+import { enqueueSync, clearPendingSync, getLastSyncedAt, setLastSyncedAt, toIsoTimestamp, compareTimestamp, mergeChanges } from "@/services/sync";
+import type { SyncPayload } from "@/services/sync";
 
 describe("sync cursor is per-user", () => {
   beforeEach(() => {
@@ -83,6 +84,23 @@ describe("compareTimestamp", () => {
   });
   it("相等时间返回 0", () => {
     expect(compareTimestamp("2026-07-10T02:31:59Z", "2026-07-10 02:31:59")).toBe(0);
+  });
+});
+
+describe("mergeChanges LWW", () => {
+  it("空格格式与 ISO 格式按真实时间比较，保留较新者", () => {
+    const target: SyncPayload = {
+      ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [],
+    };
+    // 先入队较旧者（ISO），再入队较新者（空格格式，等价 ISO 2026-07-10T02:31:59Z）
+    mergeChanges(target, {
+      transactions: [{ id: "t1", updated_at: "2026-07-10T02:30:00Z" } as never],
+    });
+    mergeChanges(target, {
+      transactions: [{ id: "t1", updated_at: "2026-07-10 02:31:59" } as never],
+    });
+
+    expect(target.transactions[0].updated_at).toBe("2026-07-10 02:31:59");
   });
 });
 
