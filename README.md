@@ -23,6 +23,9 @@
 - `mergeByKey` 并发丢更新：合并是「查→判→写」无行锁，两成员并发编辑同一实体较旧写会覆盖较新写（破坏 LWW），并发推同 UUID 新实体撞主键 500；现 SELECT 加 `FOR UPDATE` 行锁，INSERT 撞 `23505` 回退 UPDATE。
 - 子实体归属伪造：account/category/transaction 的 `owner_id`/`user_id` 取客户端值，可伪造归属；现 INSERT 用服务端 `userID` 覆盖（UPDATE 不改归属）。
 - `apiFetch` 网络/超时异常统一返回 `{ok:false,error}` 而非 throw：此前断网/超时（abort）会 throw，`updateProfile`/`fetchTeamMembers` 只判 `res.ok` 不 catch，产生未捕获 rejection；现两处 `fetchWithTimeout` 包 try/catch 统一返回 `{ok:false,status:0,error:"network error"}`。`refreshAccessToken` 加模块级 in-flight Promise 单飞，并发 401 只触发一次 refresh，避免竞态。
+- 远端合并丢 `note`：`applyRemoteChanges` 的 transactions INSERT/UPDATE 无 `note` 列，跨设备备注被静默清空；现补 `note` 列及 `tx.note ?? null`。
+- 登出打断在途同步跨账号污染：`doSync` 全程用全局 `getUserDb()`/`getCurrentUserId()`，慢同步中登出+切用户时旧同步把旧账号远端数据写进新账号库、游标写错键；现 `doSync` 开头快照 uid/db 一路传参，`clearPendingSync` 不再复位 `isSyncing`（在途同步自然结束、`syncQueued` 补跑）。
+- `mergeChanges` 字典序比较：`mergeChanges` 用 `item.updated_at > target.updated_at` 字符串比较，空格格式（`datetime('now')`）与 ISO 混用时因 `" " < "T"` 误判；现改走 `compareTimestamp` 按 epoch 比较。
 
 ### 同步正确性（2026-08-14 复盘修复）
 
