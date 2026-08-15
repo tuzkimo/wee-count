@@ -29,6 +29,7 @@
 - Tauri CSP 为空：`csp: null`，已补严格 CSP（`script-src 'self'` 阻断内联脚本注入，`connect-src` 放行 http/https 供动态 API 地址）。
 - docker-compose 弱默认密钥：`JWT_SECRET`/`POSTGRES_PASSWORD` 去掉弱默认值，改 `${VAR:?}` 强制注入。
 - 授权原语收口：抽 `canReadTeam`/`canReadLedger` 两个鉴权原语（`authz.go`），`ListMembers` 与同步写路径强制调用；封死账本归属覆写——`lwwMergeLedger` 不再接受客户端 `owner_id`/`team_id`，归属只由服务端 Register/CreateTeam 决定。
+- 账本删除冻结：`lwwMergeLedger` 的 INSERT/UPDATE 不再接受 `is_deleted`（与 `owner_id`/`team_id` 一并冻结），团队成员不能通过 sync 软删共享账本；账本删除（若将来需要）走服务端专属端点。
 
 ### 中危修复（2026-08-14 复盘修复）
 

@@ -176,8 +176,8 @@ func TestLwwMergeLedgerUpdateExcludesOwnership(t *testing.T) {
 	if !strings.Contains(upd.sql, "UPDATE ledgers") {
 		t.Fatalf("首条应为 UPDATE，got %s", upd.sql)
 	}
-	if strings.Contains(upd.sql, "owner_id") || strings.Contains(upd.sql, "team_id") {
-		t.Fatalf("UPDATE 不得含归属字段，got %s", upd.sql)
+	if strings.Contains(upd.sql, "owner_id") || strings.Contains(upd.sql, "team_id") || strings.Contains(upd.sql, "is_deleted") {
+		t.Fatalf("UPDATE 不得含归属/删除字段，got %s", upd.sql)
 	}
 }
 
@@ -206,6 +206,9 @@ func TestLwwMergeLedgerInsertForcesOwner(t *testing.T) {
 	}
 	if !strings.Contains(ins.sql, "NULL") {
 		t.Fatalf("team_id 应为 NULL，got %s", ins.sql)
+	}
+	if strings.Contains(ins.sql, "is_deleted") {
+		t.Fatalf("INSERT 不得含 is_deleted 字段（应默认 false），got %s", ins.sql)
 	}
 }
 
