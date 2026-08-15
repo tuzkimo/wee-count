@@ -284,6 +284,7 @@ function goBack() {
               <ChevronDown :size="14" class="text-text-secondary" />
             </button>
           </div>
+          <p v-if="saveError" class="mb-2 text-sm text-expense">{{ saveError }}</p>
         </div>
         <div v-else>
           <label class="mb-1 block text-xs text-text-secondary">
