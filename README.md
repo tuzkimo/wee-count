@@ -22,6 +22,7 @@
 - `backfillReferenced` 跨账本泄露：反查父行按 id 只查不验账本归属，可把外账本账户金额/额度泄露给已无权限用户；现 `query*ByIDs` 加 `AND ledger_id = ANY($2)` 归属过滤。
 - `mergeByKey` 并发丢更新：合并是「查→判→写」无行锁，两成员并发编辑同一实体较旧写会覆盖较新写（破坏 LWW），并发推同 UUID 新实体撞主键 500；现 SELECT 加 `FOR UPDATE` 行锁，INSERT 撞 `23505` 回退 UPDATE。
 - 子实体归属伪造：account/category/transaction 的 `owner_id`/`user_id` 取客户端值，可伪造归属；现 INSERT 用服务端 `userID` 覆盖（UPDATE 不改归属）。
+- `apiFetch` 网络/超时异常统一返回 `{ok:false,error}` 而非 throw：此前断网/超时（abort）会 throw，`updateProfile`/`fetchTeamMembers` 只判 `res.ok` 不 catch，产生未捕获 rejection；现两处 `fetchWithTimeout` 包 try/catch 统一返回 `{ok:false,status:0,error:"network error"}`。`refreshAccessToken` 加模块级 in-flight Promise 单飞，并发 401 只触发一次 refresh，避免竞态。
 
 ### 同步正确性（2026-08-14 复盘修复）
 

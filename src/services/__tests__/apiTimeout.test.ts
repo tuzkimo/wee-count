@@ -66,3 +66,23 @@ describe("fetchWithTimeout", () => {
     await expect(p).resolves.toBeNull();
   });
 });
+
+describe("apiFetch 网络异常", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("网络异常返回 {ok:false,status:0,error:'network error'} 而非 throw", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network down");
+    }));
+
+    const api = await import("@/services/api");
+    api.setBaseUrl("http://example.com");
+    api.clearTokens();
+
+    const res = await api.apiFetch("/x");
+
+    expect(res).toEqual({ ok: false, status: 0, error: "network error" });
+  });
+});

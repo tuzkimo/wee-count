@@ -7,6 +7,9 @@ let baseUrl: string | null = null
 let accessToken: string | null = null
 let refreshToken: string | null = null
 
+// refresh 单飞：并发 401 时共享同一个 refresh promise，避免各自触发 refresh 导致竞态。
+let refreshInFlight: Promise<boolean> | null = null
+
 export function setBaseUrl(url: string): void {
   baseUrl = url.replace(/\/$/, '') // 去掉末尾斜杠
 }
@@ -54,23 +57,31 @@ export async function getStoredRefreshToken(): Promise<string | null> {
 }
 
 async function refreshAccessToken(): Promise<boolean> {
-  const stored = await getStoredRefreshToken()
-  if (!stored || !baseUrl) return false
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
+    const stored = await getStoredRefreshToken()
+    if (!stored || !baseUrl) return false
 
+    try {
+      const res = await fetchWithTimeout(`${baseUrl}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: stored }),
+      }, 5000)
+      if (!res.ok) return false
+      const data = await res.json()
+      accessToken = data.access_token
+      refreshToken = data.refresh_token
+      void writeRefreshToken(data.refresh_token)
+      return true
+    } catch {
+      return false
+    }
+  })()
   try {
-    const res = await fetchWithTimeout(`${baseUrl}/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: stored }),
-    }, 5000)
-    if (!res.ok) return false
-    const data = await res.json()
-    accessToken = data.access_token
-    refreshToken = data.refresh_token
-    void writeRefreshToken(data.refresh_token)
-    return true
-  } catch {
-    return false
+    return await refreshInFlight
+  } finally {
+    refreshInFlight = null
   }
 }
 
@@ -88,14 +99,23 @@ export async function apiFetch<T = unknown>(
     headers["Authorization"] = `Bearer ${accessToken}`
   }
 
-  let res = await fetchWithTimeout(url, { ...options, headers })
+  let res: Response
+  try {
+    res = await fetchWithTimeout(url, { ...options, headers })
+  } catch {
+    return { ok: false, status: 0, error: "network error" }
+  }
 
   // 401 -> try refresh
   if (res.status === 401 && refreshToken) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {
       headers["Authorization"] = `Bearer ${accessToken}`
-      res = await fetchWithTimeout(url, { ...options, headers })
+      try {
+        res = await fetchWithTimeout(url, { ...options, headers })
+      } catch {
+        return { ok: false, status: 0, error: "network error" }
+      }
     }
   }
 
