@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronDown, Trash2 } from "lucide-vue-next";
 import { useLedgerStore } from "@/stores/ledger";
@@ -15,33 +15,28 @@ import AccountCreateSheet from "@/components/AccountCreateSheet.vue";
 import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
 import CategorySheet from "@/components/CategorySheet.vue";
-import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
-import { evaluateExpression } from "@/utils/expression";
-import { getCurrentUserId } from "@/db/userDb";
-import { useAuthStore } from "@/stores/auth";
-import type { Account, Category, Tag, TransactionType } from "@/types";
+import { useTransactionForm } from "@/composables/useTransactionForm";
+import { toLocalDatetimeString } from "@/utils/datetime";
+import type { Account, TransactionType } from "@/types";
 
 const route = useRoute();
 const router = useRouter();
 const ledgerStore = useLedgerStore();
-const auth = useAuthStore();
 const accountStore = useAccountStore();
 const categoryStore = useCategoryStore();
 const tagStore = useTagStore();
 const transactionStore = useTransactionStore();
 
-const isEdit = computed(() => !!route.params.id);
-const editId = computed(() => route.params.id as string | undefined);
+const {
+  txType, categoryId, fromAccountId, toAccountId, occurredAt, expression,
+  selectedTagIds, note, saveError, isSaving,
+  filteredCategories, defaultCategoryId, availableAccounts, calcResult, isValid, isOwner, selectedTags,
+  isEdit, editId,
+  switchType, selectCategory, onTagConfirm: applyTagConfirm, toggleTag, getAccountName, onKeypadInput,
+  doSave, prefill, initNew,
+} = useTransactionForm();
 
-// 表单状态
-const txType = ref<TransactionType>("expense");
-const categoryId = ref<string | null>(null);
-const fromAccountId = ref<string | null>(null);
-const toAccountId = ref<string | null>(null);
-const occurredAt = ref("");
-const expression = ref(""); // 表达式原文
-const selectedTagIds = ref<string[]>([]);
-const note = ref("");
+// —— 以下留组件：Sheet 显隐 + picker 流程 + 路由 + onMounted ——
 
 const tagSheetVisible = ref(false);
 const deleteDialogVisible = ref(false);
@@ -51,137 +46,17 @@ const accountPickerTarget = ref<"from" | "to">("from");
 const pickerScope = ref<"own" | "all">("own");
 const pickerShowMember = ref(false);
 const categorySheetVisible = ref(false);
-const saveError = ref("");
-const isSaving = ref(false);
-const isReady = ref(false);
 const datePickerVisible = ref(false);
+const isReady = ref(false);
 
-// 按类型过滤分类
-const filteredCategories = computed(() =>
-  categoryStore.categories.filter((c) => c.type === txType.value)
-);
-
-// 按 sort_order 排序，找出默认分类
-const defaultCategoryId = computed(() => {
-  const cats = [...filteredCategories.value].sort((a, b) => a.sort_order - b.sort_order);
-  return cats[0]?.id ?? null;
-});
-
-// 团队账本：仅显示当前用户拥有的账户
-const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
-const currentUserId = computed(() => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "");
-
-// 可用账户
-const availableAccounts = computed(() =>
-  accountStore.accounts.filter((a) => {
-    if (a.is_deleted) return false;
-    if (isTeamLedger.value && a.owner_id !== currentUserId.value) return false;
-    return true;
-  })
-);
-
-// 表达式求值结果
-const calcResult = computed(() => evaluateExpression(expression.value));
-
-const isValid = computed(() => calcResult.value !== null);
-
-const isOwner = computed(() => {
-  if (!isEdit.value || !editId.value) return true;
-  const tx = transactionStore.transactions.find((t) => t.id === editId.value);
-  if (!tx) return true;
-  const currentUserId = auth.currentLocalUser?.server_user_id || getCurrentUserId();
-  return tx.user_id === currentUserId;
-});
-
-onMounted(async () => {
-  await ledgerStore.init();
-  const ledgerId = ledgerStore.currentLedger?.id;
-  if (!ledgerId) return;
-
-  await Promise.all([
-    accountStore.fetchAll(ledgerId),
-    categoryStore.fetchAll(ledgerId),
-    tagStore.fetchAll(ledgerId),
-  ]);
-
-  // 编辑模式：预填数据
-  if (isEdit.value && editId.value) {
-    await transactionStore.fetchAll(ledgerId);
-    const tx = transactionStore.transactions.find((t) => t.id === editId.value);
-    if (tx) {
-      // 直接赋值预填，不走 switchType：避免重置分类覆盖原记录的分类。
-      txType.value = tx.type;
-      categoryId.value = tx.category_id;
-      fromAccountId.value = tx.from_account_id;
-      toAccountId.value = tx.to_account_id;
-      occurredAt.value = utcToLocalDatetimeString(tx.occurred_at);
-      expression.value = tx.amount.toString();
-      selectedTagIds.value = tx.tags?.map((t) => t.id) ?? [];
-      note.value = tx.note ?? "";
-    }
-  } else {
-    // 新增模式：默认当前本地时间
-    occurredAt.value = toLocalDatetimeString(new Date());
-    // 从 query 读取默认账户
-    const qAccount = route.query.account as string | undefined;
-    const defaultAcc = qAccount
-      ? availableAccounts.value.find((a) => a.id === qAccount)
-      : availableAccounts.value[0];
-    if (defaultAcc) {
-      fromAccountId.value = defaultAcc.id;
-      toAccountId.value = defaultAcc.id;
-    }
-    // 默认分类
-    categoryId.value = defaultCategoryId.value;
-    note.value = "";
-  }
-
-  isReady.value = true;
-});
-
-// 切换交易类型：用户主动切换时重置为该类型的默认分类。
-// 用 handler 而非 watch(txType)：watch 无法区分「用户切换」与「编辑预填」，
-// 会在编辑模式下把原记录的分类覆盖成默认分类（income 尤甚）。
-function switchType(t: TransactionType) {
-  txType.value = t;
-  categoryId.value = defaultCategoryId.value;
-}
-
-// 分类选择
-function selectCategory(cat: Category) {
-  categoryId.value = cat.id;
-}
-
-// 标签
+// 标签确认：composable 的 onTagConfirm 只更新选中集合，这里额外关闭标签 Sheet。
 function onTagConfirm(tagIds: string[]) {
-  selectedTagIds.value = tagIds;
+  applyTagConfirm(tagIds);
   tagSheetVisible.value = false;
-}
-
-const selectedTags = computed(() =>
-  selectedTagIds.value
-    .map((id) => tagStore.tags.find((t) => t.id === id))
-    .filter((t): t is Tag => t != null)
-);
-
-function toggleTag(tagId: string) {
-  const idx = selectedTagIds.value.indexOf(tagId);
-  if (idx >= 0) {
-    selectedTagIds.value.splice(idx, 1);
-  } else {
-    selectedTagIds.value.push(tagId);
-  }
-}
-
-// 账户相关
-function getAccountName(id: string | null): string {
-  if (!id) return "";
-  return accountStore.accounts.find((a) => a.id === id)?.name ?? "";
 }
 
 function openAccountPicker(target: "from" | "to") {
   accountPickerTarget.value = target;
-  // 转账的转入账户：可选所有账户，并显示归属成员（头像+名字）
   if (target === "to" && txType.value === "transfer") {
     pickerScope.value = "all";
     pickerShowMember.value = true;
@@ -201,112 +76,56 @@ function onAccountSelect(acc: Account) {
   accountPickerVisible.value = false;
 }
 
-// 键盘输入处理
-function onKeypadInput(key: string) {
-  if (key === "delete") {
-    expression.value = expression.value.slice(0, -1);
-  } else {
-    // 防止连续两个运算符
-    const last = expression.value.slice(-1);
-    if ((key === "+" || key === "-") && (last === "+" || last === "-")) {
-      expression.value = expression.value.slice(0, -1) + key;
-    } else if (key === "." && last === ".") {
-      return;
-    } else {
-      expression.value += key;
-    }
-  }
-}
-
-// 保存逻辑
-async function doSave(): Promise<boolean> {
+onMounted(async () => {
+  await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
-  if (!isOwner.value || !ledgerId || isSaving.value || !isValid.value) return false;
+  if (!ledgerId) return;
 
-  saveError.value = "";
-  const amt = calcResult.value!;
+  await Promise.all([
+    accountStore.fetchAll(ledgerId),
+    categoryStore.fetchAll(ledgerId),
+    tagStore.fetchAll(ledgerId),
+  ]);
 
-  // 基础校验
-  if (txType.value !== "transfer" && !categoryId.value) {
-    saveError.value = "请选择分类";
-    return false;
-  }
-  // 各类型必填的账户：expense/transfer 需扣款账户，income/transfer 需入账账户
-  if ((txType.value === "expense" || txType.value === "transfer") && !fromAccountId.value) {
-    return false;
-  }
-  if ((txType.value === "income" || txType.value === "transfer") && !toAccountId.value) {
-    return false;
+  if (isEdit.value && editId.value) {
+    await transactionStore.fetchAll(ledgerId);
+    const tx = transactionStore.transactions.find((t) => t.id === editId.value);
+    if (tx) prefill(tx);
+  } else {
+    initNew();
   }
 
-  isSaving.value = true;
-  try {
-    const data = {
-      ledger_id: ledgerId,
-      user_id: auth.currentLocalUser?.server_user_id || getCurrentUserId()!,
-      type: txType.value,
-      amount: amt,
-      category_id: txType.value === "transfer" ? null : categoryId.value,
-      from_account_id: txType.value === "expense" || txType.value === "transfer" ? fromAccountId.value : null,
-      to_account_id: txType.value === "income" || txType.value === "transfer" ? toAccountId.value : null,
-      occurred_at: new Date(occurredAt.value).toISOString(),
-      tag_ids: selectedTagIds.value,
-      note: note.value.trim() || null,
-    };
-
-    if (isEdit.value && editId.value) {
-      await transactionStore.update(editId.value, data);
-    } else {
-      await transactionStore.add(data);
-    }
-    return true;
-  } catch (e) {
-    console.error("Save transaction failed:", e);
-    return false;
-  } finally {
-    isSaving.value = false;
-  }
-}
+  isReady.value = true;
+});
 
 async function onDone() {
   const ok = await doSave();
   if (ok) {
-    // 从账户详情页进入时，返回该账户详情页
     const qAccount = route.query.account as string | undefined;
-    if (qAccount) {
-      router.replace(`/accounts/${qAccount}`);
-    } else {
-      router.replace("/");
-    }
+    if (qAccount) router.replace(`/accounts/${qAccount}`);
+    else router.replace("/");
   }
 }
 
 async function onSaveNext() {
   const ok = await doSave();
   if (ok) {
-    // 重置表单
     expression.value = "";
     selectedTagIds.value = [];
     note.value = "";
     categoryId.value = defaultCategoryId.value;
     occurredAt.value = toLocalDatetimeString(new Date());
-    // 保留账户和标签
   }
 }
 
-// 删除
 async function deleteTx() {
   if (!editId.value || isSaving.value) return;
   isSaving.value = true;
   try {
     await transactionStore.remove(editId.value);
-    // 从账户详情页进入时，删除后返回该账户详情页
     const qAccount = route.query.account as string | undefined;
-    if (qAccount) {
-      router.replace(`/accounts/${qAccount}`);
-    } else {
-      router.replace("/");
-    }
+    if (qAccount) router.replace(`/accounts/${qAccount}`);
+    else router.replace("/");
   } catch (e) {
     console.error("Delete transaction failed:", e);
   } finally {
@@ -326,7 +145,6 @@ function handleCreateAccount(): void {
 
 function onAccountCreated(accountId: string) {
   accountCreateSheetVisible.value = false;
-  // 刷新账户列表后自动选中新账户
   const ledgerId = ledgerStore.currentLedger?.id;
   if (ledgerId) {
     accountStore.fetchAll(ledgerId).then(() => {
@@ -342,7 +160,6 @@ function onAccountCreated(accountId: string) {
 function goBack() {
   router.back();
 }
-
 </script>
 
 <template>
