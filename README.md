@@ -28,6 +28,9 @@
 - `mergeChanges` 字典序比较：`mergeChanges` 用 `item.updated_at > target.updated_at` 字符串比较，空格格式（`datetime('now')`）与 ISO 混用时因 `" " < "T"` 误判；现改走 `compareTimestamp` 按 epoch 比较。
 - 金额累加浮点误差：`totalIncome`/`totalExpense`/`totalBalance`/`assetsTotal`/`liabilitiesTotal`/`netAssets` 及报表收支汇总、净资产序列等累加点未做两位小数规整，`0.1 + 0.2` 这类浮点累加出现 `0.30000000000000004`；现统一经 `round2`（`src/utils/transaction.ts`）规整，缓解浮点精度误差（不改 schema，桶二才彻底改整数分）。
 - 计算器表达式动态求值：`evaluateExpression`（`src/utils/expression.ts`）用 `new Function` 求值，虽经正则白名单收窄仍属动态代码执行；现改手写 tokenize + 递归下降解析（四则 + 括号 + 一元负号），除零/非法字符/非正数返回 null，去掉 `new Function`/`eval`。
+- AccountEdit 深链/刷新失效：`AccountEdit` 的 `onMounted` 只读 `accountStore.accounts.find(...)` 不先加载，刷新或深链打开 `/accounts/:id/edit` 时账户列表为空、显示「账户不存在」；现 `onMounted` 先 `ledgerStore.init()` + `accountStore.fetchAll(ledgerId)` 再读。
+- 新建账户靠名字猜 id：`AccountCreateSheet` 用 `accounts.find(name+type)` 猜新建账户 id，重名同类型时可能命中旧账户、记账落到错账户；现 `accountStore.add` 返回新账户 id，组件直接用。
+- DateTimePicker 越界改写年份：年份超出 ±10 年范围时 `initFromModelValue` 回退到当前年月，点「确定」把 `occurred_at` 年份静默改成当前年；现越界年月合成 option 项展示，确认回传真实选中值，不再改写（滚轮可展示/修改越界日期）。
 
 ### 同步正确性（2026-08-14 复盘修复）
 
