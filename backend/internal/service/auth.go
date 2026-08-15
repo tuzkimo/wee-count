@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
@@ -63,13 +64,8 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 	ledgerID := uuid.New().String()
 	now := time.Now().UTC()
 
-	_, err = tx.Exec(ctx,
-		`INSERT INTO users (id, username, nickname, password_hash, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		userID, req.Username, nickname, string(hash), now, now,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert user: %w", err)
+	if err := insertUser(ctx, tx, userID, req.Username, nickname, string(hash), now); err != nil {
+		return nil, err
 	}
 
 	// 创建账本（含默认分类和账户）
@@ -99,6 +95,25 @@ func (s *AuthService) Register(ctx context.Context, req model.RegisterRequest) (
 		RefreshToken: refreshToken,
 		LedgerID:     ledgerID,
 	}, nil
+}
+
+// insertUser 在事务内插入用户，并捕获 users_username_unique 唯一冲突：
+// 前置 SELECT EXISTS 与 INSERT 之间存在 TOCTOU 窗口，并发同名注册会在这里撞 23505，
+// 此时返回 ErrUsernameTaken（409）而非把唯一冲突当 500 透传。
+func insertUser(ctx context.Context, q dbQuerier, userID, username, nickname, passwordHash string, now time.Time) error {
+	_, err := q.Exec(ctx,
+		`INSERT INTO users (id, username, nickname, password_hash, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		userID, username, nickname, passwordHash, now, now,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrUsernameTaken
+		}
+		return fmt.Errorf("insert user: %w", err)
+	}
+	return nil
 }
 
 type MeResponse struct {
