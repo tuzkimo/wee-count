@@ -159,7 +159,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[a.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeAccount(ctx, tx, a); err != nil {
+		if err := s.lwwMergeAccount(ctx, tx, userID, a); err != nil {
 			return err
 		}
 	}
@@ -179,7 +179,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[c.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeCategory(ctx, tx, c); err != nil {
+		if err := s.lwwMergeCategory(ctx, tx, userID, c); err != nil {
 			return err
 		}
 	}
@@ -189,7 +189,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[t.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeTransaction(ctx, tx, t); err != nil {
+		if err := s.lwwMergeTransaction(ctx, tx, userID, t); err != nil {
 			return err
 		}
 	}
@@ -231,14 +231,14 @@ func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, userID s
 	return err
 }
 
-func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, a model.Account) error {
+func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, userID string, a model.Account) error {
 	return mergeByKey(ctx, tx, a.UpdatedAt,
 		"SELECT updated_at FROM accounts WHERE id = $1", []any{a.ID},
 		func() error {
 			_, err := tx.Exec(ctx,
 				`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted)
 				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-				a.ID, a.LedgerID, a.OwnerID, a.Name, a.Type, a.Category, a.InitialBalance,
+				a.ID, a.LedgerID, userID, a.Name, a.Type, a.Category, a.InitialBalance,
 				a.CreditLimit, a.RepaymentDay, a.Color, a.CreatedAt, a.UpdatedAt, a.IsDeleted,
 			)
 			return err
@@ -293,7 +293,7 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag
 	return err
 }
 
-func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c model.Category) error {
+func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID string, c model.Category) error {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM categories WHERE id = $1", c.ID).Scan(&remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -319,7 +319,7 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c mode
 		// 无重复，正常插入
 		_, err = tx.Exec(ctx,
 			`INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			c.ID, c.LedgerID, c.OwnerID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
+			c.ID, c.LedgerID, userID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
 		)
 		return err
 	}
@@ -336,12 +336,12 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, c mode
 	return err
 }
 
-func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, t model.Transaction) error {
+func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, userID string, t model.Transaction) error {
 	insert := func() error {
 		_, err := tx.Exec(ctx,
 			`INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, note, occurred_at, created_at, updated_at, is_deleted)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			t.ID, t.LedgerID, t.UserID, t.Amount, t.Type, t.FromAccountID, t.ToAccountID,
+			t.ID, t.LedgerID, userID, t.Amount, t.Type, t.FromAccountID, t.ToAccountID,
 			t.CategoryID, t.Note, t.OccurredAt, t.CreatedAt, t.UpdatedAt, t.IsDeleted,
 		)
 		if err != nil {

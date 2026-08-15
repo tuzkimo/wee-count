@@ -214,7 +214,7 @@ func TestIntegration_LwwMergeTransaction_EmptyTagsClears(t *testing.T) {
 
 	// 带空标签的新版本 merge，应清掉旧关联
 	tx := model.Transaction{ID: txID, LedgerID: ledgerID, UserID: userID, Type: "expense", Amount: 10, OccurredAt: now, CreatedAt: now, UpdatedAt: now.Add(time.Hour), TagIDs: []string{}}
-	if err := s.lwwMergeTransaction(ctx, pool, tx); err != nil {
+	if err := s.lwwMergeTransaction(ctx, pool, userID, tx); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -243,7 +243,7 @@ func TestIntegration_LwwMergeCategory_DuplicateOlderSkips(t *testing.T) {
 
 	// 新 UUID、同名同类型、但更旧 → 应跳过且不报错、不新增行
 	older := model.Category{ID: uuid.New().String(), LedgerID: ledgerID, OwnerID: userID, Name: "餐饮", Type: "expense", UpdatedAt: now.Add(-time.Hour)}
-	if err := s.lwwMergeCategory(ctx, pool, older); err != nil {
+	if err := s.lwwMergeCategory(ctx, pool, userID, older); err != nil {
 		t.Fatalf("更旧的重复分类应跳过不报错，got %v", err)
 	}
 	var n int

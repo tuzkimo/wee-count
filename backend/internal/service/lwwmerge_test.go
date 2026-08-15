@@ -149,6 +149,22 @@ func TestMergeByKeyInsertUniqueViolationFallsBackToUpdate(t *testing.T) {
 	}
 }
 
+// 子实体 INSERT 的 owner_id 应强制为服务端当前用户，忽略客户端伪造值。
+func TestLwwMergeAccountInsertForcesOwner(t *testing.T) {
+	s := &SyncService{}
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{scanErr: pgx.ErrNoRows}}}
+
+	a := model.Account{ID: "a1", LedgerID: "L1", OwnerID: "attacker", Name: "卡", Type: "bank", UpdatedAt: time.Now()}
+
+	if err := s.lwwMergeAccount(context.Background(), fq, "real-user", a); err != nil {
+		t.Fatal(err)
+	}
+	ins := fq.execs[0]
+	if len(ins.args) < 3 || ins.args[2] != "real-user" {
+		t.Fatalf("owner_id 应为 real-user，got %v", ins.args)
+	}
+}
+
 // --- 回归测试 ---
 
 // S3：命中同名同类型重复分类且本地更旧时应跳过，不返回外层 pgx.ErrNoRows 导致 500。
@@ -164,7 +180,7 @@ func TestLwwMergeCategoryDuplicateOlderSkips(t *testing.T) {
 
 	c := model.Category{ID: "new-uuid", LedgerID: "L1", Name: "餐饮", Type: "expense", UpdatedAt: older}
 
-	if err := s.lwwMergeCategory(context.Background(), fq, c); err != nil {
+	if err := s.lwwMergeCategory(context.Background(), fq, "u1", c); err != nil {
 		t.Fatalf("本地更旧的重复分类应跳过且不报错，got err=%v", err)
 	}
 	if fq.execSQLContains("UPDATE categories") {
@@ -265,7 +281,7 @@ func TestLwwMergeTransactionEmptyTagsStillClears(t *testing.T) {
 		Amount: 10, UpdatedAt: newer, TagIDs: []string{},
 	}
 
-	if err := s.lwwMergeTransaction(context.Background(), fq, tx); err != nil {
+	if err := s.lwwMergeTransaction(context.Background(), fq, "u1", tx); err != nil {
 		t.Fatal(err)
 	}
 	if !fq.execSQLContains("DELETE FROM transaction_tags") {
