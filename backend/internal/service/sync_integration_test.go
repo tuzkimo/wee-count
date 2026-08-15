@@ -368,11 +368,16 @@ func TestIntegration_MemberCannotChangeLedgerOwnership(t *testing.T) {
 		t.Fatalf("team_id 应保持 %s，got %v", teamID, gotTeam)
 	}
 
-	var gotName string
-	if err := pool.QueryRow(ctx, "SELECT name FROM ledgers WHERE id = $1", ledgerID).Scan(&gotName); err != nil {
+	var gotName, gotType string
+	if err := pool.QueryRow(ctx, "SELECT name, type FROM ledgers WHERE id = $1", ledgerID).Scan(&gotName, &gotType); err != nil {
 		t.Fatal(err)
 	}
-	if gotName != "被抢" {
-		t.Fatalf("merge 应实际执行（name 应为「被抢」），got %q", gotName)
+	// 成员不能改共享账本的 name/type（is_deleted 亦冻结），只有 owner 可改。
+	// 因此「被抢」改名与 type 改 personal 都不得生效。
+	if gotName != "共享账本" {
+		t.Fatalf("成员不应能改共享账本名，name 应保持「共享账本」，got %q", gotName)
+	}
+	if gotType != "team" {
+		t.Fatalf("成员不应能改共享账本类型，type 应保持「team」，got %q", gotType)
 	}
 }
