@@ -74,14 +74,14 @@
 **进 composable：**
 - 表单 ref：`txType`/`categoryId`/`fromAccountId`/`toAccountId`/`occurredAt`/`expression`/`selectedTagIds`/`note`/`saveError`/`isSaving`。
 - 派生 computed：`filteredCategories`/`defaultCategoryId`/`availableAccounts`/`calcResult`（用 `evaluateExpression`）/`isValid`/`isOwner`/`selectedTags`。
-- handler：`switchType`/`selectCategory`/`onTagConfirm`/`toggleTag`/`onKeypadInput`/`onAccountSelect`/`getAccountName`。
+- handler：`switchType`/`selectCategory`/`onTagConfirm`/`toggleTag`/`onKeypadInput`/`getAccountName`。
 - `doSave()`（含校验与 store 写）。
 
 **留组件：**
 - Sheet 显隐 ref（`tagSheetVisible`/`deleteDialogVisible`/`accountPickerVisible`/`accountCreateSheetVisible`/`categorySheetVisible`/`datePickerVisible`/`accountPickerTarget`/`pickerScope`/`pickerShowMember`）。
+- picker 流程 handler（`openAccountPicker`/`onAccountSelect`/`handleCreateAccount`/`onAccountCreated`）——它们读写 picker 状态并直接写 composable 返回的表单 ref。
 - 路由跳转（`onDone`/`onSaveNext`/`deleteTx`/`goBack`）。
-- `onMounted` 的 store 拉取（`ledgerStore.init` + `fetchAll`）与预填编排；预填时调用 composable 暴露的方法（编辑态 `prefill(tx)`，新增态 `initNew(defaults)` 或直接设 ref）。
-- 账户新建流程（`handleCreateAccount`/`onAccountCreated`）。
+- `onMounted` 的 store 拉取（`ledgerStore.init` + `fetchAll`）与预填编排；预填时调用 composable 暴露的方法（编辑态 `prefill(tx)`，新增态 `initNew()`）。
 
 composable 内部自行 `useLedgerStore()`/`useAccountStore()`/`useCategoryStore()`/`useTagStore()`/`useTransactionStore()`/`useAuthStore()` 与 `useRoute()`（读 `params.id` 与 `query.account`），不要求调用方传参。
 
