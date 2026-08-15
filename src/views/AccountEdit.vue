@@ -8,6 +8,7 @@ import type { AccountType } from "@/types";
 import { ACCOUNT_CATEGORY } from "@/types";
 import { useAccountStore } from "@/stores/account";
 import { useAuthStore } from "@/stores/auth";
+import { useLedgerStore } from "@/stores/ledger";
 import { getCurrentUserId } from "@/db/userDb";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountFormFields from "@/components/AccountFormFields.vue";
@@ -40,7 +41,13 @@ const color = ref("#3b82f6");
 const deleteDialogVisible = ref(false);
 const saving = ref(false);
 
-onMounted(() => {
+onMounted(async () => {
+  const ledgerStore = useLedgerStore();
+  await ledgerStore.init();
+  const ledgerId = ledgerStore.currentLedger?.id;
+  if (ledgerId) {
+    await accountStore.fetchAll(ledgerId);
+  }
   if (account.value) {
     name.value = account.value.name;
     accountType.value = account.value.type;
