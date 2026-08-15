@@ -37,7 +37,7 @@ func main() {
 		log.Fatalf("database.RunMigrations: %v", err)
 	}
 
-	redisClient, err := database.NewRedisClient(cfg.RedisURL)
+	redisClient, err := database.NewRedisClient(cfg.RedisURL, cfg.RedisPassword)
 	if err != nil {
 		log.Fatalf("database.NewRedisClient: %v", err)
 	}

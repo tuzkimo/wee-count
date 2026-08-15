@@ -24,11 +24,13 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadFromEnv(t *testing.T) {
 	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
 	os.Setenv("REDIS_URL", "localhost:6379")
+	os.Setenv("REDIS_PASSWORD", "secret-pass")
 	os.Setenv("JWT_SECRET", "test-secret")
 	os.Setenv("PORT", "9090")
 	os.Unsetenv("CORS_ALLOWED_ORIGINS")
 	defer os.Unsetenv("DATABASE_URL")
 	defer os.Unsetenv("REDIS_URL")
+	defer os.Unsetenv("REDIS_PASSWORD")
 	defer os.Unsetenv("JWT_SECRET")
 	defer os.Unsetenv("PORT")
 
@@ -42,6 +44,9 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.Port != "9090" {
 		t.Errorf("unexpected Port: %s", cfg.Port)
+	}
+	if cfg.RedisPassword != "secret-pass" {
+		t.Errorf("unexpected RedisPassword: %s", cfg.RedisPassword)
 	}
 	// 未设置 CORS_ALLOWED_ORIGINS 时回落到默认集合
 	if len(cfg.CORSAllowedOrigins) != 2 ||
@@ -74,5 +79,23 @@ func TestLoadCORSFromEnv(t *testing.T) {
 		if cfg.CORSAllowedOrigins[i] != o {
 			t.Errorf("unexpected CORS origin[%d]: got %q want %q", i, cfg.CORSAllowedOrigins[i], o)
 		}
+	}
+}
+
+func TestLoadRedisPasswordOptional(t *testing.T) {
+	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	os.Setenv("REDIS_URL", "localhost:6379")
+	os.Setenv("JWT_SECRET", "test-secret")
+	os.Unsetenv("REDIS_PASSWORD")
+	defer os.Unsetenv("DATABASE_URL")
+	defer os.Unsetenv("REDIS_URL")
+	defer os.Unsetenv("JWT_SECRET")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RedisPassword != "" {
+		t.Errorf("expected empty RedisPassword, got %q", cfg.RedisPassword)
 	}
 }

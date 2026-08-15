@@ -43,7 +43,7 @@
 - 错误回显泄露内部细节：`Invite`/`Join`/`UpdateProfile` 用 `err.Error()` 原样回显 redis/pgx 内部错误，且 403/400/500 状态码混用；现定义哨兵错误并按语义映射 404/403/400/409/500，统一通用文案。
 - `GetMe` 漏查 `rows.Err()`：迭代中途错误被静默吞掉返回截断结果；现已补检查。
 - 缺复合索引：`categories(ledger_id, updated_at)`、`ledgers(team_id)`、`team_members(user_id)` 缺失致团队/账本多了全表扫；迁移 007 补齐。
-- （本次跳过）Docker 供应链项（`GOSUMDB=off`、以 root 运行、端口绑 0.0.0.0、Redis 无密码）：经确认留作后续处理。
+- Docker 供应链加固：移除 `GOSUMDB=off`（恢复 go.sum 校验）、运行阶段切非 root 用户、Postgres/Redis 端口收窄到 `127.0.0.1`、Redis 加 `--requirepass` 并新增 `REDIS_PASSWORD` 环境变量（Go 侧独立读取，地址与密码解耦）。
 
 - 流水列表按天分组改用本地时区取日期 key，修复东八区 0–8 点流水被归到上一天的问题。
 - 编辑收入类型流水时，分类不再被默认分类覆盖，正确回显原分类。
@@ -160,6 +160,7 @@
 |------|------|------|------|
 | `DATABASE_URL` | 是 | — | PostgreSQL 连接串 |
 | `REDIS_URL` | 是 | — | Redis 地址 |
+| `REDIS_PASSWORD` | 否 | — | Redis 密码（Docker Compose 下必填，直连无密码 Redis 可留空） |
 | `JWT_SECRET` | 是 | — | JWT 签名密钥 |
 | `PORT` | 否 | `8080` | 监听端口 |
 | `CORS_ALLOWED_ORIGINS` | 否 | `http://tauri.localhost,http://localhost:1420` | 允许的来源，逗号分隔，需含 scheme |
@@ -183,6 +184,7 @@ CORS 默认放行 Tauri Android webview 来源（`http://tauri.localhost`）与 
 POSTGRES_USER=wee
 POSTGRES_PASSWORD=<改成强密码>
 POSTGRES_DB=wee-count
+REDIS_PASSWORD=<改成强密码>
 JWT_SECRET=<改成随机长字符串>
 CORS_ALLOWED_ORIGINS=http://tauri.localhost
 ```

@@ -10,6 +10,7 @@ import (
 type Config struct {
 	DatabaseURL        string
 	RedisURL           string
+	RedisPassword      string
 	JWTSecret          string
 	Port               string
 	CORSAllowedOrigins []string
@@ -24,6 +25,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		DatabaseURL:        getEnv("DATABASE_URL", ""),
 		RedisURL:           getEnv("REDIS_URL", ""),
+		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
 		JWTSecret:          getEnv("JWT_SECRET", ""),
 		Port:               getEnv("PORT", "8080"),
 		CORSAllowedOrigins: parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
