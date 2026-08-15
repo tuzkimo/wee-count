@@ -55,6 +55,7 @@
 - 修复报表页在有流水时仍显示「暂无数据」：净资产序列的期间新增账户子查询（`INITIALS_SQL`）复用了 transactions 的分桶表达式（硬编码 `occurred_at`），但查询的是 accounts 表（只有 `created_at`），SQLite 抛 `no such column: occurred_at`，经 `getReportData` 的 `Promise.all` 拖垮全部查询后被 `reload()` 静默吞掉。修复：`bucketExpr` 增加列参数，`INITIALS_SQL` 传 `created_at`；同时补两处健壮性——`useReports` 首屏加载前先 `await ledgerStore.init()`（修复冷启动直达报表页因账本未初始化而空态），`reload()` 增加 catch 并把错误暴露到 `error` ref，报表页区分「加载中 / 加载失败(可重试) / 暂无数据」三态。
 - 修复报表页分类下钻跳转目标：点分类 / 未分类此前跳到筛选页（`/filter`，需再点「应用筛选」），现改为直接跳转流水首页（`/`）并透传 `dateFrom` / `dateTo` / `categories` / `uncategorized` 筛选参数，TransactionList 的 `buildFetchOpts` 与 `watch(route.query)` 已能完整消费。
 - 修复团队账本增量同步卡死：增量同步按 `updated_at > since` 分表过滤，当一笔流水晚于游标、但它引用的账户/分类/账本早于游标且本地从未有过该父行时，客户端插入流水触发 SQLite 外键约束违反，抛异常导致游标永不推进（UI 误报「已同步」）。修复：后端 `getRemoteChanges` 增量返回时按 id 反查补齐流水引用的父行（账本/账户/分类/标签，不看 `updated_at`），保证父行先于子行到位；前端 `performSync` 给 `applyRemoteChanges` 包 try/catch，失败时如实标记同步失败、游标不虚推进。
+- 前端大组件拆分（复盘第三节第 6 点）：`TransactionList.vue`/`RecordPage.vue` 的纯展示函数（事务展示/金额/日期/表达式求值）抽到 `utils/`，表单状态与校验抽成 `useTransactionForm` composable；补转账 `from===to` 校验（转出转入账户相同则拒绝）。
 
 ## 功能状态
 

@@ -146,6 +146,10 @@ export function useTransactionForm() {
     if ((txType.value === "income" || txType.value === "transfer") && !toAccountId.value) {
       return false;
     }
+    if (txType.value === "transfer" && fromAccountId.value && fromAccountId.value === toAccountId.value) {
+      saveError.value = "转出和转入账户不能相同";
+      return false;
+    }
 
     isSaving.value = true;
     try {

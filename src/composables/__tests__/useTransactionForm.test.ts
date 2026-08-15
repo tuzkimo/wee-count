@@ -59,6 +59,18 @@ describe("useTransactionForm.doSave 校验", () => {
     expect(transactionAdd).not.toHaveBeenCalled();
   });
 
+  it("转账 from===to：返回 false 且 saveError=转出和转入账户不能相同", async () => {
+    const f = useTransactionForm();
+    f.txType.value = "transfer";
+    f.expression.value = "10";
+    f.fromAccountId.value = "a1";
+    f.toAccountId.value = "a1";
+    const ok = await f.doSave();
+    expect(ok).toBe(false);
+    expect(f.saveError.value).toBe("转出和转入账户不能相同");
+    expect(transactionAdd).not.toHaveBeenCalled();
+  });
+
   it("合法 expense：调 add 且返回 true", async () => {
     const f = useTransactionForm();
     f.expression.value = "10";
