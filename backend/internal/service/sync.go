@@ -30,9 +30,17 @@ type dbQuerier interface {
 func mergeByKey(ctx context.Context, tx dbQuerier, incoming time.Time,
 	keySQL string, keyArgs []any, insert, update func() error) error {
 	var remote time.Time
-	err := tx.QueryRow(ctx, keySQL, keyArgs...).Scan(&remote)
+	// FOR UPDATE：锁定已存在行，避免两个事务并发 SELECT 到旧 updated_at 后双双 UPDATE，
+	// 较旧写入覆盖较新写入（破坏 LWW）。仅在 applyLocalChanges 的读写事务内使用，不涉及只读事务。
+	err := tx.QueryRow(ctx, keySQL+" FOR UPDATE", keyArgs...).Scan(&remote)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return insert()
+		// 不存在 → INSERT；若并发已插入（主键/唯一冲突 23505），回退为 UPDATE
+		err := insert()
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return update()
+		}
+		return err
 	}
 	if err != nil {
 		return err

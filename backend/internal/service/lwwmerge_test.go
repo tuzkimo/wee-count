@@ -76,10 +76,11 @@ type execCall struct {
 }
 
 type fakeQuerier struct {
-	rows    []pgx.Row // QueryRow 队列
-	query   *fakeRows // Query 返回的结果集
-	execs   []execCall
-	queries []execCall
+	rows     []pgx.Row // QueryRow 队列
+	query    *fakeRows // Query 返回的结果集
+	execs    []execCall
+	queries  []execCall
+	execErrs []error // Exec 失败注入队列（依次弹出）
 }
 
 func (f *fakeQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
@@ -101,6 +102,11 @@ func (f *fakeQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx
 
 func (f *fakeQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	f.execs = append(f.execs, execCall{sql: sql, args: args})
+	if len(f.execErrs) > 0 {
+		err := f.execErrs[0]
+		f.execErrs = f.execErrs[1:]
+		return pgconn.CommandTag{}, err
+	}
 	return pgconn.CommandTag{}, nil
 }
 
@@ -111,6 +117,36 @@ func (f *fakeQuerier) execSQLContains(sub string) bool {
 		}
 	}
 	return false
+}
+
+// 并发插入同 UUID 时 INSERT 撞主键 23505，应回退 UPDATE 而非返回错误。
+func TestMergeByKeyInsertUniqueViolationFallsBackToUpdate(t *testing.T) {
+	now := time.Now()
+	fq := &fakeQuerier{
+		rows:     []pgx.Row{fakeRow{scanErr: pgx.ErrNoRows}},
+		execErrs: []error{&pgconn.PgError{Code: "23505"}},
+	}
+
+	err := mergeByKey(context.Background(), fq, now,
+		"SELECT updated_at FROM accounts WHERE id = $1", []any{"a1"},
+		func() error {
+			_, err := fq.Exec(context.Background(), "INSERT INTO accounts (id) VALUES ($1)")
+			return err
+		},
+		func() error {
+			_, err := fq.Exec(context.Background(), "UPDATE accounts SET updated_at=$1 WHERE id=$2")
+			return err
+		},
+	)
+	if err != nil {
+		t.Fatalf("23505 应回退 UPDATE 而非返回错误，got %v", err)
+	}
+	if len(fq.execs) != 2 {
+		t.Fatalf("应执行 INSERT + UPDATE 共 2 次，got %d：%v", len(fq.execs), fq.execs)
+	}
+	if !strings.Contains(fq.execs[1].sql, "UPDATE") {
+		t.Fatalf("第二次 exec 应为 UPDATE，got %s", fq.execs[1].sql)
+	}
 }
 
 // --- 回归测试 ---
