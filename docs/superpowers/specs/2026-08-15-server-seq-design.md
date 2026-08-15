@@ -57,6 +57,7 @@ ALTER TABLE ledgers        ALTER COLUMN server_seq SET NOT NULL;
 ## 5. 服务端改动
 
 1. **`applyLocalChanges`**：6 个 `lwwMerge*` 的 INSERT 和 UPDATE 都补 `server_seq = nextval('global_server_seq')`（INSERT 可改为列 `DEFAULT nextval(...)`，UPDATE 显式 `SET server_seq = nextval(...)`）。**LWW skip 分支不 bump**（没写库就不该有新序列号）。
+   - **写事务串行化**：`nextval` 是「调用序」而非「提交序」——若并发写事务 A 抽 seq=100（未提交）、B 抽 101（先提交），读者快照 MAX=101、A 后提交 seq=100，下次 `server_seq > 101` 会永久跳过 A。故 `applyLocalChanges` 事务开头 `SELECT pg_advisory_xact_lock(<常量>)` 获取全局排它 advisory lock（事务结束释放），保证一次只有一个写事务在途 → seq 序 = 提交序，堵住该竞态。家庭 App 写低频，全局串行化可接受。
 2. **`getRemoteChanges`**：六个 `query*` 的 `updated_at > $since` 改为 `server_seq > $since_seq`；`since` 参数从 `time.Time` 改为 `int64`。
 3. **游标快照**：仍在 REPEATABLE READ 只读事务内。游标 = 快照内 `MAX(server_seq)` 全局高水位（`SELECT MAX(s) FROM (6 表各自 MAX(server_seq) UNION ALL)`）。客户端每个用户各自持有自己的游标值；`getRemoteChanges` 同时用 `ledger_id = ANY($ledgerIDs)` 过滤，保证只返回该用户可访问的实体。
 
