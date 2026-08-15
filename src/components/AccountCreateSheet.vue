@@ -40,7 +40,7 @@ async function handleSave() {
   saving.value = true;
   error.value = "";
   try {
-    await accountStore.add({
+    const createdId = await accountStore.add({
       ledger_id: ledgerId,
       owner_id: auth.currentLocalUser?.server_user_id || getCurrentUserId() || "",
       name: name.value.trim(),
@@ -51,10 +51,7 @@ async function handleSave() {
       repayment_day: repaymentDay.value ? parseInt(repaymentDay.value, 10) : undefined,
       color: color.value,
     });
-    const created = accountStore.accounts.find(
-      (a) => a.name === name.value.trim() && a.type === accountType.value
-    );
-    emit("created", created?.id || "");
+    emit("created", createdId);
     emit("close");
   } catch (e) {
     error.value = "创建失败，请重试";

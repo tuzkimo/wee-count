@@ -132,7 +132,7 @@ describe("accountStore", () => {
       ]);
 
       const store = useAccountStore();
-      await store.add({
+      const id = await store.add({
         ledger_id: "pl-1",
         owner_id: "u-1",
         name: "新信用卡",
@@ -143,6 +143,8 @@ describe("accountStore", () => {
         repayment_day: 15,
         color: "#ef4444",
       });
+
+      expect(id).toBeTruthy();
 
       expect(mockDb.execute).toHaveBeenCalledWith(
         expect.stringContaining("INSERT INTO accounts"),

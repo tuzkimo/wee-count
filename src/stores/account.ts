@@ -71,7 +71,7 @@ export const useAccountStore = defineStore("account", () => {
     credit_limit?: number;
     repayment_day?: number;
     color: string;
-  }): Promise<void> {
+  }): Promise<string> {
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     const now = new Date().toISOString();
@@ -115,6 +115,7 @@ export const useAccountStore = defineStore("account", () => {
       categories: [],
       transactions: [],
     });
+    return id;
   }
 
   async function update(
