@@ -243,7 +243,7 @@ func TestIntegration_LwwMergeCategory_DuplicateOlderSkips(t *testing.T) {
 
 	// 新 UUID、同名同类型、但更旧 → 应跳过且不报错、不新增行
 	older := model.Category{ID: uuid.New().String(), LedgerID: ledgerID, OwnerID: userID, Name: "餐饮", Type: "expense", UpdatedAt: now.Add(-time.Hour)}
-	if err := s.lwwMergeCategory(ctx, pool, userID, older); err != nil {
+	if _, err := s.lwwMergeCategory(ctx, pool, userID, older); err != nil {
 		t.Fatalf("更旧的重复分类应跳过不报错，got %v", err)
 	}
 	var n int
@@ -379,5 +379,51 @@ func TestIntegration_MemberCannotChangeLedgerOwnership(t *testing.T) {
 	}
 	if gotType != "team" {
 		t.Fatalf("成员不应能改共享账本类型，type 应保持「team」，got %q", gotType)
+	}
+}
+
+// 同名标签去重时，同批次交易引用的新 id 应被重映射到旧 id，否则 transaction_tags 外键 23503 会回滚整次同步。
+func TestIntegration_TagDedupRemapsTransactionTags(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+
+	// 已存在同名标签「餐饮」（旧 id）
+	existingTagID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,'餐饮',$3,FALSE)`,
+		existingTagID, ledgerID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// 客户端推送：新 id 的同名标签「餐饮」+ 一笔引用新 id 的流水
+	incomingTagID := uuid.New().String()
+	txID := uuid.New().String()
+	if _, err := s.Sync(ctx, userID, model.SyncRequest{
+		LastSyncedAt: now.Add(-time.Hour),
+		LocalChanges: model.SyncPayload{
+			Tags: []model.Tag{{ID: incomingTagID, LedgerID: ledgerID, Name: "餐饮", UpdatedAt: now.Add(time.Hour), IsDeleted: false}},
+			Transactions: []model.Transaction{{
+				ID: txID, LedgerID: ledgerID, UserID: userID, Amount: 10, Type: "expense",
+				OccurredAt: now, CreatedAt: now, UpdatedAt: now.Add(time.Hour),
+				TagIDs: []string{incomingTagID},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("同步不应失败（同名标签去重后交易应重映射到旧 id），got %v", err)
+	}
+
+	// transaction_tags 应指向旧标签，而非被丢弃的新 id
+	var gotTagID string
+	if err := pool.QueryRow(ctx,
+		"SELECT tag_id FROM transaction_tags WHERE transaction_id = $1", txID).Scan(&gotTagID); err != nil {
+		t.Fatal(err)
+	}
+	if gotTagID != existingTagID {
+		t.Fatalf("transaction_tags 应重映射到旧标签 %s，got %s", existingTagID, gotTagID)
 	}
 }

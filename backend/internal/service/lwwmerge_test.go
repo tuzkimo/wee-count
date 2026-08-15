@@ -180,8 +180,12 @@ func TestLwwMergeCategoryDuplicateOlderSkips(t *testing.T) {
 
 	c := model.Category{ID: "new-uuid", LedgerID: "L1", Name: "餐饮", Type: "expense", UpdatedAt: older}
 
-	if err := s.lwwMergeCategory(context.Background(), fq, "u1", c); err != nil {
+	effectiveID, err := s.lwwMergeCategory(context.Background(), fq, "u1", c)
+	if err != nil {
 		t.Fatalf("本地更旧的重复分类应跳过且不报错，got err=%v", err)
+	}
+	if effectiveID != "dup-cat" {
+		t.Fatalf("同名同类去重应返回有效 id dup-cat，got %q", effectiveID)
 	}
 	if fq.execSQLContains("UPDATE categories") {
 		t.Fatalf("不应 UPDATE 更旧的重复分类，execs=%v", fq.execs)
@@ -346,8 +350,12 @@ func TestLwwMergeTagDuplicateNameUpdatesExisting(t *testing.T) {
 
 	tg := model.Tag{ID: "new-uuid", LedgerID: "L1", Name: "餐饮", UpdatedAt: now}
 
-	if err := s.lwwMergeTag(context.Background(), fq, tg); err != nil {
+	effectiveID, err := s.lwwMergeTag(context.Background(), fq, tg)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if effectiveID != "dup-tag" {
+		t.Fatalf("同名标签去重应返回有效 id dup-tag，got %q", effectiveID)
 	}
 	if !fq.execSQLContains("UPDATE tags") {
 		t.Fatalf("同名标签应 UPDATE 旧行，但未执行 UPDATE；execs=%v", fq.execs)

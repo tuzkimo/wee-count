@@ -164,23 +164,49 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		}
 	}
 
-	// tags
+	// tags：同名去重时新 id 会被合并进旧 id，记录映射供交易 tag_ids 重映射
+	tagRemap := make(map[string]string)
 	for _, t := range changes.Tags {
 		if !ledgerSet[t.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeTag(ctx, tx, t); err != nil {
+		effectiveID, err := s.lwwMergeTag(ctx, tx, t)
+		if err != nil {
 			return err
+		}
+		if effectiveID != t.ID {
+			tagRemap[t.ID] = effectiveID
 		}
 	}
 
-	// categories
+	// categories：同名同类去重时新 id 会被合并进旧 id，记录映射供交易 category_id 重映射
+	categoryRemap := make(map[string]string)
 	for _, c := range changes.Categories {
 		if !ledgerSet[c.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeCategory(ctx, tx, userID, c); err != nil {
+		effectiveID, err := s.lwwMergeCategory(ctx, tx, userID, c)
+		if err != nil {
 			return err
+		}
+		if effectiveID != c.ID {
+			categoryRemap[c.ID] = effectiveID
+		}
+	}
+
+	// transactions：合并前先把外键重映射到去重后的有效 id，避免同批次交易引用被丢弃的新 id
+	// 而撞 transaction_tags/categories 外键（23503）导致整次同步回滚。
+	for i := range changes.Transactions {
+		t := &changes.Transactions[i]
+		for j := range t.TagIDs {
+			if newID, ok := tagRemap[t.TagIDs[j]]; ok {
+				t.TagIDs[j] = newID
+			}
+		}
+		if t.CategoryID != nil {
+			if newID, ok := categoryRemap[*t.CategoryID]; ok {
+				t.CategoryID = &newID
+			}
 		}
 	}
 
@@ -253,7 +279,7 @@ func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, userID 
 	)
 }
 
-func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag) error {
+func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag) (string, error) {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM tags WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -265,35 +291,36 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag
 			t.LedgerID, t.Name,
 		).Scan(&dupID, &dupUpdatedAt)
 		if dupErr == nil {
+			// 去重合并到旧标签 dupID、丢弃新 id；调用方据此把交易 tag_ids 重映射到 dupID
 			if t.UpdatedAt.After(dupUpdatedAt) {
 				_, err = tx.Exec(ctx,
 					`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
 					t.Name, t.UpdatedAt, t.IsDeleted, dupID)
-				return err
+				return dupID, err
 			}
-			return nil // 本地更旧：跳过
+			return dupID, nil // 本地更旧：跳过，但新 id 仍映射到 dupID
 		}
 		if !errors.Is(dupErr, pgx.ErrNoRows) {
-			return dupErr // 真实 DB 错误，透传
+			return "", dupErr // 真实 DB 错误，透传
 		}
 		_, err = tx.Exec(ctx,
 			`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5)`,
 			t.ID, t.LedgerID, t.Name, t.UpdatedAt, t.IsDeleted)
-		return err
+		return t.ID, err
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !t.UpdatedAt.After(remoteUpdatedAt) {
-		return nil
+		return t.ID, nil
 	}
 	_, err = tx.Exec(ctx,
 		`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
 		t.Name, t.UpdatedAt, t.IsDeleted, t.ID)
-	return err
+	return t.ID, err
 }
 
-func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID string, c model.Category) error {
+func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID string, c model.Category) (string, error) {
 	var remoteUpdatedAt time.Time
 	err := tx.QueryRow(ctx, "SELECT updated_at FROM categories WHERE id = $1", c.ID).Scan(&remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -305,35 +332,35 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID
 			c.LedgerID, c.Name, c.Type,
 		).Scan(&dupID, &dupUpdatedAt)
 		if dupErr == nil {
-			// 已有同名同类型分类，更新而非插入
+			// 去重合并到旧分类 dupID、丢弃新 id；调用方据此把交易 category_id 重映射到 dupID
 			if c.UpdatedAt.After(dupUpdatedAt) {
 				_, err = tx.Exec(ctx,
 					`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
 					c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted, dupID,
 				)
-				return err
+				return dupID, err
 			}
 			// 本地更旧：跳过，不报错（此前误把外层 pgx.ErrNoRows 当错误返回，导致同步 500）
-			return nil
+			return dupID, nil
 		}
 		// 无重复，正常插入
 		_, err = tx.Exec(ctx,
 			`INSERT INTO categories (id, ledger_id, owner_id, name, type, icon, sort_order, updated_at, is_deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			c.ID, c.LedgerID, userID, c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted,
 		)
-		return err
+		return c.ID, err
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !c.UpdatedAt.After(remoteUpdatedAt) {
-		return nil
+		return c.ID, nil
 	}
 	_, err = tx.Exec(ctx,
 		`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
 		c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted, c.ID,
 	)
-	return err
+	return c.ID, err
 }
 
 func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, userID string, t model.Transaction) error {
