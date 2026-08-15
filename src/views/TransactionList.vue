@@ -14,7 +14,8 @@ import MemberAvatar from "@/components/MemberAvatar.vue";
 import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
-import { utcToLocalDateKey, formatDateLabel, formatDateRange } from "@/utils/datetime";
+import { formatDateRange } from "@/utils/datetime";
+import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, transferFromUid, transferToUid, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate } from "@/utils/transaction";
 import type { Transaction } from "@/types";
 
 const route = useRoute();
@@ -344,75 +345,7 @@ const filterSummary = computed(() => {
 });
 
 // 按日期分组
-interface DayGroup {
-  date: string;
-  label: string;
-  transactions: Transaction[];
-}
-
-const groupedTransactions = computed<DayGroup[]>(() => {
-  const groups: Record<string, Transaction[]> = {};
-  for (const tx of transactionStore.transactions) {
-    const dateKey = utcToLocalDateKey(tx.occurred_at);
-    if (!groups[dateKey]) groups[dateKey] = [];
-    groups[dateKey].push(tx);
-  }
-  return Object.entries(groups)
-    .sort(([a], [b]) => b.localeCompare(a))
-    .map(([date, txs]) => ({
-      date,
-      label: formatDateLabel(date),
-      transactions: txs,
-    }));
-});
-
-// 获取交易图标
-function getTxIcon(tx: Transaction): string {
-  if (tx.type === "transfer") return "🔄";
-  return tx.category?.icon ?? (tx.type === "income" ? "📥" : "💸");
-}
-
-// 获取交易描述
-function getTxDescription(tx: Transaction): string {
-  if (tx.type === "transfer") {
-    return `${tx.from_account?.name ?? "?"} → ${tx.to_account?.name ?? "?"}`;
-  }
-  if (tx.type === "income") {
-    return tx.to_account?.name ?? "";
-  }
-  return tx.from_account?.name ?? "";
-}
-
-// 跨成员转账：from 账户所属成员 → to 账户所属成员
-function transferFromUid(tx: Transaction): string | null {
-  if (tx.type !== "transfer") return null;
-  return tx.from_account?.owner_id ?? null;
-}
-function transferToUid(tx: Transaction): string | null {
-  if (tx.type !== "transfer") return null;
-  return tx.to_account?.owner_id ?? null;
-}
-function isCrossMemberTransfer(tx: Transaction): boolean {
-  const from = transferFromUid(tx);
-  const to = transferToUid(tx);
-  return !!from && !!to && from !== to;
-}
-function transferMemberIds(tx: Transaction): string[] {
-  if (!isCrossMemberTransfer(tx)) return [];
-  return [transferFromUid(tx)!, transferToUid(tx)!];
-}
-
-// 获取交易分类名
-function getTxCategoryName(tx: Transaction): string {
-  if (tx.type === "transfer") return "转账";
-  return tx.category?.name ?? (tx.type === "income" ? "收入" : "支出");
-}
-
-// 金额显示
-function formatAmount(tx: Transaction): string {
-  const sign = tx.type === "income" ? "+" : tx.type === "expense" ? "-" : "";
-  return `${sign}¥${tx.amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
+const groupedTransactions = computed(() => groupTransactionsByDate(transactionStore.transactions));
 
 function goRecord(txId: string) {
   if (isAccountMode.value && accountId.value) {
