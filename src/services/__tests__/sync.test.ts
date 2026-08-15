@@ -42,20 +42,20 @@ describe("sync cursor is per-user", () => {
   it("separate local users keep independent last_synced_at cursors", () => {
     // user1 syncs, cursor advances to T1
     getCurrentUserId.mockReturnValue("user-1");
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
 
     // switch to user2 — must NOT inherit user1's cursor
     getCurrentUserId.mockReturnValue("user-2");
     expect(getLastSyncedAt()).toBeNull();
-    setLastSyncedAt("T2");
+    setLastSyncedAt("2");
 
     // switch back to user1 — cursor must still be T1, not advanced by user2
     getCurrentUserId.mockReturnValue("user-1");
-    expect(getLastSyncedAt()).toBe("T1");
+    expect(getLastSyncedAt()).toBe("1");
 
     // user2's cursor stays T2
     getCurrentUserId.mockReturnValue("user-2");
-    expect(getLastSyncedAt()).toBe("T2");
+    expect(getLastSyncedAt()).toBe("2");
   });
 });
 
@@ -139,10 +139,10 @@ describe("enqueueSync 降级模式", () => {
     });
     vi.useFakeTimers();
     // 设游标让 performSync 走 /sync 分支而非 firstFullSync
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
     const { apiFetch } = await import("@/services/api");
     (apiFetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true, status: 200, data: { server_time: "T2", remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } },
+      ok: true, status: 200, data: { server_seq: 2, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } },
     });
 
     enqueueSync({
@@ -172,13 +172,13 @@ describe("performSync 健壮性", () => {
     const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
     useAuthStoreMock.mockReturnValue(authState);
 
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
     const { apiFetch } = await import("@/services/api");
     vi.mocked(apiFetch).mockResolvedValue({
       ok: true,
       status: 200,
       data: {
-        server_time: "T2",
+        server_seq: 2,
         remote_changes: {
           ledgers: [{ id: "l1", name: "x", type: "team", owner_id: null, team_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", is_deleted: false }],
           accounts: [], tags: [], categories: [], transactions: [], member_aliases: [],
@@ -197,7 +197,7 @@ describe("performSync 健壮性", () => {
     await performSync();
 
     expect(authState.lastSyncFailed).toBe(true);
-    expect(getLastSyncedAt()).toBe("T1"); // 游标未推进
+    expect(getLastSyncedAt()).toBe("1"); // 游标未推进
   });
 });
 
@@ -213,12 +213,12 @@ describe("performSync 失败自动重试", () => {
     vi.useFakeTimers();
     const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
     useAuthStoreMock.mockReturnValue(authState);
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
     const { apiFetch } = await import("@/services/api");
     // 第一次失败，第二次成功
     (apiFetch as unknown as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error("network down"))
-      .mockResolvedValueOnce({ ok: true, status: 200, data: { server_time: "T2", remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } } });
+      .mockResolvedValueOnce({ ok: true, status: 200, data: { server_seq: 2, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } } });
 
     const { performSync } = await import("@/services/sync");
     await performSync(); // 失败
@@ -326,19 +326,19 @@ describe("performSync 互斥（重入保护）", () => {
   it("在途同步期间再次调用返回 false，且完成后补跑积压的同步", async () => {
     const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
     useAuthStoreMock.mockReturnValue(authState);
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
 
     const { apiFetch } = await import("@/services/api");
-    const okResp = (server_time: string) => ({
+    const okResp = (server_seq: number) => ({
       ok: true,
       status: 200,
-      data: { server_time, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } },
+      data: { server_seq, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] } },
     });
     let resolveFirst!: (v: unknown) => void;
     const gate = new Promise((res) => { resolveFirst = res; });
     vi.mocked(apiFetch)
       .mockReturnValueOnce(gate as never)          // 第一次（在途，挂起）
-      .mockResolvedValue(okResp("T3") as never);   // 补跑（第二次）
+      .mockResolvedValue(okResp(3) as never);   // 补跑（第二次）
 
     const { performSync } = await import("@/services/sync");
     const first = performSync();
@@ -351,7 +351,7 @@ describe("performSync 互斥（重入保护）", () => {
     await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
 
     // 第一次完成 → finally 里 syncQueued 触发补跑
-    resolveFirst(okResp("T2"));
+    resolveFirst(okResp(2));
     await first;
 
     await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));

@@ -101,10 +101,10 @@ export async function firstFullSync(): Promise<void> {
     tag_ids: tagMap[r.id as string] ?? [],
   }))
 
-  const resp = await apiFetch<{ server_time: string; remote_changes: { ledgers: unknown[]; accounts: unknown[]; tags: unknown[]; categories: unknown[]; transactions: unknown[] } }>('/sync', {
+  const resp = await apiFetch<{ server_seq: number; remote_changes: { ledgers: unknown[]; accounts: unknown[]; tags: unknown[]; categories: unknown[]; transactions: unknown[] } }>('/sync', {
     method: 'POST',
     body: JSON.stringify({
-      last_synced_at: '1970-01-01T00:00:00Z',
+      last_server_seq: 0,
       local_changes: {
         ledgers,
         accounts,
@@ -124,7 +124,7 @@ export async function firstFullSync(): Promise<void> {
     const { applyRemoteChanges } = await import('@/services/sync')
     await applyRemoteChanges(resp.data.remote_changes as import('@/services/sync').SyncPayload)
     const { setLastSyncedAt } = await import('@/services/sync')
-    setLastSyncedAt(resp.data.server_time)
+    setLastSyncedAt(String(resp.data.server_seq))
   }
 
   // 通知 TransactionList 刷新

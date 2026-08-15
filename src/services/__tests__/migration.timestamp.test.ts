@@ -30,7 +30,7 @@ describe("firstFullSync 时间戳归一化", () => {
       // accounts/categories/tags/transactions/transaction_tags 一律返回空
       return Promise.resolve([]);
     });
-    apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: { server_time: "T2", remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [] } } });
+    apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: { server_seq: 2, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [] } } });
 
     await firstFullSync();
 

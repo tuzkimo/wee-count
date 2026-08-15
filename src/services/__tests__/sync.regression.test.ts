@@ -56,7 +56,7 @@ describe("performSync 网络异常不丢变更", () => {
     vi.useFakeTimers();
     const authState = { isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false };
     useAuthStoreMock.mockReturnValue(authState);
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
 
     const { apiFetch } = await import("@/services/api");
     enqueueSync({ transactions: [{ id: "t1", updated_at: "2026-07-11T00:00:00Z" } as never] });
@@ -68,11 +68,11 @@ describe("performSync 网络异常不丢变更", () => {
 
     expect(result).toBe(false);
     expect(authState.lastSyncFailed).toBe(true); // 不再误报「已同步」
-    expect(getLastSyncedAt()).toBe("T1"); // 游标未推进
+    expect(getLastSyncedAt()).toBe("1"); // 游标未推进
 
     // 变更已回队：再次 performSync（apiFetch 成功）应携带 t1
     vi.mocked(apiFetch).mockResolvedValue({
-      ok: true, status: 200, data: { server_time: "T2", remote_changes: emptyRemote },
+      ok: true, status: 200, data: { server_seq: 2, remote_changes: emptyRemote },
     } as never);
     await performSync();
 
@@ -93,7 +93,7 @@ describe("clearPendingSync", () => {
 
   it("清空待推送队列后 performSync 不再发送变更", async () => {
     vi.useFakeTimers();
-    setLastSyncedAt("T1");
+    setLastSyncedAt("1");
 
     const { apiFetch } = await import("@/services/api");
     enqueueSync({ transactions: [{ id: "t1", updated_at: "2026-07-11T00:00:00Z" } as never] });
@@ -101,7 +101,7 @@ describe("clearPendingSync", () => {
     clearPendingSync();
 
     vi.mocked(apiFetch).mockResolvedValue({
-      ok: true, status: 200, data: { server_time: "T2", remote_changes: emptyRemote },
+      ok: true, status: 200, data: { server_seq: 2, remote_changes: emptyRemote },
     } as never);
     await performSync();
 

@@ -21,12 +21,12 @@ export interface SyncPayload {
 }
 
 interface SyncRequest {
-  last_synced_at: string;
+  last_server_seq: number;
   local_changes: SyncPayload;
 }
 
 interface SyncResponse {
-  server_time: string;
+  server_seq: number;
   remote_changes: SyncPayload;
 }
 
@@ -44,10 +44,10 @@ let isSyncing = false;
 let syncQueued = false;
 
 // 游标按本地用户隔离：每个用户有独立 SQLite（{userId}.db），各自数据进度不同，
-// 不能共享一个 last_synced_at，否则 A 同步推进游标后，B 切回来按新游标增量同步，
+// 不能共享一个 last_server_seq，否则 A 同步推进游标后，B 切回来按新游标增量同步，
 // 会跳过 B 本地从未拉取过的数据（团队账本里别人加的数据就是典型场景）。
 function cursorKeyFor(uid: string | null): string {
-  return uid ? `last_synced_at:${uid}` : "last_synced_at";
+  return uid ? `last_server_seq:${uid}` : "last_server_seq";
 }
 
 function cursorKey(): string {
@@ -190,6 +190,8 @@ async function doSync(): Promise<boolean> {
     return true
   }
 
+  const lastServerSeq = parseInt(lastSyncedAt, 10);
+
   const changes = { ...pendingChanges };
   pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
 
@@ -205,7 +207,7 @@ async function doSync(): Promise<boolean> {
     res = await apiFetch<SyncResponse>("/sync", {
       method: "POST",
       body: JSON.stringify({
-        last_synced_at: lastSyncedAt,
+        last_server_seq: lastServerSeq,
         local_changes: changes,
       } as SyncRequest),
     });
@@ -235,7 +237,7 @@ async function doSync(): Promise<boolean> {
     scheduleRetry();
     return false;
   }
-  setLastSyncedAtFor(uid, res.data.server_time);
+  setLastSyncedAtFor(uid, String(res.data.server_seq));
 
   // 通知 TransactionList 刷新
   const { useAuthStore } = await import("@/stores/auth");
