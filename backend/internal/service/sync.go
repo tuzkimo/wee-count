@@ -149,6 +149,13 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 	}
 	defer tx.Rollback(ctx)
 
+	// 串行化所有同步写事务：nextval 按「调用序」而非「提交序」赋值，并发写事务交错提交时
+	// 会出现「低 seq 晚提交」被已推进的游标跳过（漏同步）。全局 advisory xact lock 保证
+	// 一次只有一个写事务在途，使 seq 序 = 提交序。（家庭 App 写低频，全局串行化可接受。）
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(897753)"); err != nil {
+		return err
+	}
+
 	// ledgers：lwwMergeLedger 内部 canReadLedger 自鉴权，无权限返回 ErrNotLedgerMember 跳过。
 	for _, l := range changes.Ledgers {
 		if err := s.lwwMergeLedger(ctx, tx, userID, l); err != nil {
