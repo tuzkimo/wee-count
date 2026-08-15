@@ -32,6 +32,7 @@
 - AccountEdit 深链/刷新失效：`AccountEdit` 的 `onMounted` 只读 `accountStore.accounts.find(...)` 不先加载，刷新或深链打开 `/accounts/:id/edit` 时账户列表为空、显示「账户不存在」；现 `onMounted` 先 `ledgerStore.init()` + `accountStore.fetchAll(ledgerId)` 再读。
 - 新建账户靠名字猜 id：`AccountCreateSheet` 用 `accounts.find(name+type)` 猜新建账户 id，重名同类型时可能命中旧账户、记账落到错账户；现 `accountStore.add` 返回新账户 id，组件直接用。
 - DateTimePicker 越界改写年份：年份超出 ±10 年范围时 `initFromModelValue` 回退到当前年月，点「确定」把 `occurred_at` 年份静默改成当前年；现越界年月合成 option 项展示，确认回传真实选中值，不再改写（滚轮可展示/修改越界日期）。
+- 增量游标非单调漏同步：增量同步用客户端 `updated_at` 做游标，设备离线编辑后 `updated_at` 落后于其他设备已推进的游标，这笔变更被永久漏掉；现给 6 张实体表加服务端单调 `server_seq`（全局序列，写库 bump、读增量按 `server_seq > since`），游标与 LWW 的客户端时间戳解耦；协议字段 `last_synced_at`/`server_time` 改 `last_server_seq`/`server_seq`（硬切换，前端换游标键触发一次全量重拉）；写事务加全局 advisory lock 串行化，堵 `nextval` 调用序≠提交序的竞态。
 
 ### 同步正确性（2026-08-14 复盘修复）
 
