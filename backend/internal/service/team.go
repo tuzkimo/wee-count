@@ -25,6 +25,13 @@ var (
 	ErrAlreadyMember = errors.New("already a member of this team")
 )
 
+// inviteRedis 是 JoinByInvite 所需的最小 redis 接口：生产传 *redis.Client，
+// 测试注入 fake，以便断言 Del 是否被调用。
+type inviteRedis interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 type TeamService struct {
 	pool  *pgxpool.Pool
 	redis *redis.Client
@@ -122,8 +129,12 @@ func (s *TeamService) CreateInvite(ctx context.Context, userID, teamID string) (
 }
 
 func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*CreateTeamResponse, error) {
+	return joinByInvite(ctx, s.pool, s.redis, userID, code)
+}
+
+func joinByInvite(ctx context.Context, pool dbQuerier, redisClient inviteRedis, userID, code string) (*CreateTeamResponse, error) {
 	key := fmt.Sprintf("invite:%s", code)
-	val, err := s.redis.Get(ctx, key).Result()
+	val, err := redisClient.Get(ctx, key).Result()
 	if err == redis.Nil {
 		return nil, ErrInviteInvalid
 	}
@@ -137,12 +148,9 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 	}
 	teamID := parts[0]
 
-	// delete invite code (one-time use)
-	s.redis.Del(ctx, key)
-
-	// check if already a member
+	// 先校验成员资格（未消费邀请码）
 	var exists bool
-	err = s.pool.QueryRow(ctx,
+	err = pool.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)", teamID, userID,
 	).Scan(&exists)
 	if err != nil {
@@ -153,7 +161,7 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 	}
 
 	now := time.Now().UTC()
-	_, err = s.pool.Exec(ctx,
+	_, err = pool.Exec(ctx,
 		`INSERT INTO team_members (team_id, user_id, role, joined_at) VALUES ($1, $2, 'member', $3)`,
 		teamID, userID, now,
 	)
@@ -161,16 +169,19 @@ func (s *TeamService) JoinByInvite(ctx context.Context, userID, code string) (*C
 		return nil, fmt.Errorf("insert team_member: %w", err)
 	}
 
+	// 一次性消费：仅在成功加入后删除，避免重复加入或 DB 失败白白烧码
+	redisClient.Del(ctx, key)
+
 	// get team info
 	var teamName string
-	err = s.pool.QueryRow(ctx, "SELECT name FROM teams WHERE id = $1", teamID).Scan(&teamName)
+	err = pool.QueryRow(ctx, "SELECT name FROM teams WHERE id = $1", teamID).Scan(&teamName)
 	if err != nil {
 		return nil, err
 	}
 
 	// get shared ledger
 	var ledger model.Ledger
-	err = s.pool.QueryRow(ctx,
+	err = pool.QueryRow(ctx,
 		`SELECT id, name, type, team_id, owner_id, created_at, updated_at FROM ledgers WHERE team_id = $1 AND type = 'team'`,
 		teamID,
 	).Scan(&ledger.ID, &ledger.Name, &ledger.Type, &ledger.TeamID, &ledger.OwnerID, &ledger.CreatedAt, &ledger.UpdatedAt)
