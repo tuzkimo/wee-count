@@ -9,6 +9,14 @@
 
 ## 已知问题修复记录
 
+### 安全与同步修复（2026-08-15 桶一 + 桶三）
+
+- 令牌分层击穿：`AuthMiddleware` 只验签名与 `sub`、不验 `typ`，30 天 refresh token 可直接当 access 访问 `/me`、`/sync` 等受保护路由，架空 15 分钟 access 过期；现强制 `typ=="access"`（与 `Refresh` 的 `typ=="refresh"` 成对）。
+- 非 owner 成员可改共享账本：`lwwMergeLedger` 的 UPDATE 只要求 `canReadLedger`（成员即可），普通成员可改 team 账本 name/type；现 team 账本仅 owner 可改名/type，并删除不可达的 INSERT 死分支（账本仍只能服务端创建）。
+- 输入校验缺失 + 账号枚举：各 handler `Decode` 无 body 上限，超长 username/nickname 直冲 DB 500；register 返回 409「已注册」可被逐名探测。现加 `http.MaxBytesReader`（1MB）+ 字段长度校验（≤100），注册话术改「用户名不可用」。
+- 邀请码先消费：`JoinByInvite` 在校验成员资格与 INSERT 之前就 `redis.Del`，已成员重进/DB 失败白白烧码；现移到成功加入之后消费。
+- Register TOCTOU：`SELECT EXISTS` 查重与 INSERT 分离，并发同名注册撞唯一约束返回 500；现捕获 `23505` 返回 409。
+
 ### 同步正确性（2026-08-14 复盘修复）
 
 - 清空流水标签不同步：前端 `assembleTransaction` 无标签时不设 `tag_ids`，后端 `lwwMergeTransaction` 用 `len(t.TagIDs) > 0` 守卫跳过删旧关联，导致清空标签后旧标签被回传「复活」。修复：后端无条件先删旧关联再插新；前端 `applyRemoteChanges` 标签重建移入「插入/覆盖」分支（远端更旧时不再回滚本地标签，`tag_ids` 缺失视作空用于清空）。
