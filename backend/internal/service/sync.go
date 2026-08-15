@@ -201,24 +201,26 @@ func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, userID s
 	if err := canReadLedger(ctx, tx, userID, l.ID); err != nil {
 		return err // ErrNotLedgerMember 由调用方决定跳过还是失败
 	}
-	return mergeByKey(ctx, tx, l.UpdatedAt,
-		"SELECT updated_at FROM ledgers WHERE id = $1", []any{l.ID},
-		func() error {
-			_, err := tx.Exec(ctx,
-				`INSERT INTO ledgers (id, name, type, owner_id, team_id, created_at, updated_at)
-				 VALUES ($1,$2,$3,$4,NULL,$5,$6)`,
-				l.ID, l.Name, l.Type, userID, l.CreatedAt, l.UpdatedAt,
-			)
-			return err
-		},
-		func() error {
-			_, err := tx.Exec(ctx,
-				`UPDATE ledgers SET name=$1, type=$2, updated_at=$3 WHERE id=$4`,
-				l.Name, l.Type, l.UpdatedAt, l.ID,
-			)
-			return err
-		},
+	var remoteUpdatedAt time.Time
+	var ownerID, ledgerType string
+	err := tx.QueryRow(ctx,
+		"SELECT updated_at, owner_id, type FROM ledgers WHERE id = $1", l.ID,
+	).Scan(&remoteUpdatedAt, &ownerID, &ledgerType)
+	if err != nil {
+		return err
+	}
+	if !l.UpdatedAt.After(remoteUpdatedAt) {
+		return nil
+	}
+	// 团队账本仅 owner 可改名/type；成员跳过（is_deleted 已冻结，不在此列）。
+	if ledgerType == "team" && ownerID != userID {
+		return nil
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE ledgers SET name=$1, type=$2, updated_at=$3 WHERE id=$4`,
+		l.Name, l.Type, l.UpdatedAt, l.ID,
 	)
+	return err
 }
 
 func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, a model.Account) error {

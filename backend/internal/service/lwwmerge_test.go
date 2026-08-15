@@ -160,8 +160,8 @@ func TestLwwMergeLedgerUpdateExcludesOwnership(t *testing.T) {
 	s := &SyncService{}
 	now := time.Now()
 	fq := &fakeQuerier{rows: []pgx.Row{
-		fakeRow{vals: []any{true}},                // canReadLedger：有权限
-		fakeRow{vals: []any{now.Add(-time.Hour)}}, // mergeByKey：已存在且更旧 → UPDATE
+		fakeRow{vals: []any{true}},                                    // canReadLedger：有权限
+		fakeRow{vals: []any{now.Add(-time.Hour), "user-1", "personal"}}, // SELECT updated_at, owner_id, type
 	}}
 
 	l := model.Ledger{ID: "L1", Name: "账本", Type: "personal", OwnerID: "attacker", UpdatedAt: now}
@@ -181,34 +181,22 @@ func TestLwwMergeLedgerUpdateExcludesOwnership(t *testing.T) {
 	}
 }
 
-// 归属加固：INSERT 强制 owner=userID、team_id=NULL（防御性，实际因 canReadLedger 拒绝不存在账本而不可达）。
-func TestLwwMergeLedgerInsertForcesOwner(t *testing.T) {
+// 非 owner 成员不能改共享 team 账本的 name/type（is_deleted 已冻结，这里补 name/type）。
+func TestLwwMergeLedgerMemberCannotRenameTeamLedger(t *testing.T) {
 	s := &SyncService{}
+	now := time.Now()
 	fq := &fakeQuerier{rows: []pgx.Row{
-		fakeRow{vals: []any{true}},      // canReadLedger：有权限
-		fakeRow{scanErr: pgx.ErrNoRows}, // mergeByKey：不存在 → INSERT
+		fakeRow{vals: []any{true}},                       // canReadLedger：成员有权限
+		fakeRow{vals: []any{now.Add(-time.Hour), "owner-1", "team"}}, // SELECT updated_at, owner_id, type
 	}}
 
-	l := model.Ledger{ID: "L1", Name: "账本", Type: "personal", OwnerID: "attacker", UpdatedAt: time.Now()}
+	l := model.Ledger{ID: "L1", Name: "改名", Type: "team", UpdatedAt: now}
 
-	if err := s.lwwMergeLedger(context.Background(), fq, "user-1", l); err != nil {
+	if err := s.lwwMergeLedger(context.Background(), fq, "member-1", l); err != nil {
 		t.Fatal(err)
 	}
-	if len(fq.execs) == 0 {
-		t.Fatal("应执行 INSERT")
-	}
-	ins := fq.execs[0]
-	if !strings.Contains(ins.sql, "INSERT INTO ledgers") {
-		t.Fatalf("首条应为 INSERT，got %s", ins.sql)
-	}
-	if len(ins.args) < 4 || ins.args[3] != "user-1" {
-		t.Fatalf("owner_id 应强制为 user-1，got %v", ins.args)
-	}
-	if !strings.Contains(ins.sql, "NULL") {
-		t.Fatalf("team_id 应为 NULL，got %s", ins.sql)
-	}
-	if strings.Contains(ins.sql, "is_deleted") {
-		t.Fatalf("INSERT 不得含 is_deleted 字段（应默认 false），got %s", ins.sql)
+	if len(fq.execs) != 0 {
+		t.Fatalf("非 owner 成员不应能改 team 账本 name/type，但执行了 %d 次写", len(fq.execs))
 	}
 }
 
