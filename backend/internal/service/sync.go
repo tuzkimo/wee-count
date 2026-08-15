@@ -27,6 +27,8 @@ type dbQuerier interface {
 //   3) 真实错误 → 直接透传（不误判为「不存在」）
 //   4) 存在但 incoming 更旧/相同 → 跳过
 //   5) incoming 更新 → update()
+// 并发插入不靠 23505 回退兜底：PostgreSQL 事务内语句报错后即 aborted 态，后续 UPDATE 必 25P02，
+// 回退在真库跑不通。真正的并发防护是 applyLocalChanges 的全局 advisory xact lock（串行化 sync 写事务）。
 func mergeByKey(ctx context.Context, tx dbQuerier, incoming time.Time,
 	keySQL string, keyArgs []any, insert, update func() error) error {
 	var remote time.Time
@@ -34,16 +36,32 @@ func mergeByKey(ctx context.Context, tx dbQuerier, incoming time.Time,
 	// 较旧写入覆盖较新写入（破坏 LWW）。仅在 applyLocalChanges 的读写事务内使用，不涉及只读事务。
 	err := tx.QueryRow(ctx, keySQL+" FOR UPDATE", keyArgs...).Scan(&remote)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// 不存在 → INSERT；若并发已插入（主键/唯一冲突 23505），回退为 UPDATE
-		err := insert()
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return update()
-		}
-		return err
+		return insert()
 	}
 	if err != nil {
 		return err
+	}
+	if !incoming.After(remote) {
+		return nil
+	}
+	return update()
+}
+
+// mergeByKeyScoped 是带账本作用域的 LWW merge 骨架：按主键读出 ledger_id 与 updated_at，
+// 行存在于用户不可访问的账本时跳过（对象级越权防护），其余行为与 mergeByKey 一致。
+func mergeByKeyScoped(ctx context.Context, tx dbQuerier, incoming time.Time,
+	ledgerSet map[string]bool, keySQL string, keyArgs []any, insert, update func() error) error {
+	var rowLedger string
+	var remote time.Time
+	err := tx.QueryRow(ctx, keySQL+" FOR UPDATE", keyArgs...).Scan(&rowLedger, &remote)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return insert()
+	}
+	if err != nil {
+		return err
+	}
+	if !ledgerSet[rowLedger] {
+		return nil // 行在不可访问账本 → 跳过，既不覆盖也不插入
 	}
 	if !incoming.After(remote) {
 		return nil
@@ -171,7 +189,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[a.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeAccount(ctx, tx, userID, a); err != nil {
+		if err := s.lwwMergeAccount(ctx, tx, userID, ledgerSet, a); err != nil {
 			return err
 		}
 	}
@@ -182,7 +200,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[t.LedgerID] {
 			continue
 		}
-		effectiveID, err := s.lwwMergeTag(ctx, tx, t)
+		effectiveID, err := s.lwwMergeTag(ctx, tx, ledgerSet, t)
 		if err != nil {
 			return err
 		}
@@ -197,7 +215,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[c.LedgerID] {
 			continue
 		}
-		effectiveID, err := s.lwwMergeCategory(ctx, tx, userID, c)
+		effectiveID, err := s.lwwMergeCategory(ctx, tx, userID, ledgerSet, c)
 		if err != nil {
 			return err
 		}
@@ -227,7 +245,7 @@ func (s *SyncService) applyLocalChanges(ctx context.Context, userID string, ledg
 		if !ledgerSet[t.LedgerID] {
 			continue
 		}
-		if err := s.lwwMergeTransaction(ctx, tx, userID, t); err != nil {
+		if err := s.lwwMergeTransaction(ctx, tx, userID, ledgerSet, t); err != nil {
 			return err
 		}
 	}
@@ -269,9 +287,9 @@ func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, userID s
 	return err
 }
 
-func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, userID string, a model.Account) error {
-	return mergeByKey(ctx, tx, a.UpdatedAt,
-		"SELECT updated_at FROM accounts WHERE id = $1", []any{a.ID},
+func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, userID string, ledgerSet map[string]bool, a model.Account) error {
+	return mergeByKeyScoped(ctx, tx, a.UpdatedAt, ledgerSet,
+		"SELECT ledger_id, updated_at FROM accounts WHERE id = $1", []any{a.ID},
 		func() error {
 			_, err := tx.Exec(ctx,
 				`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, initial_balance, credit_limit, repayment_day, color, created_at, updated_at, is_deleted)
@@ -291,15 +309,17 @@ func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, userID 
 	)
 }
 
-func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag) (string, error) {
+func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, ledgerSet map[string]bool, t model.Tag) (string, error) {
+	var rowLedger string
 	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx, "SELECT updated_at FROM tags WHERE id = $1", t.ID).Scan(&remoteUpdatedAt)
+	err := tx.QueryRow(ctx, "SELECT ledger_id, updated_at FROM tags WHERE id = $1", t.ID).Scan(&rowLedger, &remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// 同名同账本未删除标签（清数据重绑会重新生成 UUID）：改 UPDATE 旧行而非 INSERT
+		// 同名同账本标签（含软删行，清数据重绑会重新生成 UUID）：改 UPDATE 旧行而非 INSERT。
+		// 不按 is_deleted 过滤：软删行仍占 UNIQUE(ledger_id,name) 槽位，过滤会漏判导致 INSERT 撞 23505。
 		var dupID string
 		var dupUpdatedAt time.Time
 		dupErr := tx.QueryRow(ctx,
-			`SELECT id, updated_at FROM tags WHERE ledger_id = $1 AND name = $2 AND is_deleted = FALSE LIMIT 1`,
+			`SELECT id, updated_at FROM tags WHERE ledger_id = $1 AND name = $2 LIMIT 1`,
 			t.LedgerID, t.Name,
 		).Scan(&dupID, &dupUpdatedAt)
 		if dupErr == nil {
@@ -323,6 +343,9 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag
 	if err != nil {
 		return "", err
 	}
+	if !ledgerSet[rowLedger] {
+		return t.ID, nil // 行在不可访问账本 → 跳过
+	}
 	if !t.UpdatedAt.After(remoteUpdatedAt) {
 		return t.ID, nil
 	}
@@ -332,9 +355,10 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag
 	return t.ID, err
 }
 
-func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID string, c model.Category) (string, error) {
+func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID string, ledgerSet map[string]bool, c model.Category) (string, error) {
+	var rowLedger string
 	var remoteUpdatedAt time.Time
-	err := tx.QueryRow(ctx, "SELECT updated_at FROM categories WHERE id = $1", c.ID).Scan(&remoteUpdatedAt)
+	err := tx.QueryRow(ctx, "SELECT ledger_id, updated_at FROM categories WHERE id = $1", c.ID).Scan(&rowLedger, &remoteUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// 检查同账本下是否已有同名同类型分类（客户端清数据重绑会重新生成 UUID）
 		var dupID string
@@ -365,6 +389,9 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID
 	if err != nil {
 		return "", err
 	}
+	if !ledgerSet[rowLedger] {
+		return c.ID, nil // 行在不可访问账本 → 跳过
+	}
 	if !c.UpdatedAt.After(remoteUpdatedAt) {
 		return c.ID, nil
 	}
@@ -375,7 +402,7 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID
 	return c.ID, err
 }
 
-func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, userID string, t model.Transaction) error {
+func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, userID string, ledgerSet map[string]bool, t model.Transaction) error {
 	insert := func() error {
 		_, err := tx.Exec(ctx,
 			`INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, to_account_id, category_id, note, occurred_at, created_at, updated_at, is_deleted)
@@ -398,8 +425,8 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, use
 		}
 		return syncTransactionTags(ctx, tx, t.ID, t.TagIDs)
 	}
-	return mergeByKey(ctx, tx, t.UpdatedAt,
-		"SELECT updated_at FROM transactions WHERE id = $1", []any{t.ID},
+	return mergeByKeyScoped(ctx, tx, t.UpdatedAt, ledgerSet,
+		"SELECT ledger_id, updated_at FROM transactions WHERE id = $1", []any{t.ID},
 		insert, update,
 	)
 }

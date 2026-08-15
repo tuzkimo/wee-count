@@ -119,7 +119,7 @@ const QUERY = `
     t.from_account_id, t.to_account_id, t.category_id, t.note,
     t.occurred_at, t.created_at, t.updated_at, t.is_deleted,
     c.name AS category_name, c.type AS category_type, c.icon AS category_icon, c.owner_id AS category_owner_id, c.sort_order AS category_sort_order,
-    GROUP_CONCAT(DISTINCT tg.tag_id) AS tag_ids,
+    GROUP_CONCAT(DISTINCT tags.id) AS tag_ids,
     GROUP_CONCAT(DISTINCT tags.name) AS tag_names,
     fa.name AS from_account_name, fa.type AS from_account_type, fa.color AS from_account_color, fa.owner_id AS from_account_owner_id,
     ta.name AS to_account_name, ta.type AS to_account_type, ta.color AS to_account_color, ta.owner_id AS to_account_owner_id
@@ -184,8 +184,16 @@ export const useTransactionStore = defineStore("transaction", () => {
 
     if (opts?.dateTo) {
       const localStr = opts.dateTo.includes("T") ? opts.dateTo : opts.dateTo + "T00:00:00";
+      const dt = new Date(localStr);
+      // dateTo 语义为「含所选那一分钟/当天」：上界取下一分钟，形成半开区间，
+      // 否则该分钟内的交易（如月末 23:59）会被 < 排除、又早于下月首日，落入缝隙漏显。
+      if (opts.dateTo.includes("T")) {
+        dt.setMinutes(dt.getMinutes() + 1);
+      } else {
+        dt.setDate(dt.getDate() + 1);
+      }
       sql += " AND t.occurred_at < ?";
-      params.push(new Date(localStr).toISOString());
+      params.push(dt.toISOString());
     }
 
     if (opts?.tagIds && opts.tagIds.length > 0) {

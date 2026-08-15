@@ -136,6 +136,29 @@ describe("登出打断在途同步", () => {
   });
 });
 
+describe("member_aliases 快照", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+  });
+
+  it("应用别名时用传入的 db 与 serverUid，而非全局（登出+切账号不串数据）", async () => {
+    const dbA = { select: vi.fn().mockResolvedValue([]), execute: vi.fn().mockResolvedValue(undefined) };
+    const { getUserDb, getMemberAlias, setMemberAlias } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue(null); // 登出后全局 db 已不可用
+
+    await applyRemoteChanges({
+      ledgers: [], accounts: [], tags: [], categories: [], transactions: [],
+      member_aliases: [{ setter_user_id: "server-A", target_user_id: "other", alias_name: "阿明", updated_at: "2026-07-07T00:00:00Z" }],
+    }, dbA as never, "uA", "server-A");
+
+    // 应读/写传入的 dbA 而非全局 getUserDb()（此时为 null），且用快照 serverUid 过滤 setter
+    expect(getMemberAlias).toHaveBeenCalledWith("other", dbA);
+    expect(setMemberAlias).toHaveBeenCalledWith("other", "阿明", dbA);
+  });
+});
+
 describe("applyRemoteChanges 标签 LWW", () => {
   beforeEach(() => {
     localStorage.clear();

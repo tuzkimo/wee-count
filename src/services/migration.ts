@@ -1,7 +1,8 @@
 // src/services/migration.ts
-import { getUserDb } from '@/db/userDb'
+import { getUserDb, getCurrentUserId } from '@/db/userDb'
 import { apiFetch } from '@/services/api'
 import { toIsoTimestamp } from '@/services/sync'
+import type Database from '@tauri-apps/plugin-sql'
 
 // 将本地数据迁移到新的 server_ledger_id
 export async function migrateLocalDataToServer(
@@ -67,8 +68,11 @@ function normalizeTimestamps(r: Record<string, unknown>): Record<string, unknown
   return out;
 }
 
-export async function firstFullSync(): Promise<void> {
-  const db = getUserDb()
+export async function firstFullSync(
+  uid: string | null = getCurrentUserId(),
+  db: Database | null = getUserDb(),
+  serverUid: string | null = null,
+): Promise<void> {
   if (!db) return // ponytail: no local session, nothing to sync
   const rawLedgers = await db.select<Record<string, unknown>[]>('SELECT * FROM ledgers WHERE is_deleted = 0')
   const rawAccounts = await db.select<Record<string, unknown>[]>('SELECT * FROM accounts WHERE is_deleted = 0')
@@ -121,11 +125,10 @@ export async function firstFullSync(): Promise<void> {
 
   // 应用服务端返回的远程变更
   if (resp.data?.remote_changes) {
-    const { applyRemoteChanges } = await import('@/services/sync')
-    await applyRemoteChanges(resp.data.remote_changes as import('@/services/sync').SyncPayload)
-    const { setLastSyncedAt, setLastSyncedTimeNow } = await import('@/services/sync')
-    setLastSyncedAt(String(resp.data.server_seq))
-    setLastSyncedTimeNow()
+    const { applyRemoteChanges, setLastSyncedAtFor, setLastSyncedTimeFor } = await import('@/services/sync')
+    await applyRemoteChanges(resp.data.remote_changes as import('@/services/sync').SyncPayload, db, uid, serverUid)
+    setLastSyncedAtFor(uid, String(resp.data.server_seq))
+    setLastSyncedTimeFor(uid, new Date().toISOString())
   }
 
   // 通知 TransactionList 刷新

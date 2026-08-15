@@ -119,16 +119,13 @@ func (f *fakeQuerier) execSQLContains(sub string) bool {
 	return false
 }
 
-// 并发插入同 UUID 时 INSERT 撞主键 23505，应回退 UPDATE 而非返回错误。
-func TestMergeByKeyInsertUniqueViolationFallsBackToUpdate(t *testing.T) {
+// mergeByKeyScoped：行存在于不可访问账本时应跳过，既不覆盖也不插入（对象级越权防护）。
+func TestMergeByKeyScopedSkipsInaccessibleLedger(t *testing.T) {
 	now := time.Now()
-	fq := &fakeQuerier{
-		rows:     []pgx.Row{fakeRow{scanErr: pgx.ErrNoRows}},
-		execErrs: []error{&pgconn.PgError{Code: "23505"}},
-	}
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{vals: []any{"victim-ledger", now.Add(-time.Hour)}}}}
 
-	err := mergeByKey(context.Background(), fq, now,
-		"SELECT updated_at FROM accounts WHERE id = $1", []any{"a1"},
+	err := mergeByKeyScoped(context.Background(), fq, now, map[string]bool{"my-ledger": true},
+		"SELECT ledger_id, updated_at FROM accounts WHERE id = $1", []any{"a1"},
 		func() error {
 			_, err := fq.Exec(context.Background(), "INSERT INTO accounts (id) VALUES ($1)")
 			return err
@@ -139,13 +136,10 @@ func TestMergeByKeyInsertUniqueViolationFallsBackToUpdate(t *testing.T) {
 		},
 	)
 	if err != nil {
-		t.Fatalf("23505 应回退 UPDATE 而非返回错误，got %v", err)
+		t.Fatalf("越权行应静默跳过，got %v", err)
 	}
-	if len(fq.execs) != 2 {
-		t.Fatalf("应执行 INSERT + UPDATE 共 2 次，got %d：%v", len(fq.execs), fq.execs)
-	}
-	if !strings.Contains(fq.execs[1].sql, "UPDATE") {
-		t.Fatalf("第二次 exec 应为 UPDATE，got %s", fq.execs[1].sql)
+	if len(fq.execs) != 0 {
+		t.Fatalf("越权行不应执行任何写，execs=%v", fq.execs)
 	}
 }
 
@@ -156,7 +150,7 @@ func TestLwwMergeAccountInsertForcesOwner(t *testing.T) {
 
 	a := model.Account{ID: "a1", LedgerID: "L1", OwnerID: "attacker", Name: "卡", Type: "bank", UpdatedAt: time.Now()}
 
-	if err := s.lwwMergeAccount(context.Background(), fq, "real-user", a); err != nil {
+	if err := s.lwwMergeAccount(context.Background(), fq, "real-user", map[string]bool{"L1": true}, a); err != nil {
 		t.Fatal(err)
 	}
 	ins := fq.execs[0]
@@ -180,7 +174,7 @@ func TestLwwMergeCategoryDuplicateOlderSkips(t *testing.T) {
 
 	c := model.Category{ID: "new-uuid", LedgerID: "L1", Name: "餐饮", Type: "expense", UpdatedAt: older}
 
-	effectiveID, err := s.lwwMergeCategory(context.Background(), fq, "u1", c)
+	effectiveID, err := s.lwwMergeCategory(context.Background(), fq, "u1", map[string]bool{"L1": true}, c)
 	if err != nil {
 		t.Fatalf("本地更旧的重复分类应跳过且不报错，got err=%v", err)
 	}
@@ -278,14 +272,14 @@ func TestLwwMergeTransactionEmptyTagsStillClears(t *testing.T) {
 	s := &SyncService{}
 	older := time.Now().Add(-time.Hour)
 	newer := time.Now()
-	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{vals: []any{older}}}} // 已存在且更旧
+	fq := &fakeQuerier{rows: []pgx.Row{fakeRow{vals: []any{"L1", older}}}} // 已存在且更旧
 
 	tx := model.Transaction{
 		ID: "tx1", LedgerID: "L1", UserID: "u1", Type: "expense",
 		Amount: 10, UpdatedAt: newer, TagIDs: []string{},
 	}
 
-	if err := s.lwwMergeTransaction(context.Background(), fq, "u1", tx); err != nil {
+	if err := s.lwwMergeTransaction(context.Background(), fq, "u1", map[string]bool{"L1": true}, tx); err != nil {
 		t.Fatal(err)
 	}
 	if !fq.execSQLContains("DELETE FROM transaction_tags") {
@@ -350,7 +344,7 @@ func TestLwwMergeTagDuplicateNameUpdatesExisting(t *testing.T) {
 
 	tg := model.Tag{ID: "new-uuid", LedgerID: "L1", Name: "餐饮", UpdatedAt: now}
 
-	effectiveID, err := s.lwwMergeTag(context.Background(), fq, tg)
+	effectiveID, err := s.lwwMergeTag(context.Background(), fq, map[string]bool{"L1": true}, tg)
 	if err != nil {
 		t.Fatal(err)
 	}

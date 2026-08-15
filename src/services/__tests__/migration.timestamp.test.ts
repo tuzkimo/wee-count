@@ -38,4 +38,15 @@ describe("firstFullSync 时间戳归一化", () => {
     expect(body.local_changes.ledgers[0].updated_at).toBe("2026-07-10T02:31:59Z");
     expect(body.local_changes.ledgers[0].created_at).toBe("2026-07-10T02:31:59Z");
   });
+
+  it("使用传入的 db 而非全局 getUserDb（登出+切账号不串数据）", async () => {
+    const passedDb = { select: vi.fn().mockResolvedValue([]), execute: vi.fn().mockResolvedValue(undefined) };
+    vi.mocked(mockDb.select).mockClear();
+    apiFetchMock.mockResolvedValue({ ok: true, status: 200, data: { server_seq: 2, remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [] } } });
+
+    await firstFullSync("passed-uid", passedDb as never);
+
+    expect(passedDb.select).toHaveBeenCalled();
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
 });

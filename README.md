@@ -16,16 +16,16 @@
 - 输入校验缺失 + 账号枚举：各 handler `Decode` 无 body 上限，超长 username/nickname 直冲 DB 500；register 返回 409「已注册」可被逐名探测。现加 `http.MaxBytesReader`（1MB）+ 字段长度校验（≤100），注册话术改「用户名不可用」。
 - 邀请码先消费：`JoinByInvite` 在校验成员资格与 INSERT 之前就 `redis.Del`，已成员重进/DB 失败白白烧码；现移到成功加入之后消费。
 - Register TOCTOU：`SELECT EXISTS` 查重与 INSERT 分离，并发同名注册撞唯一约束返回 500；现捕获 `23505` 返回 409。
-- 标签同名去重：`lwwMergeTag` 在 id 未命中时按 `(ledger_id, name, is_deleted=FALSE)` 查重，命中则 UPDATE 旧行而非 INSERT，避免 `UNIQUE(ledger_id,name)` 冲突毒化同步。
+- 标签同名去重：`lwwMergeTag` 在 id 未命中时按 `(ledger_id, name)` 查重（含软删行，软删行仍占 `UNIQUE(ledger_id,name)` 槽位），命中则 UPDATE 旧行（含复活软删行）而非 INSERT；此前按 `is_deleted=FALSE` 过滤，「删除标签后重建同名」会漏判去重、INSERT 撞唯一约束 23505 阻断整次同步。
 - 前端标签同名去重：`applyRemoteChanges` 的 tags 分支在 id 未命中时按 `(ledger_id, name, is_deleted=0)` 查同名，命中则把 `transaction_tags.tag_id` 改指新 id、删旧标签再插新，避免 `UNIQUE(ledger_id,name)` 冲突（与 categories 分支同款逻辑）。
 - 标签/分类同名去重的交易外键悬空：后端 `lwwMergeTag`/`lwwMergeCategory` 去重时丢弃新 id、合并进旧 id，但同批次交易仍引用被丢弃的新 id，`transaction_tags`/`categories` 外键 23503 会回滚整次同步；现去重后把交易 `tag_ids`/`category_id` 重映射到有效旧 id，再落交易。
 - `GetMe` 账本口径与 sync 不一致：`GetMe` 只按 `owner_id` 查账本，经邀请加入的成员重启后拿不到共享账本；现改 owner UNION team_members（与 `getUserLedgerIDs` 同款口径）。
 - `backfillReferenced` 跨账本泄露：反查父行按 id 只查不验账本归属，可把外账本账户金额/额度泄露给已无权限用户；现 `query*ByIDs` 加 `AND ledger_id = ANY($2)` 归属过滤。
-- `mergeByKey` 并发丢更新：合并是「查→判→写」无行锁，两成员并发编辑同一实体较旧写会覆盖较新写（破坏 LWW），并发推同 UUID 新实体撞主键 500；现 SELECT 加 `FOR UPDATE` 行锁，INSERT 撞 `23505` 回退 UPDATE。
+- `mergeByKey` 并发丢更新：合并是「查→判→写」无行锁，两成员并发编辑同一实体较旧写会覆盖较新写（破坏 LWW），并发推同 UUID 新实体撞主键 500；现 SELECT 加 `FOR UPDATE` 行锁；并发插入由写事务全局 advisory lock 串行化兜底（删除 23505→UPDATE 回退死分支——真库事务内语句报错即 aborted 态、后续 UPDATE 必 25P02，回退跑不通）。
 - 子实体归属伪造：account/category/transaction 的 `owner_id`/`user_id` 取客户端值，可伪造归属；现 INSERT 用服务端 `userID` 覆盖（UPDATE 不改归属）。
 - `apiFetch` 网络/超时异常统一返回 `{ok:false,error}` 而非 throw：此前断网/超时（abort）会 throw，`updateProfile`/`fetchTeamMembers` 只判 `res.ok` 不 catch，产生未捕获 rejection；现两处 `fetchWithTimeout` 包 try/catch 统一返回 `{ok:false,status:0,error:"network error"}`。`refreshAccessToken` 加模块级 in-flight Promise 单飞，并发 401 只触发一次 refresh，避免竞态。
 - 远端合并丢 `note`：`applyRemoteChanges` 的 transactions INSERT/UPDATE 无 `note` 列，跨设备备注被静默清空；现补 `note` 列及 `tx.note ?? null`。
-- 登出打断在途同步跨账号污染：`doSync` 全程用全局 `getUserDb()`/`getCurrentUserId()`，慢同步中登出+切用户时旧同步把旧账号远端数据写进新账号库、游标写错键；现 `doSync` 开头快照 uid/db 一路传参，`clearPendingSync` 不再复位 `isSyncing`（在途同步自然结束、`syncQueued` 补跑）。
+- 登出打断在途同步跨账号污染：`doSync` 全程用全局 `getUserDb()`/`getCurrentUserId()`，慢同步中登出+切用户时旧同步把旧账号远端数据写进新账号库、游标写错键；现 `doSync` 开头快照 uid/db 一路传参，`clearPendingSync` 不再复位 `isSyncing`（在途同步自然结束、`syncQueued` 补跑）；并补齐两处漏网——`firstFullSync` 与 `member_aliases` 收集/应用此前仍读全局 db/uid/serverUid，现同样走快照（别名 LWW 字符串比较改 `compareTimestamp`）。
 - `mergeChanges` 字典序比较：`mergeChanges` 用 `item.updated_at > target.updated_at` 字符串比较，空格格式（`datetime('now')`）与 ISO 混用时因 `" " < "T"` 误判；现改走 `compareTimestamp` 按 epoch 比较。
 - 金额累加浮点误差：`totalIncome`/`totalExpense`/`totalBalance`/`assetsTotal`/`liabilitiesTotal`/`netAssets` 及报表收支汇总、净资产序列等累加点未做两位小数规整，`0.1 + 0.2` 这类浮点累加出现 `0.30000000000000004`；现统一经 `round2`（`src/utils/transaction.ts`）规整，缓解浮点精度误差（不改 schema，桶二才彻底改整数分）。
 - 计算器表达式动态求值：`evaluateExpression`（`src/utils/expression.ts`）用 `new Function` 求值，虽经正则白名单收窄仍属动态代码执行；现改手写 tokenize + 递归下降解析（四则 + 括号 + 一元负号），除零/非法字符/非正数返回 null，去掉 `new Function`/`eval`。
@@ -35,6 +35,9 @@
 - 增量游标非单调漏同步：增量同步用客户端 `updated_at` 做游标，设备离线编辑后 `updated_at` 落后于其他设备已推进的游标，这笔变更被永久漏掉；现给 6 张实体表加服务端单调 `server_seq`（全局序列，写库 bump、读增量按 `server_seq > since`），游标与 LWW 的客户端时间戳解耦；协议字段 `last_synced_at`/`server_time` 改 `last_server_seq`/`server_seq`（硬切换，前端换游标键触发一次全量重拉）；写事务加全局 advisory lock 串行化，堵 `nextval` 调用序≠提交序的竞态。
 - advisory lock 未覆盖全部写账本路径：`CreateTeam`/`CreateLedger` 也向 `ledgers` INSERT（走 `DEFAULT nextval` 取 `server_seq`）却未取锁，commit-order 竞态仍可达；现两处写事务开头同样取 `pg_advisory_xact_lock(897753)`（与 sync.go 同一把锁），保证 `server_seq` 序 = 提交序。
 - MePage 把 seq 游标当日期渲染：`getLastSyncedAt()` 改存 `server_seq` 整数串后，`new Date("5")` 被解析成 1970 年；现「上次同步时间」独立存 wall-clock 时间（`last_synced_time` localStorage 键），`MePage` 改用 `getLastSyncedTime()` 展示，`doSync`/`firstFullSync` 成功后写入。
+- 同步写路径对象级越权（IDOR）：accounts/tags/categories/transactions 四个 merge 只校验客户端传来的 `ledger_id` 字段、按实体 id 落库，攻击者可伪造 `ledger_id` + 他人实体 id 跨账本覆盖/软删他人数据；现 merge 按 id 读出实际 `ledger_id` 并校验 ∈ 可访问集合（对齐 `lwwMergeLedger` 的 `canReadLedger`），不可访问则跳过。
+- 交易标签名/id 错位：`GROUP_CONCAT(DISTINCT tg.tag_id)`（含软删标签）与 `GROUP_CONCAT(DISTINCT tags.name)`（`JOIN ... is_deleted=0` 丢弃软删名）按下标配对错位，软删标签被错标成存活标签名、存活标签名变空；现 `tag_ids` 聚合改用 `tags.id`，与 `tag_names` 一致丢弃软删标签。
+- 日期筛选上界 off-by-one：`dateTo` 用 `occurred_at < ?` 且默认「当月」上界设 `最后一天T23:59`，月末最后一分钟的交易既不满足本月 `< 23:59`、也不满足下月 `>= 00:00`，落入缝隙漏显；现 `dateTo` 视为「含所选分钟/天」，有 T 加一分钟、无 T 加一天，形成半开区间。
 
 ### 同步正确性（2026-08-14 复盘修复）
 

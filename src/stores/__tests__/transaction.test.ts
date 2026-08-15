@@ -133,6 +133,21 @@ describe("transactionStore", () => {
 
       expect(store.transactions).toHaveLength(0);
     });
+
+    it("dateTo 上界含所选分钟（+1 分钟），避免月末 23:59 交易漏显", async () => {
+      mockDb.select.mockResolvedValue([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { dateTo: "2026-08-31T23:59" });
+
+      const sql = mockDb.select.mock.calls[0][0] as string;
+      const params = mockDb.select.mock.calls[0][1] as string[];
+      const expected = new Date("2026-08-31T23:59");
+      expected.setMinutes(expected.getMinutes() + 1);
+
+      expect(sql).toContain("t.occurred_at <");
+      expect(params).toEqual(["pl-1", expected.toISOString()]);
+    });
   });
 
   describe("add", () => {

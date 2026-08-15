@@ -66,7 +66,7 @@ export function setLastSyncedAt(time: string): void {
   localStorage.setItem(cursorKey(), time);
 }
 
-function setLastSyncedAtFor(uid: string | null, time: string): void {
+export function setLastSyncedAtFor(uid: string | null, time: string): void {
   localStorage.setItem(cursorKeyFor(uid), time);
 }
 
@@ -81,7 +81,7 @@ export function getLastSyncedTime(): string | null {
   return localStorage.getItem(lastSyncedTimeKeyFor(getCurrentUserId()));
 }
 
-function setLastSyncedTimeFor(uid: string | null, time: string): void {
+export function setLastSyncedTimeFor(uid: string | null, time: string): void {
   localStorage.setItem(lastSyncedTimeKeyFor(uid), time);
 }
 
@@ -193,13 +193,14 @@ export async function performSync(): Promise<boolean> {
 async function doSync(): Promise<boolean> {
   const uid = getCurrentUserId();
   const db = getUserDb();
+  const serverUid = await authServerUserId();
   const lastSyncedAt = getLastSyncedAtFor(uid);
 
   // 从未同步成功过，做全量上传
   if (!lastSyncedAt) {
     const { firstFullSync } = await import('./migration')
     try {
-      await firstFullSync()
+      await firstFullSync(uid, db, serverUid)
     } catch (e) {
       console.warn('[sync] firstFullSync failed:', e)
       await markSyncResult(false)
@@ -218,7 +219,7 @@ async function doSync(): Promise<boolean> {
 
   // 推送前补充本地 member_aliases（别名变更不经过 pendingChanges 入队，这里全量带）
   try {
-    changes.member_aliases = await collectMemberAliasesForSync();
+    changes.member_aliases = await collectMemberAliasesForSync(db, uid, serverUid);
   } catch (e) {
     console.warn("[sync] collectMemberAliasesForSync failed:", e);
   }
@@ -251,7 +252,7 @@ async function doSync(): Promise<boolean> {
   }
 
   try {
-    await applyRemoteChanges(res.data.remote_changes, db, uid);
+    await applyRemoteChanges(res.data.remote_changes, db, uid, serverUid);
   } catch (e) {
     console.warn("[sync] applyRemoteChanges failed:", e);
     await markSyncResult(false);
@@ -283,7 +284,7 @@ async function markSyncResult(ok: boolean): Promise<void> {
 /**
  * Apply remote changes to local SQLite (LWW merge)
  */
-export async function applyRemoteChanges(remote: SyncPayload, db: Database | null = getUserDb(), uid: string | null = getCurrentUserId()): Promise<void> {
+export async function applyRemoteChanges(remote: SyncPayload, db: Database | null = getUserDb(), uid: string | null = getCurrentUserId(), serverUid: string | null = null): Promise<void> {
   if (!db) return;
 
   for (const ledger of (remote.ledgers || [])) {
@@ -422,14 +423,13 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Database | nul
   // 服务端 payload 带 setter_user_id 标识，apply 时过滤 setter=me 再写本地。
   // 必须与 collectMemberAliasesForSync 的 setter 取值一致（优先 server_user_id），
   // 否则上传用 server_user_id、下载用本地 user.id，两者不等会把别名全跳过。
-  const myUserId = (await authServerUserId()) || uid || "";
+  const myUserId = serverUid ?? (await authServerUserId()) ?? uid ?? "";
   for (const alias of (remote.member_aliases || [])) {
     if (alias.setter_user_id !== myUserId) continue;
     const { getMemberAlias, setMemberAlias } = await import("@/db/userDb");
-    const local = await getMemberAlias(alias.target_user_id);
-    if (!local || alias.updated_at > local.updated_at) {
-      await setMemberAlias(alias.target_user_id, alias.alias_name);
-      // ponytail: setMemberAlias 内部用 datetime('now')，与服务端 updated_at 对齐误差可接受
+    const local = await getMemberAlias(alias.target_user_id, db);
+    if (!local || compareTimestamp(alias.updated_at, local.updated_at) > 0) {
+      await setMemberAlias(alias.target_user_id, alias.alias_name, db);
     }
   }
 }
@@ -449,10 +449,14 @@ async function authServerUserId(): Promise<string | null> {
  * 收集本地 userDb 的所有别名，补上 setter_user_id，供 sync 推送。
  * 调用方在 enqueueSync 前调用，把结果放进 member_aliases。
  */
-export async function collectMemberAliasesForSync(): Promise<MemberAliasPayload[]> {
+export async function collectMemberAliasesForSync(
+  db: Database | null = getUserDb(),
+  uid: string | null = getCurrentUserId(),
+  serverUid: string | null = null,
+): Promise<MemberAliasPayload[]> {
   const { getMemberAliases } = await import("@/db/userDb");
-  const aliases = await getMemberAliases();
-  const setter = (await authServerUserId()) || getCurrentUserId() || "";
+  const aliases = await getMemberAliases(db);
+  const setter = serverUid ?? (await authServerUserId()) ?? uid ?? "";
   return aliases.map((a) => ({
     setter_user_id: setter,
     target_user_id: a.target_user_id,

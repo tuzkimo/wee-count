@@ -214,7 +214,7 @@ func TestIntegration_LwwMergeTransaction_EmptyTagsClears(t *testing.T) {
 
 	// 带空标签的新版本 merge，应清掉旧关联
 	tx := model.Transaction{ID: txID, LedgerID: ledgerID, UserID: userID, Type: "expense", Amount: 10, OccurredAt: now, CreatedAt: now, UpdatedAt: now.Add(time.Hour), TagIDs: []string{}}
-	if err := s.lwwMergeTransaction(ctx, pool, userID, tx); err != nil {
+	if err := s.lwwMergeTransaction(ctx, pool, userID, map[string]bool{ledgerID: true}, tx); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -243,7 +243,7 @@ func TestIntegration_LwwMergeCategory_DuplicateOlderSkips(t *testing.T) {
 
 	// 新 UUID、同名同类型、但更旧 → 应跳过且不报错、不新增行
 	older := model.Category{ID: uuid.New().String(), LedgerID: ledgerID, OwnerID: userID, Name: "餐饮", Type: "expense", UpdatedAt: now.Add(-time.Hour)}
-	if _, err := s.lwwMergeCategory(ctx, pool, userID, older); err != nil {
+	if _, err := s.lwwMergeCategory(ctx, pool, userID, map[string]bool{ledgerID: true}, older); err != nil {
 		t.Fatalf("更旧的重复分类应跳过不报错，got %v", err)
 	}
 	var n int
@@ -515,5 +515,94 @@ func TestIntegration_OldUpdatedAtStillPulledByServerSeq(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("旧 updated_at 流水应通过 server_seq 被拉到，got %+v", resp.RemoteChanges.Transactions)
+	}
+}
+
+// 对象级越权：用户不能借伪造 ledger_id + 他人实体 id 覆盖/软删他人账本数据。
+func TestIntegration_SyncCannotOverwriteOtherLedgerEntities(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	alice := seedUser(t, pool, now)
+	aliceLedger := seedLedger(t, pool, alice, now)
+	aliceAcctID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO accounts (id, ledger_id, owner_id, name, type, category, updated_at, is_deleted)
+		 VALUES ($1,$2,$3,'Alice卡','bank','asset',$4,false)`,
+		aliceAcctID, aliceLedger, alice, now); err != nil {
+		t.Fatal(err)
+	}
+
+	bob := seedUser(t, pool, now)
+	bobLedger := seedLedger(t, pool, bob, now)
+
+	// Bob 声称该账户在自己账本下，试图改名 + 软删
+	if _, err := s.Sync(ctx, bob, model.SyncRequest{
+		LastServerSeq: 0,
+		LocalChanges: model.SyncPayload{
+			Accounts: []model.Account{{
+				ID: aliceAcctID, LedgerID: bobLedger, OwnerID: bob, Name: "被黑",
+				Type: "bank", Category: "asset", UpdatedAt: now.Add(time.Hour), IsDeleted: true,
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var name string
+	var isDeleted bool
+	if err := pool.QueryRow(ctx,
+		"SELECT name, is_deleted FROM accounts WHERE id=$1", aliceAcctID).Scan(&name, &isDeleted); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Alice卡" || isDeleted {
+		t.Fatalf("越权覆盖未阻止：name=%q is_deleted=%v", name, isDeleted)
+	}
+}
+
+// 同名标签「删除后重建」：去重应命中软删行并复活，而不是 INSERT 撞 UNIQUE(ledger_id,name) 23505 阻断同步。
+func TestIntegration_TagDeleteThenRecreateSameName(t *testing.T) {
+	pool := setupTestDB(t)
+	s := &SyncService{pool: pool}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	userID := seedUser(t, pool, now)
+	ledgerID := seedLedger(t, pool, userID, now)
+
+	oldTagID := uuid.New().String()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES ($1,$2,'餐饮',$3,true)`,
+		oldTagID, ledgerID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	newTagID := uuid.New().String()
+	if _, err := s.Sync(ctx, userID, model.SyncRequest{
+		LastServerSeq: 0,
+		LocalChanges: model.SyncPayload{
+			Tags: []model.Tag{{ID: newTagID, LedgerID: ledgerID, Name: "餐饮", UpdatedAt: now.Add(time.Hour), IsDeleted: false}},
+		},
+	}); err != nil {
+		t.Fatalf("同名标签删除后重建不应 23505 阻断同步，got %v", err)
+	}
+
+	var n int
+	var gotDeleted bool
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM tags WHERE ledger_id=$1 AND name='餐饮'", ledgerID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("同名标签应只有一行（旧行复活而非新增），count=%d", n)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT is_deleted FROM tags WHERE ledger_id=$1 AND name='餐饮'", ledgerID).Scan(&gotDeleted); err != nil {
+		t.Fatal(err)
+	}
+	if gotDeleted {
+		t.Fatalf("旧标签应被复活（is_deleted=false）")
 	}
 }

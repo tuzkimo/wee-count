@@ -241,16 +241,14 @@ export interface MemberAliasRow {
   updated_at: string
 }
 
-export async function getMemberAliases(): Promise<MemberAliasRow[]> {
-  const db = getUserDb()
+export async function getMemberAliases(db: Database | null = getUserDb()): Promise<MemberAliasRow[]> {
   if (!db) return []
   return db.select<MemberAliasRow[]>(
     'SELECT target_user_id, alias_name, updated_at FROM member_aliases'
   )
 }
 
-export async function getMemberAlias(targetUserId: string): Promise<MemberAliasRow | null> {
-  const db = getUserDb()
+export async function getMemberAlias(targetUserId: string, db: Database | null = getUserDb()): Promise<MemberAliasRow | null> {
   if (!db) return null
   const rows = await db.select<MemberAliasRow[]>(
     'SELECT target_user_id, alias_name, updated_at FROM member_aliases WHERE target_user_id = $1',
@@ -259,8 +257,7 @@ export async function getMemberAlias(targetUserId: string): Promise<MemberAliasR
   return rows.length > 0 ? rows[0] : null
 }
 
-export async function setMemberAlias(targetUserId: string, aliasName: string): Promise<void> {
-  const db = getUserDb()
+export async function setMemberAlias(targetUserId: string, aliasName: string, db: Database | null = getUserDb()): Promise<void> {
   if (!db) return
   // 用 JS ISO 写入，与 transactions/accounts 等表一致；datetime('now') 产出非 RFC3339，
   // 会导致 /sync 请求体被后端 time.Time 解析失败（400）。
