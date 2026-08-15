@@ -4,6 +4,8 @@ import {
   utcToLocalDatetimeString,
   utcToLocalDateKey,
   localDateKeyToDate,
+  formatDateLabel,
+  formatDateRange,
 } from "@/utils/datetime";
 
 describe("toLocalDatetimeString", () => {
@@ -53,5 +55,25 @@ describe("localDateKeyToDate", () => {
     expect(d.getDate()).toBe(28);
     expect(d.getHours()).toBe(0);
     expect(d.getMinutes()).toBe(0);
+  });
+});
+
+describe("formatDateLabel", () => {
+  it("把日期 key 转成「M月D日 周X」", () => {
+    // 2026-08-15 是周六
+    expect(formatDateLabel("2026-08-15")).toBe("8月15日 周六");
+  });
+});
+
+describe("formatDateRange", () => {
+  it("同一天只显示日期", () => {
+    expect(formatDateRange("2026-08-15T00:00", "2026-08-15T23:59")).toBe("2026-08-15");
+  });
+  it("跨天显示范围", () => {
+    expect(formatDateRange("2026-08-01T00:00", "2026-08-15T23:59")).toBe("2026-08-01 ~ 2026-08-15");
+  });
+  it("只有起点/终点时显示 起/至", () => {
+    expect(formatDateRange("2026-08-01T00:00", "")).toBe("2026-08-01 起");
+    expect(formatDateRange("", "2026-08-15T23:59")).toBe("至 2026-08-15");
   });
 });

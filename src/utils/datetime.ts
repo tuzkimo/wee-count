@@ -40,3 +40,26 @@ export function utcToLocalDateKey(isoString: string): string {
 export function localDateKeyToDate(dateKey: string): Date {
   return new Date(`${dateKey}T00:00`);
 }
+
+// 日期 key（"YYYY-MM-DD"）→ "M月D日 周X"
+export function formatDateLabel(dateKey: string): string {
+  const d = localDateKeyToDate(dateKey);
+  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const weekDay = weekDays[d.getDay()];
+  return `${month}月${day}日 ${weekDay}`;
+}
+
+// 筛选摘要的日期范围展示（from/to 是含 "T" 的本地时间串）
+export function formatDateRange(from: string, to: string): string {
+  if (from && to) {
+    const [fd] = from.split("T");
+    const [td] = to.split("T");
+    if (fd === td) return fd;
+    return `${fd} ~ ${td}`;
+  }
+  if (from) return `${from.split("T")[0]} 起`;
+  if (to) return `至 ${to.split("T")[0]}`;
+  return "";
+}

@@ -14,7 +14,7 @@ import MemberAvatar from "@/components/MemberAvatar.vue";
 import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
-import { utcToLocalDateKey, localDateKeyToDate } from "@/utils/datetime";
+import { utcToLocalDateKey, formatDateLabel, formatDateRange } from "@/utils/datetime";
 import type { Transaction } from "@/types";
 
 const route = useRoute();
@@ -343,18 +343,6 @@ const filterSummary = computed(() => {
   return parts.join(" · ");
 });
 
-function formatDateRange(from: string, to: string): string {
-  if (from && to) {
-    const [fd] = from.split("T");
-    const [td] = to.split("T");
-    if (fd === td) return fd;
-    return `${fd} ~ ${td}`;
-  }
-  if (from) return `${from.split("T")[0]} 起`;
-  if (to) return `至 ${to.split("T")[0]}`;
-  return "";
-}
-
 // 按日期分组
 interface DayGroup {
   date: string;
@@ -377,15 +365,6 @@ const groupedTransactions = computed<DayGroup[]>(() => {
       transactions: txs,
     }));
 });
-
-function formatDateLabel(dateKey: string): string {
-  const d = localDateKeyToDate(dateKey);
-  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  const month = d.getMonth() + 1;
-  const day = d.getDate();
-  const weekDay = weekDays[d.getDay()];
-  return `${month}月${day}日 ${weekDay}`;
-}
 
 // 获取交易图标
 function getTxIcon(tx: Transaction): string {
