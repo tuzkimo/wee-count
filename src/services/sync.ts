@@ -32,16 +32,46 @@ interface SyncResponse {
 
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempt = 0;
-let pendingChanges: SyncPayload = {
-  ledgers: [],
-  accounts: [],
-  tags: [],
-  categories: [],
-  transactions: [],
-  member_aliases: [],
-};
 let isSyncing = false;
 let syncQueued = false;
+
+// 待推送队列按本地用户隔离（Map key = 本地 user.id），并持久化到 localStorage。
+// 游标已按 uid 隔离，但队列此前是模块级单例：登出清空会丢降级期积压的变更，
+// 不清空又会把 A 的变更串到 B 账号。按 uid 隔离 + 持久化从根上同时解决这两点。
+const pendingByUid = new Map<string, SyncPayload>();
+
+function emptyPayload(): SyncPayload {
+  return { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
+}
+
+function pendingQueueKey(uid: string): string {
+  return `pending_sync:${uid}`;
+}
+
+// 取当前 uid 的队列；未登录（uid=null）返回一次性空队列，不入 Map、不持久化。
+function pendingFor(uid: string | null): SyncPayload {
+  if (!uid) return emptyPayload();
+  let p = pendingByUid.get(uid);
+  if (!p) {
+    try {
+      const raw = localStorage.getItem(pendingQueueKey(uid));
+      p = raw ? (JSON.parse(raw) as SyncPayload) : emptyPayload();
+    } catch {
+      p = emptyPayload();
+    }
+    pendingByUid.set(uid, p);
+  }
+  return p;
+}
+
+function persistPending(uid: string | null): void {
+  if (!uid) return;
+  const p = pendingByUid.get(uid);
+  const empty = !p || (p.ledgers.length === 0 && p.accounts.length === 0 && p.tags.length === 0 &&
+    p.categories.length === 0 && p.transactions.length === 0 && p.member_aliases.length === 0);
+  if (empty) localStorage.removeItem(pendingQueueKey(uid));
+  else localStorage.setItem(pendingQueueKey(uid), JSON.stringify(p!));
+}
 
 // 游标按本地用户隔离：每个用户有独立 SQLite（{userId}.db），各自数据进度不同，
 // 不能共享一个 last_server_seq，否则 A 同步推进游标后，B 切回来按新游标增量同步，
@@ -91,12 +121,7 @@ export function setLastSyncedTimeNow(): void {
   setLastSyncedTimeFor(getCurrentUserId(), new Date().toISOString());
 }
 
-/**
- * 清空待推送队列与定时器。登出/切用户时必须调用，否则模块级 pendingChanges
- * 会把用户 A 积压的本地变更当作 B 的 local_changes 推到 B 账号（跨账号串数据）。
- */
-export function clearPendingSync(): void {
-  pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
+function stopSyncTimers(): void {
   retryAttempt = 0;
   syncQueued = false;
   if (syncTimer) {
@@ -106,13 +131,40 @@ export function clearPendingSync(): void {
 }
 
 /**
+ * 清空待推送队列与定时器。仅用于「解绑在线同步」——断开绑定后积压变更不再有意义。
+ * 队列已按 uid 隔离，登出不再需要靠清队列防串号（登出用 resetSyncTimers）。
+ */
+export function clearPendingSync(): void {
+  stopSyncTimers();
+  pendingByUid.clear();
+  // 一并清掉已持久化的队列，避免重绑后被误推
+  const prefix = "pending_sync:";
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(prefix)) keys.push(k);
+  }
+  for (const k of keys) localStorage.removeItem(k);
+}
+
+/**
+ * 登出/切用户时停止同步调度（定时器 + 重试状态），但保留各 uid 的待推送队列。
+ * 队列按 uid 隔离不会串号；保留队列让降级模式下积压的未同步变更在下次登录后恢复推送。
+ */
+export function resetSyncTimers(): void {
+  stopSyncTimers();
+}
+
+/**
  * Enqueue local changes into sync queue, debounced 3 seconds
  */
 export function enqueueSync(changes: Partial<SyncPayload>): void {
   // ponytail: skip sync in local mode, no server configured
   if (!hasBaseUrl()) return;
 
-  mergeChanges(pendingChanges, changes);
+  const uid = getCurrentUserId();
+  mergeChanges(pendingFor(uid), changes);
+  persistPending(uid);
 
   if (syncTimer) {
     clearTimeout(syncTimer);
@@ -214,8 +266,11 @@ async function doSync(): Promise<boolean> {
 
   const lastServerSeq = parseInt(lastSyncedAt, 10);
 
-  const changes = { ...pendingChanges };
-  pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
+  const changes = { ...pendingFor(uid) };
+  if (uid) {
+    pendingByUid.set(uid, emptyPayload());
+    persistPending(uid);
+  }
 
   // 推送前补充本地 member_aliases（别名变更不经过 pendingChanges 入队，这里全量带）
   try {
@@ -237,7 +292,8 @@ async function doSync(): Promise<boolean> {
     // 网络异常/超时：apiFetch 会 throw（而非返回 {ok:false}）。此时 pendingChanges 已在上面清空，
     // 必须回队变更并标记失败，否则变更从队列丢失且 UI 误报「已同步」。
     console.warn("[sync] performSync network error:", e);
-    mergeChanges(pendingChanges, changes);
+    mergeChanges(pendingFor(uid), changes);
+    persistPending(uid);
     await markSyncResult(false);
     scheduleRetry();
     return false;
@@ -245,7 +301,8 @@ async function doSync(): Promise<boolean> {
 
   if (!res.ok || !res.data) {
     console.warn("[sync] performSync failed:", res.status, res.error);
-    mergeChanges(pendingChanges, changes);
+    mergeChanges(pendingFor(uid), changes);
+    persistPending(uid);
     await markSyncResult(false)
     scheduleRetry();
     return false;
@@ -335,9 +392,11 @@ export async function applyRemoteChanges(remote: SyncPayload, db: Database | nul
       "SELECT updated_at FROM tags WHERE id = ?", [tag.id]
     );
     if (local.length === 0) {
-      // 检查本地是否已有同名同账本标签（清数据重绑会产生不同 UUID）
+      // 检查本地是否已有同名同账本标签（清数据重绑会产生不同 UUID）。
+      // 不过滤 is_deleted：软删行仍占用 UNIQUE(ledger_id, name)，若漏掉会在 INSERT 时撞唯一键，
+      // 导致同步无限重试全停摆。命中软删行同样改指+删除，释放唯一键。
       const dup = await db.select<{ id: string }[]>(
-        "SELECT id FROM tags WHERE ledger_id = ? AND name = ? AND is_deleted = 0 LIMIT 1",
+        "SELECT id FROM tags WHERE ledger_id = ? AND name = ? LIMIT 1",
         [tag.ledger_id, tag.name]
       );
       if (dup.length > 0) {

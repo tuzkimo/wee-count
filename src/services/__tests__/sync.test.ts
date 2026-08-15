@@ -287,6 +287,37 @@ describe("applyRemoteChanges 幂等", () => {
     );
   });
 
+  it("软删同名标签也应命中去重，避免 UNIQUE(ledger_id,name) 冲突导致同步卡死", async () => {
+    const execute = vi.fn().mockResolvedValue({ rowsAffected: 1, lastInsertId: 1 });
+    const select = vi.fn()
+      .mockResolvedValueOnce([])                    // tags 按 id 查：不存在
+      .mockResolvedValueOnce([{ id: "soft-deleted" }]); // 同名标签命中（软删行也占用唯一键）
+    const { getUserDb } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue({ select, execute } as never);
+
+    const { applyRemoteChanges } = await import("@/services/sync");
+    await applyRemoteChanges({
+      ledgers: [], accounts: [],
+      tags: [{ id: "remote-tag", ledger_id: "L1", name: "餐饮", updated_at: "2026-07-11T00:00:00Z", is_deleted: false }],
+      categories: [], transactions: [], member_aliases: [],
+    });
+
+    // 去重查询不再过滤 is_deleted，软删行也能命中
+    const dupSelect = select.mock.calls.find((c) => String(c[0]).includes("FROM tags WHERE ledger_id"));
+    expect(dupSelect).toBeTruthy();
+    expect(String(dupSelect![0])).not.toContain("is_deleted");
+
+    // 命中后改指 + 删除软删行 + 插入新标签
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM tags"),
+      expect.anything()
+    );
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO tags"),
+      expect.anything()
+    );
+  });
+
   it("远端交易合并时保留 note 字段", async () => {
     const execute = vi.fn().mockResolvedValue({ rowsAffected: 1, lastInsertId: 1 });
     const select = vi.fn().mockResolvedValue([]); // 本地不存在 → INSERT
@@ -355,5 +386,79 @@ describe("performSync 互斥（重入保护）", () => {
     await first;
 
     await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("同步队列按 uid 隔离", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+    clearPendingSync();
+  });
+
+  afterEach(() => {
+    clearPendingSync();
+  });
+
+  const okResp = {
+    ok: true,
+    status: 200,
+    data: {
+      server_seq: 2,
+      remote_changes: { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] },
+    },
+  };
+
+  function captureApiBody(apiFetchMock: ReturnType<typeof vi.fn>): { local_changes: { transactions: { id: string }[] } } {
+    const opts = apiFetchMock.mock.calls[0][1] as { body: string };
+    return JSON.parse(opts.body) as { local_changes: { transactions: { id: string }[] } };
+  }
+
+  it("resetSyncTimers 保留队列，登出后同 uid 重新登录仍恢复推送", async () => {
+    getCurrentUserId.mockReturnValue("u1");
+    useAuthStoreMock.mockReturnValue({ isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false });
+    setLastSyncedAt("1");
+
+    const { apiFetch } = await import("@/services/api");
+    const apiFetchMock = apiFetch as unknown as ReturnType<typeof vi.fn>;
+    apiFetchMock.mockResolvedValue(okResp);
+
+    enqueueSync({ transactions: [{ id: "t1", updated_at: "2026-07-11T00:00:00Z" } as never] });
+
+    const { resetSyncTimers, performSync } = await import("@/services/sync");
+    resetSyncTimers(); // 登出：只停定时器，保留队列
+    await performSync(); // 重新登录为 u1 并同步
+
+    expect(apiFetchMock).toHaveBeenCalled();
+    expect(captureApiBody(apiFetchMock).local_changes.transactions.map((t) => t.id)).toEqual(["t1"]);
+  });
+
+  it("A 积压的变更不会串到 B 账号", async () => {
+    useAuthStoreMock.mockReturnValue({ isOnline: true, notifySyncComplete: vi.fn(), lastSyncFailed: false });
+    const { apiFetch } = await import("@/services/api");
+    const apiFetchMock = apiFetch as unknown as ReturnType<typeof vi.fn>;
+    apiFetchMock.mockResolvedValue(okResp);
+
+    getCurrentUserId.mockReturnValue("u1");
+    setLastSyncedAt("1");
+    enqueueSync({ transactions: [{ id: "t1", updated_at: "2026-07-11T00:00:00Z" } as never] });
+
+    getCurrentUserId.mockReturnValue("u2");
+    setLastSyncedAt("1");
+    enqueueSync({ transactions: [{ id: "t2", updated_at: "2026-07-11T00:00:00Z" } as never] });
+
+    const { performSync } = await import("@/services/sync");
+    await performSync(); // 当前 uid = u2
+
+    expect(captureApiBody(apiFetchMock).local_changes.transactions.map((t) => t.id)).toEqual(["t2"]);
+  });
+
+  it("队列持久化到 localStorage，clearPendingSync 清空", () => {
+    getCurrentUserId.mockReturnValue("u1");
+    enqueueSync({ transactions: [{ id: "t1", updated_at: "2026-07-11T00:00:00Z" } as never] });
+    expect(localStorage.getItem("pending_sync:u1")).toBeTruthy();
+
+    clearPendingSync();
+    expect(localStorage.getItem("pending_sync:u1")).toBeNull();
   });
 });

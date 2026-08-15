@@ -15,6 +15,7 @@ import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { formatDateRange } from "@/utils/datetime";
+import { isDefaultCurrentMonth } from "@/utils/filter";
 import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, transferFromUid, transferToUid, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate } from "@/utils/transaction";
 import type { Transaction } from "@/types";
 
@@ -130,6 +131,16 @@ async function doBatchDelete() {
 // 判断是否为账户详情模式
 const isAccountMode = computed(() => !!route.params.id);
 const accountId = computed(() => route.params.id as string | undefined);
+
+// 是否「默认查当月」：与 buildFetchOpts 共用同一判定，供摘要栏显示与实际查询保持一致
+const isDefaultMonth = computed(() => isDefaultCurrentMonth(isAccountMode.value, accountId.value, {
+  account: route.query.account as string | undefined,
+  dateFrom: route.query.dateFrom as string | undefined,
+  dateTo: route.query.dateTo as string | undefined,
+  tags: route.query.tags as string | undefined,
+  categories: route.query.categories as string | undefined,
+  members: route.query.members as string | undefined,
+}));
 
 // 当前账户信息
 const currentAccount = computed(() => {
@@ -251,7 +262,7 @@ function buildFetchOpts() {
   // 首页模式无任何筛选参数时，默认查当月
   let dateFrom = qDateFrom;
   let dateTo = qDateTo;
-  if (!isAccountMode.value && !qDateFrom && !qDateTo && !qTags && !qCategories && !qMembers && !accId) {
+  if (isDefaultMonth.value) {
     const now = new Date();
     dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01T00:00`;
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -274,12 +285,14 @@ const filterSummary = computed(() => {
   const parts: string[] = [];
   const q = route.query;
 
-  // 日期范围
+  // 日期范围：与 buildFetchOpts 的默认当月判定一致，否则显示「全部时间」而非误导成当月
   if (q.dateFrom || q.dateTo) {
     parts.push(`📅 ${formatDateRange(q.dateFrom as string, q.dateTo as string)}`);
-  } else {
+  } else if (isDefaultMonth.value) {
     const now = new Date();
     parts.push(`📅 ${now.getFullYear()}年${now.getMonth() + 1}月`);
+  } else {
+    parts.push("📅 全部时间");
   }
 
   // 账户

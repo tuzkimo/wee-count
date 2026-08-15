@@ -12,7 +12,7 @@ import {
 } from "@/db/meta";
 import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
 import * as api from "@/services/api";
-import { performSync, clearPendingSync } from "@/services/sync";
+import { performSync, clearPendingSync, resetSyncTimers } from "@/services/sync";
 import type { Ledger } from "@/types";
 
 export type AuthMode = 'none' | 'local' | 'online'
@@ -144,7 +144,9 @@ export const useAuthStore = defineStore("auth", () => {
   function logout(): void {
     stopOnlineRecovery();
     closeUserDb();
-    clearPendingSync(); // 清空待推送队列，避免下个账号误推上一个账号的变更
+    // 只停同步定时器、保留待推送队列：队列已按 uid 隔离不会串号，
+    // 保留队列让降级模式下积压的未同步变更在下次登录后恢复推送（不再因登出丢失）。
+    resetSyncTimers();
     // 不再调用 api.clearTokens() — refresh_token 保留以便下次登录自动恢复在线会话
     currentLocalUser.value = null;
     onlineUser.value = null;

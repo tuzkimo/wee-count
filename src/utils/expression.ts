@@ -52,5 +52,7 @@ export function evaluateExpression(expr: string): number | null {
   const result = parseExpression();
   if (result === null || pos !== tokens.length) return null;
   if (isNaN(result) || result <= 0) return null;
-  return Math.round(result * 100) / 100;
+  // 加 EPSILON 修正浮点表示误差：1.005*100 === 100.4999... 否则会向下舍错 1 分。
+  // 结果已保证 >0，直接对齐 transaction.ts 的 round2 写法。
+  return Math.round((result + Number.EPSILON) * 100) / 100;
 }

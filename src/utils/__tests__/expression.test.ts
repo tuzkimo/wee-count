@@ -23,6 +23,11 @@ describe("evaluateExpression", () => {
     expect(evaluateExpression("1.234")).toBe(1.23);
     expect(evaluateExpression("1.236")).toBe(1.24);
   });
+  it(".005 边界不因浮点误差向下舍错", () => {
+    expect(evaluateExpression("1.005")).toBe(1.01);
+    expect(evaluateExpression("1.015")).toBe(1.02);
+    expect(evaluateExpression("0.145")).toBe(0.15);
+  });
   it("乘法", () => {
     expect(evaluateExpression("3*4")).toBe(12);
   });

@@ -9,6 +9,12 @@
 
 ## 已知问题修复记录
 
+### 二次检查修复（2026-08-15）
+
+- `/sync` 请求体无上限：其余 body 端点都加 `MaxBytesReader`，唯独 sync 没有；任意注册用户发超大 JSON 可撑爆服务端内存并长时间独占全局 advisory 写锁（横向 DoS）。现加 `MaxBytesReader`（32MB，比 auth/team 的 1MB 宽以容纳全量首同步载荷）。
+- 计算器金额舍入错 1 分：`evaluateExpression` 用 `Math.round(result*100)/100`，`1.005*100 === 100.4999...` 向下舍成 1.00；现对齐 `round2` 加 `Number.EPSILON` 修正 `.005` 边界。
+- 筛选摘要与实际查询错配：只按账户/分类/标签/成员筛选（日期留空）时列表实际查全时间、摘要栏却显示「当前月」；现抽 `isDefaultCurrentMonth` 纯函数，`buildFetchOpts` 与 `filterSummary` 共用，非默认当月时摘要显示「全部时间」。
+
 ### 安全与同步修复（2026-08-15 桶一 + 桶三）
 
 - 令牌分层击穿：`AuthMiddleware` 只验签名与 `sub`、不验 `typ`，30 天 refresh token 可直接当 access 访问 `/me`、`/sync` 等受保护路由，架空 15 分钟 access 过期；现强制 `typ=="access"`（与 `Refresh` 的 `typ=="refresh"` 成对）。
@@ -17,7 +23,7 @@
 - 邀请码先消费：`JoinByInvite` 在校验成员资格与 INSERT 之前就 `redis.Del`，已成员重进/DB 失败白白烧码；现移到成功加入之后消费。
 - Register TOCTOU：`SELECT EXISTS` 查重与 INSERT 分离，并发同名注册撞唯一约束返回 500；现捕获 `23505` 返回 409。
 - 标签同名去重：`lwwMergeTag` 在 id 未命中时按 `(ledger_id, name)` 查重（含软删行，软删行仍占 `UNIQUE(ledger_id,name)` 槽位），命中则 UPDATE 旧行（含复活软删行）而非 INSERT；此前按 `is_deleted=FALSE` 过滤，「删除标签后重建同名」会漏判去重、INSERT 撞唯一约束 23505 阻断整次同步。
-- 前端标签同名去重：`applyRemoteChanges` 的 tags 分支在 id 未命中时按 `(ledger_id, name, is_deleted=0)` 查同名，命中则把 `transaction_tags.tag_id` 改指新 id、删旧标签再插新，避免 `UNIQUE(ledger_id,name)` 冲突（与 categories 分支同款逻辑）。
+- 前端标签同名去重：`applyRemoteChanges` 的 tags 分支在 id 未命中时按 `(ledger_id, name)` 查同名（不过滤 `is_deleted`，软删行仍占 `UNIQUE(ledger_id,name)` 槽位，漏判会 INSERT 撞唯一键、同步无限重试卡死），命中则把 `transaction_tags.tag_id` 改指新 id、删旧标签再插新。
 - 标签/分类同名去重的交易外键悬空：后端 `lwwMergeTag`/`lwwMergeCategory` 去重时丢弃新 id、合并进旧 id，但同批次交易仍引用被丢弃的新 id，`transaction_tags`/`categories` 外键 23503 会回滚整次同步；现去重后把交易 `tag_ids`/`category_id` 重映射到有效旧 id，再落交易。
 - `GetMe` 账本口径与 sync 不一致：`GetMe` 只按 `owner_id` 查账本，经邀请加入的成员重启后拿不到共享账本；现改 owner UNION team_members（与 `getUserLedgerIDs` 同款口径）。
 - `backfillReferenced` 跨账本泄露：反查父行按 id 只查不验账本归属，可把外账本账户金额/额度泄露给已无权限用户；现 `query*ByIDs` 加 `AND ledger_id = ANY($2)` 归属过滤。
@@ -45,7 +51,7 @@
 - 同步确定性 500：`lwwMergeCategory` 命中同名同类型分类且本地更旧时误返回外层 `pgx.ErrNoRows`，整个同步 500 卡死；改为跳过返回 nil。
 - 网络异常丢队列：`performSync` 的 `apiFetch` 无 try/catch，断网/超时 throw 时已清空的 `pendingChanges` 不回队、UI 误报「已同步」；现包 try/catch 回队变更并标记失败。
 - 流水删除数据污染：`remove`/`batchRemove` 只推 `{id, is_deleted, updated_at}` 部分墓碑，后端整行 LWW UPDATE 用零值覆盖 amount/type/occurred_at 等字段；现仿 account.ts 推完整对象。
-- 跨账号串数据：登出/切用户不清空模块级 `pendingChanges`，用户 A 的积压变更会被当 B 的推到 B 账号；新增 `clearPendingSync()` 并在 logout/unbindOnline 调用。
+- 跨账号串数据：`pendingChanges` 原为模块级单例，登出清空会丢降级期积压变更、不清空又串到别的账号；现队列改按本地 uid 隔离的 Map 并持久化 localStorage，登出用 `resetSyncTimers()`（只停定时器保留队列）、解绑在线用 `clearPendingSync()`（清队列）。
 - LWW 误判「行不存在」：6 个 `lwwMerge*` 用 `err != nil` 判定「不存在→INSERT」，把真实 DB 错误误判；统一改 `errors.Is(err, pgx.ErrNoRows)`。
 - 增量游标竞态：`ServerTime` 在读取远程变更之后才取 `time.Now()`，提交落在「读完成→取游标」窗口的变更会被下次增量跳过；改为在读取前取样，残留的客户端时钟偏移问题另立架构级任务（服务端权威游标）。
 - 后端同步层架构级收口（复盘第三节）：6 份 `lwwMerge*` 样板抽 `mergeByKey` 通用骨架（category 查重分支保留），消灭「ErrNoRows 误判/return err 混淆」类 bug；增量游标改 `REPEATABLE READ` 只读事务取快照时间，消除「读↔取游标」竞态（客户端时钟偏移仍另立服务端权威游标任务）；补 testcontainers 真 Postgres 集成测试 5 条（`go test -tags integration`）网住真实 SQL 语义类 bug。
