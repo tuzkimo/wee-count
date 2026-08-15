@@ -23,4 +23,19 @@ describe("evaluateExpression", () => {
     expect(evaluateExpression("1.234")).toBe(1.23);
     expect(evaluateExpression("1.236")).toBe(1.24);
   });
+  it("乘法", () => {
+    expect(evaluateExpression("3*4")).toBe(12);
+  });
+  it("括号", () => {
+    expect(evaluateExpression("(1+2)*3")).toBe(9);
+  });
+  it("除法", () => {
+    expect(evaluateExpression("10/4")).toBe(2.5);
+  });
+  it("除零返回 null", () => {
+    expect(evaluateExpression("1/0")).toBeNull();
+  });
+  it("禁止函数调用", () => {
+    expect(evaluateExpression("1+constructor")).toBeNull();
+  });
 });
