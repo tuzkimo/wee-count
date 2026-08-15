@@ -1,6 +1,7 @@
 // src/services/sync.ts
 import { apiFetch, hasBaseUrl } from "./api";
 import { getUserDb, getCurrentUserId } from "@/db/userDb";
+import type Database from "@tauri-apps/plugin-sql";
 import type { Account, Transaction, Category, Tag, Ledger } from "@/types";
 
 export interface MemberAliasPayload {
@@ -45,17 +46,28 @@ let syncQueued = false;
 // 游标按本地用户隔离：每个用户有独立 SQLite（{userId}.db），各自数据进度不同，
 // 不能共享一个 last_synced_at，否则 A 同步推进游标后，B 切回来按新游标增量同步，
 // 会跳过 B 本地从未拉取过的数据（团队账本里别人加的数据就是典型场景）。
-function cursorKey(): string {
-  const uid = getCurrentUserId();
+function cursorKeyFor(uid: string | null): string {
   return uid ? `last_synced_at:${uid}` : "last_synced_at";
+}
+
+function cursorKey(): string {
+  return cursorKeyFor(getCurrentUserId());
 }
 
 export function getLastSyncedAt(): string | null {
   return localStorage.getItem(cursorKey());
 }
 
+function getLastSyncedAtFor(uid: string | null): string | null {
+  return localStorage.getItem(cursorKeyFor(uid));
+}
+
 export function setLastSyncedAt(time: string): void {
   localStorage.setItem(cursorKey(), time);
+}
+
+function setLastSyncedAtFor(uid: string | null, time: string): void {
+  localStorage.setItem(cursorKeyFor(uid), time);
 }
 
 /**
@@ -65,7 +77,6 @@ export function setLastSyncedAt(time: string): void {
 export function clearPendingSync(): void {
   pendingChanges = { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
   retryAttempt = 0;
-  isSyncing = false;
   syncQueued = false;
   if (syncTimer) {
     clearTimeout(syncTimer);
@@ -159,7 +170,9 @@ export async function performSync(): Promise<boolean> {
  * 返回是否同步成功（含首次全量同步）；失败时本地变更已重新入队待重试。
  */
 async function doSync(): Promise<boolean> {
-  const lastSyncedAt = getLastSyncedAt();
+  const uid = getCurrentUserId();
+  const db = getUserDb();
+  const lastSyncedAt = getLastSyncedAtFor(uid);
 
   // 从未同步成功过，做全量上传
   if (!lastSyncedAt) {
@@ -215,14 +228,14 @@ async function doSync(): Promise<boolean> {
   }
 
   try {
-    await applyRemoteChanges(res.data.remote_changes);
+    await applyRemoteChanges(res.data.remote_changes, db, uid);
   } catch (e) {
     console.warn("[sync] applyRemoteChanges failed:", e);
     await markSyncResult(false);
     scheduleRetry();
     return false;
   }
-  setLastSyncedAt(res.data.server_time);
+  setLastSyncedAtFor(uid, res.data.server_time);
 
   // 通知 TransactionList 刷新
   const { useAuthStore } = await import("@/stores/auth");
@@ -246,8 +259,7 @@ async function markSyncResult(ok: boolean): Promise<void> {
 /**
  * Apply remote changes to local SQLite (LWW merge)
  */
-export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
-  const db = getUserDb();
+export async function applyRemoteChanges(remote: SyncPayload, db: Database | null = getUserDb(), uid: string | null = getCurrentUserId()): Promise<void> {
   if (!db) return;
 
   for (const ledger of (remote.ledgers || [])) {
@@ -386,7 +398,7 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
   // 服务端 payload 带 setter_user_id 标识，apply 时过滤 setter=me 再写本地。
   // 必须与 collectMemberAliasesForSync 的 setter 取值一致（优先 server_user_id），
   // 否则上传用 server_user_id、下载用本地 user.id，两者不等会把别名全跳过。
-  const myUserId = (await authServerUserId()) || getCurrentUserId() || "";
+  const myUserId = (await authServerUserId()) || uid || "";
   for (const alias of (remote.member_aliases || [])) {
     if (alias.setter_user_id !== myUserId) continue;
     const { getMemberAlias, setMemberAlias } = await import("@/db/userDb");

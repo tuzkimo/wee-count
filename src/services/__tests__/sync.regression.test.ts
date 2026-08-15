@@ -112,6 +112,30 @@ describe("clearPendingSync", () => {
   });
 });
 
+describe("登出打断在途同步", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    getCurrentUserId.mockReturnValue("u1");
+    vi.clearAllMocks();
+  });
+
+  it("登出后 getUserDb 返回 null 时，直接传快照 db 调用 applyRemoteChanges 仍写入该 db", async () => {
+    // 回归：旧 clearPendingSync 把 isSyncing=false，登出+切用户后旧同步的 applyRemoteChanges
+    // 会读 getUserDb()（新用户库），把旧账号远端数据写进新账号库。
+    const dbA = { select: vi.fn().mockResolvedValue([]), execute: vi.fn().mockResolvedValue(undefined) };
+    const { getUserDb } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue(null); // 登出后 getUserDb 返回 null
+
+    // 直接传快照 db 调用，应仍写入 dbA 而非读取全局 getUserDb()
+    await applyRemoteChanges({
+      ledgers: [{ id: "l1", name: "x", type: "personal", owner_id: "uA", team_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", is_deleted: false }],
+      accounts: [], tags: [], categories: [], transactions: [], member_aliases: [],
+    }, dbA as never, "uA");
+
+    expect(dbA.execute).toHaveBeenCalled();
+  });
+});
+
 describe("applyRemoteChanges 标签 LWW", () => {
   beforeEach(() => {
     localStorage.clear();
