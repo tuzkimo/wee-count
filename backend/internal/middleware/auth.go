@@ -40,6 +40,13 @@ func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 				return
 			}
 
+			// 只接受 access token：refresh token（typ=refresh，30 天）不得直接访问受保护路由，
+			// 否则拿到 refresh 即可绕过 15 分钟 access 过期机制（与 Refresh 的 typ=="refresh" 成对）。
+			if typ, _ := claims["typ"].(string); typ != "access" {
+				http.Error(w, `{"error":"invalid token type"}`, http.StatusUnauthorized)
+				return
+			}
+
 			userID, ok := claims["sub"].(string)
 			if !ok {
 				http.Error(w, `{"error":"invalid user id in token"}`, http.StatusUnauthorized)

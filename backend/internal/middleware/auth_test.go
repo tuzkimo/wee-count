@@ -35,6 +35,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": "test-user-id",
+		"typ": "access",
 		"iat": time.Now().Unix(),
 		"exp": time.Now().Add(15 * time.Minute).Unix(),
 	})
@@ -72,5 +73,28 @@ func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 for expired token, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddleware_RejectsRefreshToken(t *testing.T) {
+	handler := AuthMiddleware("secret")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "test-user-id",
+		"typ": "refresh",
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(30 * 24 * time.Hour).Unix(),
+	})
+	tokenStr, _ := token.SignedString([]byte("secret"))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("refresh token 不应能访问受保护路由，got %d", rec.Code)
 	}
 }
