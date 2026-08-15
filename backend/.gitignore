@@ -3,4 +3,5 @@
 
 # 本地构建产物
 *.exe
-server
+# 只忽略 backend 根目录的编译产物二进制，不误伤源码目录 backend/cmd/server/
+/server
