@@ -44,6 +44,7 @@
 - `GetMe` 漏查 `rows.Err()`：迭代中途错误被静默吞掉返回截断结果；现已补检查。
 - 缺复合索引：`categories(ledger_id, updated_at)`、`ledgers(team_id)`、`team_members(user_id)` 缺失致团队/账本多了全表扫；迁移 007 补齐。
 - Docker 供应链加固：移除 `GOSUMDB=off`（恢复 go.sum 校验）、运行阶段切非 root 用户、Postgres/Redis 端口收窄到 `127.0.0.1`、Redis 加 `--requirepass` 并新增 `REDIS_PASSWORD` 环境变量（Go 侧独立读取，地址与密码解耦）。
+- 输入校验硬化：`/auth/register`、`/auth/login`、`/auth/refresh`、`/auth/profile`、`/teams`、`/teams/join` 的 JSON body 统一用 `http.MaxBytesReader` 限 1MB（防超大 body DoS）；register 的 username/nickname 与建团队 name 超 100 字符返回 400；注册遇用户名已占用改回通用话术「username unavailable」（不再回显「already registered」，防账号枚举）。
 
 - 流水列表按天分组改用本地时区取日期 key，修复东八区 0–8 点流水被归到上一天的问题。
 - 编辑收入类型流水时，分类不再被默认分类覆盖，正确回显原分类。

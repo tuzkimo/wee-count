@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,15 +12,26 @@ import (
 	"wee-count/backend/internal/service"
 )
 
-type AuthHandler struct {
-	svc *service.AuthService
+// authService 抽象 AuthHandler 依赖的 service 方法，便于 handler 层单测
+// 注入 mock 以覆盖错误映射路径（如账号枚举话术）。
+type authService interface {
+	Register(ctx context.Context, req model.RegisterRequest) (*model.AuthResponse, error)
+	Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error)
+	Refresh(ctx context.Context, req model.RefreshRequest) (*model.AuthResponse, error)
+	GetMe(ctx context.Context, userID string) (*service.MeResponse, error)
+	UpdateProfile(ctx context.Context, userID string, req model.UpdateProfileRequest) (*model.User, error)
 }
 
-func NewAuthHandler(svc *service.AuthService) *AuthHandler {
+type AuthHandler struct {
+	svc authService
+}
+
+func NewAuthHandler(svc authService) *AuthHandler {
 	return &AuthHandler{svc: svc}
 }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB 上限，防超大 body DoS
 	var req model.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -29,10 +41,14 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
+	if len(req.Username) > 100 || len(req.Nickname) > 100 {
+		writeError(w, http.StatusBadRequest, "username or nickname too long")
+		return
+	}
 
 	resp, err := h.svc.Register(r.Context(), req)
 	if errors.Is(err, service.ErrUsernameTaken) {
-		writeError(w, http.StatusConflict, "username already registered")
+		writeError(w, http.StatusConflict, "username unavailable")
 		return
 	}
 	if err != nil {
@@ -44,6 +60,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req model.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -68,6 +85,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req model.RefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -109,6 +127,7 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req model.UpdateProfileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

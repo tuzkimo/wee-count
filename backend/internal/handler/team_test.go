@@ -3,8 +3,10 @@ package handler
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +16,23 @@ func TestCreateTeamHandler_MissingName(t *testing.T) {
 	mux.HandleFunc("POST /teams", h.Create)
 
 	req := httptest.NewRequest("POST", "/teams", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(setUserID(req.Context(), "test-user"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestCreateTeamHandler_NameTooLong(t *testing.T) {
+	h := &TeamHandler{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /teams", h.Create)
+
+	body, _ := json.Marshal(map[string]string{"name": strings.Repeat("x", 101)})
+	req := httptest.NewRequest("POST", "/teams", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(setUserID(req.Context(), "test-user"))
 	rec := httptest.NewRecorder()

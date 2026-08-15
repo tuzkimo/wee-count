@@ -27,6 +27,7 @@ type createTeamRequest struct {
 func (h *TeamHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB 上限，防超大 body DoS
 	var req createTeamRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -34,6 +35,10 @@ func (h *TeamHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "team name is required")
+		return
+	}
+	if len(req.Name) > 100 {
+		writeError(w, http.StatusBadRequest, "team name too long")
 		return
 	}
 
@@ -81,6 +86,7 @@ type joinRequest struct {
 func (h *TeamHandler) Join(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req joinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
