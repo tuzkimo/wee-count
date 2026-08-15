@@ -1,17 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import {
-  X,
-  Building2,
-  CreditCard,
-  Smartphone,
-  Banknote,
-  Wallet,
-  Scale,
-} from "lucide-vue-next";
+import { X } from "lucide-vue-next";
 import type { AccountType } from "@/types";
-import { ACCOUNT_CATEGORY, ACCOUNT_TYPE_LABELS } from "@/types";
-import { computed } from "vue";
+import AccountFormFields from "@/components/AccountFormFields.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -38,31 +29,6 @@ const initialBalance = ref("0");
 const creditLimit = ref("");
 const repaymentDay = ref("");
 const color = ref("#3b82f6");
-
-const ASSET_TYPES: { type: AccountType; icon: typeof Building2 }[] = [
-  { type: "cash", icon: Banknote },
-  { type: "bank", icon: Building2 },
-  { type: "digital", icon: Smartphone },
-];
-
-const LIABILITY_TYPES: { type: AccountType; icon: typeof Building2 }[] = [
-  { type: "credit_card", icon: CreditCard },
-  { type: "huabei", icon: Wallet },
-  { type: "meituan_monthly", icon: Wallet },
-  { type: "other_loan", icon: Scale },
-];
-
-const COLORS = [
-  "#3b82f6", "#ef4444", "#22c55e", "#f59e0b",
-  "#8b5cf6", "#ec4899", "#06b6d4", "#64748b",
-];
-
-const isLiability = computed(() => ACCOUNT_CATEGORY[accountType.value] === "liability");
-
-function switchCategory(tab: "asset" | "liability") {
-  categoryTab.value = tab;
-  accountType.value = tab === "asset" ? "bank" : "credit_card";
-}
 
 // 重置表单
 watch(() => props.visible, (v) => {
@@ -117,122 +83,15 @@ function handleSubmit() {
           </button>
         </div>
 
-        <!-- 名称 -->
-        <label class="mb-1 block text-sm font-medium text-text">账户名称</label>
-        <input
-          v-model="name"
-          type="text"
-          placeholder="如：招商储蓄卡"
-          class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
+        <AccountFormFields
+          v-model:name="name"
+          v-model:category-tab="categoryTab"
+          v-model:account-type="accountType"
+          v-model:initial-balance="initialBalance"
+          v-model:credit-limit="creditLimit"
+          v-model:repayment-day="repaymentDay"
+          v-model:color="color"
         />
-
-        <!-- 账户类型 Tab 切换 -->
-        <div class="mb-3 flex rounded-lg bg-gray-100 p-0.5">
-          <button
-            class="flex-1 rounded-md py-1.5 text-sm font-medium transition-colors"
-            :class="
-              categoryTab === 'asset'
-                ? 'bg-surface text-text shadow-sm'
-                : 'text-text-secondary'
-            "
-            @click="switchCategory('asset')"
-          >
-            资产账户
-          </button>
-          <button
-            class="flex-1 rounded-md py-1.5 text-sm font-medium transition-colors"
-            :class="
-              categoryTab === 'liability'
-                ? 'bg-surface text-text shadow-sm'
-                : 'text-text-secondary'
-            "
-            @click="switchCategory('liability')"
-          >
-            负债账户
-          </button>
-        </div>
-
-        <!-- 资产类型 -->
-        <div v-if="categoryTab === 'asset'" class="mb-4 grid grid-cols-3 gap-2">
-          <button
-            v-for="item in ASSET_TYPES"
-            :key="item.type"
-            class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-2.5 text-xs transition-colors"
-            :class="
-              accountType === item.type
-                ? 'bg-primary text-white'
-                : 'bg-gray-100 text-text-secondary'
-            "
-            @click="accountType = item.type"
-          >
-            <component :is="item.icon" :size="18" />
-            <span>{{ ACCOUNT_TYPE_LABELS[item.type] }}</span>
-          </button>
-        </div>
-
-        <!-- 负债类型 -->
-        <div v-if="categoryTab === 'liability'" class="mb-4 grid grid-cols-4 gap-2">
-          <button
-            v-for="item in LIABILITY_TYPES"
-            :key="item.type"
-            class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-2.5 text-xs transition-colors"
-            :class="
-              accountType === item.type
-                ? 'bg-primary text-white'
-                : 'bg-gray-100 text-text-secondary'
-            "
-            @click="accountType = item.type"
-          >
-            <component :is="item.icon" :size="18" />
-            <span>{{ ACCOUNT_TYPE_LABELS[item.type] }}</span>
-          </button>
-        </div>
-
-        <!-- 初始余额/初始欠款 -->
-        <label class="mb-1 block text-sm font-medium text-text">
-          {{ isLiability ? "初始欠款" : "初始余额" }}
-        </label>
-        <input
-          v-model="initialBalance"
-          type="number"
-          step="0.01"
-          placeholder="0.00"
-          class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-        />
-
-        <!-- 负债条件字段 -->
-        <template v-if="isLiability">
-          <label class="mb-1 block text-sm font-medium text-text">信用额度（选填）</label>
-          <input
-            v-model="creditLimit"
-            type="number"
-            step="0.01"
-            placeholder="如：50000"
-            class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-          />
-          <label class="mb-1 block text-sm font-medium text-text">还款日（选填）</label>
-          <input
-            v-model="repaymentDay"
-            type="number"
-            min="1"
-            max="31"
-            placeholder="如：15"
-            class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-          />
-        </template>
-
-        <!-- 颜色选择 -->
-        <label class="mb-2 block text-sm font-medium text-text">颜色标记</label>
-        <div class="mb-4 flex gap-2">
-          <button
-            v-for="c in COLORS"
-            :key="c"
-            class="h-8 w-8 rounded-full border-2 transition-transform"
-            :class="color === c ? 'scale-110 border-gray-800' : 'border-transparent'"
-            :style="{ backgroundColor: c }"
-            @click="color = c"
-          />
-        </div>
 
         <!-- 提交 -->
         <button

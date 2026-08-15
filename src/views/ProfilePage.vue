@@ -53,11 +53,9 @@ function onCropperError() {
 const avatarOptions = ["😀", "🐱", "🐶", "🦊", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦", "🐤", "🦄", "🐌", "🐛", "🦋"];
 
 const saving = ref(false);
-const saved = ref(false);
 
 async function handleSave(): Promise<void> {
   saving.value = true;
-  saved.value = false;
   try {
     await auth.updateProfile({
       nickname: nickname.value.trim() || undefined,
