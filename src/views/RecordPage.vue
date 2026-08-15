@@ -16,6 +16,7 @@ import CalculatorKeypad from "@/components/CalculatorKeypad.vue";
 import DateTimePicker from "@/components/DateTimePicker.vue";
 import CategorySheet from "@/components/CategorySheet.vue";
 import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
+import { evaluateExpression } from "@/utils/expression";
 import { getCurrentUserId } from "@/db/userDb";
 import { useAuthStore } from "@/stores/auth";
 import type { Account, Category, Tag, TransactionType } from "@/types";
@@ -80,20 +81,7 @@ const availableAccounts = computed(() =>
 );
 
 // 表达式求值结果
-const calcResult = computed<number | null>(() => {
-  const expr = expression.value.trim();
-  if (!expr || /[+\-.]$/.test(expr)) return null;
-  // 安全求值：只允许数字、+、-、.
-  if (!/^[\d.\-+]+$/.test(expr)) return null;
-  try {
-    // 用 Function 安全求值
-    const result = new Function(`return (${expr})`)() as number;
-    if (isNaN(result) || result <= 0) return null;
-    return Math.round(result * 100) / 100;
-  } catch {
-    return null;
-  }
-});
+const calcResult = computed(() => evaluateExpression(expression.value));
 
 const isValid = computed(() => calcResult.value !== null);
 
