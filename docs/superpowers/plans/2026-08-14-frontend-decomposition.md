@@ -229,7 +229,7 @@ import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, isCrossMe
 import type { Transaction } from "@/types";
 
 function tx(partial: Partial<Transaction>): Transaction {
-  return { id: "t1", ledger_id: "l1", user_id: "u1", amount: 0, type: "expense", occurred_at: "", created_at: "", updated_at: "", is_deleted: false, ...partial };
+  return { id: "t1", ledger_id: "l1", user_id: "u1", amount: 0, type: "expense", from_account_id: null, to_account_id: null, category_id: null, note: null, occurred_at: "", created_at: "", updated_at: "", is_deleted: false, ...partial };
 }
 
 describe("getTxIcon", () => {
