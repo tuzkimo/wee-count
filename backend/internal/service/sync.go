@@ -251,7 +251,7 @@ func (s *SyncService) lwwMergeLedger(ctx context.Context, tx dbQuerier, userID s
 		return nil
 	}
 	_, err = tx.Exec(ctx,
-		`UPDATE ledgers SET name=$1, type=$2, updated_at=$3 WHERE id=$4`,
+		`UPDATE ledgers SET name=$1, type=$2, updated_at=$3, server_seq = nextval('global_server_seq') WHERE id=$4`,
 		l.Name, l.Type, l.UpdatedAt, l.ID,
 	)
 	return err
@@ -271,7 +271,7 @@ func (s *SyncService) lwwMergeAccount(ctx context.Context, tx dbQuerier, userID 
 		},
 		func() error {
 			_, err := tx.Exec(ctx,
-				`UPDATE accounts SET name=$1, type=$2, category=$3, initial_balance=$4, credit_limit=$5, repayment_day=$6, color=$7, updated_at=$8, is_deleted=$9 WHERE id=$10`,
+				`UPDATE accounts SET name=$1, type=$2, category=$3, initial_balance=$4, credit_limit=$5, repayment_day=$6, color=$7, updated_at=$8, is_deleted=$9, server_seq = nextval('global_server_seq') WHERE id=$10`,
 				a.Name, a.Type, a.Category, a.InitialBalance, a.CreditLimit, a.RepaymentDay, a.Color, a.UpdatedAt, a.IsDeleted, a.ID,
 			)
 			return err
@@ -294,7 +294,7 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag
 			// 去重合并到旧标签 dupID、丢弃新 id；调用方据此把交易 tag_ids 重映射到 dupID
 			if t.UpdatedAt.After(dupUpdatedAt) {
 				_, err = tx.Exec(ctx,
-					`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
+					`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3, server_seq = nextval('global_server_seq') WHERE id=$4`,
 					t.Name, t.UpdatedAt, t.IsDeleted, dupID)
 				return dupID, err
 			}
@@ -315,7 +315,7 @@ func (s *SyncService) lwwMergeTag(ctx context.Context, tx dbQuerier, t model.Tag
 		return t.ID, nil
 	}
 	_, err = tx.Exec(ctx,
-		`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3 WHERE id=$4`,
+		`UPDATE tags SET name=$1, updated_at=$2, is_deleted=$3, server_seq = nextval('global_server_seq') WHERE id=$4`,
 		t.Name, t.UpdatedAt, t.IsDeleted, t.ID)
 	return t.ID, err
 }
@@ -335,7 +335,7 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID
 			// 去重合并到旧分类 dupID、丢弃新 id；调用方据此把交易 category_id 重映射到 dupID
 			if c.UpdatedAt.After(dupUpdatedAt) {
 				_, err = tx.Exec(ctx,
-					`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
+					`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6, server_seq = nextval('global_server_seq') WHERE id=$7`,
 					c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted, dupID,
 				)
 				return dupID, err
@@ -357,7 +357,7 @@ func (s *SyncService) lwwMergeCategory(ctx context.Context, tx dbQuerier, userID
 		return c.ID, nil
 	}
 	_, err = tx.Exec(ctx,
-		`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6 WHERE id=$7`,
+		`UPDATE categories SET name=$1, type=$2, icon=$3, sort_order=$4, updated_at=$5, is_deleted=$6, server_seq = nextval('global_server_seq') WHERE id=$7`,
 		c.Name, c.Type, c.Icon, c.SortOrder, c.UpdatedAt, c.IsDeleted, c.ID,
 	)
 	return c.ID, err
@@ -378,7 +378,7 @@ func (s *SyncService) lwwMergeTransaction(ctx context.Context, tx dbQuerier, use
 	}
 	update := func() error {
 		_, err := tx.Exec(ctx,
-			`UPDATE transactions SET amount=$1, type=$2, from_account_id=$3, to_account_id=$4, category_id=$5, note=$6, occurred_at=$7, updated_at=$8, is_deleted=$9 WHERE id=$10`,
+			`UPDATE transactions SET amount=$1, type=$2, from_account_id=$3, to_account_id=$4, category_id=$5, note=$6, occurred_at=$7, updated_at=$8, is_deleted=$9, server_seq = nextval('global_server_seq') WHERE id=$10`,
 			t.Amount, t.Type, t.FromAccountID, t.ToAccountID, t.CategoryID, t.Note, t.OccurredAt, t.UpdatedAt, t.IsDeleted, t.ID,
 		)
 		if err != nil {
@@ -743,7 +743,7 @@ func (s *SyncService) lwwMergeMemberAlias(ctx context.Context, tx dbQuerier, set
 		},
 		func() error {
 			_, err := tx.Exec(ctx,
-				`UPDATE member_aliases SET alias_name=$1, updated_at=$2 WHERE setter_user_id=$3 AND target_user_id=$4`,
+				`UPDATE member_aliases SET alias_name=$1, updated_at=$2, server_seq = nextval('global_server_seq') WHERE setter_user_id=$3 AND target_user_id=$4`,
 				ma.AliasName, ma.UpdatedAt, setterUserID, ma.TargetUserID,
 			)
 			return err
