@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -301,5 +302,23 @@ func TestLwwMergeTagDuplicateNameUpdatesExisting(t *testing.T) {
 	}
 	if fq.execSQLContains("INSERT INTO tags") {
 		t.Fatalf("同名标签不应 INSERT；execs=%v", fq.execs)
+	}
+}
+
+// Sec（读）：queryAccountsByIDs 反查父行须带账本归属过滤，防跨账本泄露。
+func TestQueryAccountsByIDsFiltersByLedger(t *testing.T) {
+	s := &SyncService{}
+	fq := &fakeQuerier{}
+	ids := []string{"acc-1"}
+	ledgerIDs := []string{"L1"}
+	if _, err := s.queryAccountsByIDs(context.Background(), fq, ids, ledgerIDs); err != nil {
+		t.Fatal(err)
+	}
+	q := fq.queries[0]
+	if !strings.Contains(q.sql, "ledger_id = ANY($2)") {
+		t.Fatalf("反查 SQL 应带账本归属过滤，got %s", q.sql)
+	}
+	if len(q.args) < 2 || !reflect.DeepEqual(q.args[1], ledgerIDs) {
+		t.Fatalf("应传入 ledgerIDs 作为第二参数，got %v", q.args)
 	}
 }
