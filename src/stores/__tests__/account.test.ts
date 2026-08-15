@@ -102,6 +102,19 @@ describe("accountStore", () => {
 
       expect(store.totalBalance).toBe(250);
     });
+
+    it("should round totalBalance to avoid float precision error (0.1 + 0.2)", async () => {
+      const rows = [
+        { ...makeAccount({ id: "a1", current_balance: 0.1 }), is_deleted: 0 },
+        { ...makeAccount({ id: "a2", current_balance: 0.2 }), is_deleted: 0 },
+      ];
+      mockDb.select.mockResolvedValueOnce(rows);
+
+      const store = useAccountStore();
+      await store.fetchAll("pl-1");
+
+      expect(store.totalBalance).toBe(0.3);
+    });
   });
 
   describe("netAssets", () => {

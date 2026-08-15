@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { getUserDb } from "@/db/userDb";
 import { enqueueSync } from "@/services/sync";
+import { round2 } from "@/utils/transaction";
 import type { Account, AccountType } from "@/types";
 
 const BALANCE_QUERY = `
@@ -31,22 +32,26 @@ export const useAccountStore = defineStore("account", () => {
   const accounts = ref<Account[]>([]);
 
   const totalBalance = computed(() =>
-    accounts.value.reduce((sum, a) => sum + (a.current_balance ?? 0), 0)
+    round2(accounts.value.reduce((sum, a) => sum + (a.current_balance ?? 0), 0))
   );
 
   const assetsTotal = computed(() =>
-    accounts.value
-      .filter((a) => a.category === "asset")
-      .reduce((sum, a) => sum + (a.current_balance ?? 0), 0)
+    round2(
+      accounts.value
+        .filter((a) => a.category === "asset")
+        .reduce((sum, a) => sum + (a.current_balance ?? 0), 0)
+    )
   );
 
   const liabilitiesTotal = computed(() =>
-    accounts.value
-      .filter((a) => a.category === "liability")
-      .reduce((sum, a) => sum + (a.current_balance ?? 0), 0)
+    round2(
+      accounts.value
+        .filter((a) => a.category === "liability")
+        .reduce((sum, a) => sum + (a.current_balance ?? 0), 0)
+    )
   );
 
-  const netAssets = computed(() => assetsTotal.value + liabilitiesTotal.value);
+  const netAssets = computed(() => round2(assetsTotal.value + liabilitiesTotal.value));
 
   async function fetchAll(ledgerId: string): Promise<void> {
     const db = getUserDb();

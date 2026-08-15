@@ -26,6 +26,7 @@
 - 远端合并丢 `note`：`applyRemoteChanges` 的 transactions INSERT/UPDATE 无 `note` 列，跨设备备注被静默清空；现补 `note` 列及 `tx.note ?? null`。
 - 登出打断在途同步跨账号污染：`doSync` 全程用全局 `getUserDb()`/`getCurrentUserId()`，慢同步中登出+切用户时旧同步把旧账号远端数据写进新账号库、游标写错键；现 `doSync` 开头快照 uid/db 一路传参，`clearPendingSync` 不再复位 `isSyncing`（在途同步自然结束、`syncQueued` 补跑）。
 - `mergeChanges` 字典序比较：`mergeChanges` 用 `item.updated_at > target.updated_at` 字符串比较，空格格式（`datetime('now')`）与 ISO 混用时因 `" " < "T"` 误判；现改走 `compareTimestamp` 按 epoch 比较。
+- 金额累加浮点误差：`totalIncome`/`totalExpense`/`totalBalance`/`assetsTotal`/`liabilitiesTotal`/`netAssets` 及报表收支汇总、净资产序列等累加点未做两位小数规整，`0.1 + 0.2` 这类浮点累加出现 `0.30000000000000004`；现统一经 `round2`（`src/utils/transaction.ts`）规整，缓解浮点精度误差（不改 schema，桶二才彻底改整数分）。
 
 ### 同步正确性（2026-08-14 复盘修复）
 

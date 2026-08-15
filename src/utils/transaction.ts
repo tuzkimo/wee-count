@@ -27,6 +27,10 @@ export function getTxCategoryName(tx: Transaction): string {
   return tx.category?.name ?? (tx.type === "income" ? "收入" : "支出");
 }
 
+export function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 export function formatAmount(tx: Transaction): string {
   const sign = tx.type === "income" ? "+" : tx.type === "expense" ? "-" : "";
   return `${sign}¥${tx.amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

@@ -377,6 +377,33 @@ describe("transactionStore", () => {
       expect(store.totalIncome).toBe(8000);
       expect(store.totalExpense).toBe(100);
     });
+
+    it("should round totalIncome to avoid float precision error (0.1 + 0.2)", async () => {
+      const rows = [
+        {
+          ...makeTx({ id: "tx-1", amount: 0.1, type: "income" }),
+          is_deleted: 0,
+          category_name: "工资", category_type: "income", category_icon: "💰", category_sort_order: 1,
+          tag_ids: null, tag_names: null,
+          from_account_name: null, from_account_type: null, from_account_color: null,
+          to_account_name: "招行", to_account_type: "bank", to_account_color: "#ef4444",
+        },
+        {
+          ...makeTx({ id: "tx-2", amount: 0.2, type: "income" }),
+          is_deleted: 0,
+          category_name: "工资", category_type: "income", category_icon: "💰", category_sort_order: 1,
+          tag_ids: null, tag_names: null,
+          from_account_name: null, from_account_type: null, from_account_color: null,
+          to_account_name: "招行", to_account_type: "bank", to_account_color: "#ef4444",
+        },
+      ];
+      mockDb.select.mockResolvedValueOnce(rows);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1");
+
+      expect(store.totalIncome).toBe(0.3);
+    });
   });
 });
 

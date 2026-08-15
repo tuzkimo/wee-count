@@ -1,10 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate } from "@/utils/transaction";
+import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate, round2 } from "@/utils/transaction";
 import type { Transaction } from "@/types";
 
 function tx(partial: Partial<Transaction>): Transaction {
   return { id: "t1", ledger_id: "l1", user_id: "u1", amount: 0, type: "expense", from_account_id: null, to_account_id: null, category_id: null, note: null, occurred_at: "", created_at: "", updated_at: "", is_deleted: false, ...partial };
 }
+
+describe("round2", () => {
+  it("修正浮点累加误差（0.1 + 0.2 → 0.3）", () => {
+    expect(round2(0.1 + 0.2)).toBe(0.3);
+  });
+  it("四舍五入到两位小数", () => {
+    expect(round2(1.005)).toBe(1.01);
+    expect(round2(0.345)).toBe(0.35);
+    expect(round2(2)).toBe(2);
+  });
+});
 
 describe("getTxIcon", () => {
   it("转账返回 🔄", () => expect(getTxIcon(tx({ type: "transfer" }))).toBe("🔄"));

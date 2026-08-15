@@ -5,6 +5,7 @@ import { useAccountStore } from "@/stores/account";
 import type { Transaction, TransactionType } from "@/types";
 import { enqueueSync } from "@/services/sync";
 import { useAuthStore } from "@/stores/auth";
+import { round2 } from "@/utils/transaction";
 
 
 interface TransactionRow {
@@ -136,15 +137,19 @@ export const useTransactionStore = defineStore("transaction", () => {
   let _ledgerId = "";
 
   const totalIncome = computed(() =>
-    transactions.value
-      .filter((t) => t.type === "income")
-      .reduce((sum, t) => sum + t.amount, 0)
+    round2(
+      transactions.value
+        .filter((t) => t.type === "income")
+        .reduce((sum, t) => sum + t.amount, 0)
+    )
   );
 
   const totalExpense = computed(() =>
-    transactions.value
-      .filter((t) => t.type === "expense")
-      .reduce((sum, t) => sum + t.amount, 0)
+    round2(
+      transactions.value
+        .filter((t) => t.type === "expense")
+        .reduce((sum, t) => sum + t.amount, 0)
+    )
   );
 
   async function fetchAll(

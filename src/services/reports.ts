@@ -1,4 +1,5 @@
 import { getUserDb } from "@/db/userDb";
+import { round2 } from "@/utils/transaction";
 
 export type PeriodUnit = "month" | "quarter" | "year" | "twelveMonths";
 export type Granularity = "day" | "month";
@@ -148,7 +149,7 @@ export async function getPeriodTotals(ledgerId: string, range: ReportRange): Pro
     [ledgerId, range.start.toISOString(), range.end.toISOString()]
   );
   const r = rows[0] ?? { income: 0, expense: 0 };
-  return { income: r.income, expense: r.expense, balance: r.income - r.expense };
+  return { income: round2(r.income), expense: round2(r.expense), balance: round2(r.income - r.expense) };
 }
 
 export function computeDeltas(
@@ -171,13 +172,13 @@ export function buildBreakdown(
     total: r.total,
     percent: 0,
   }));
-  const total = list.reduce((s, it) => s + it.total, 0);
+  const total = round2(list.reduce((s, it) => s + it.total, 0));
   for (const it of list) it.percent = total > 0 ? Math.round((it.total / total) * 1000) / 10 : 0;
   const top = list.slice(0, 6);
   const rest = list.slice(6);
   const segments = [...top];
   if (rest.length > 0) {
-    const restTotal = rest.reduce((s, it) => s + it.total, 0);
+    const restTotal = round2(rest.reduce((s, it) => s + it.total, 0));
     segments.push({
       id: "other", name: "其他", icon: null,
       total: restTotal,
@@ -221,10 +222,10 @@ export function buildNetAssetSeries(
   let acc = baseline;
   for (const l of labels) {
     const f = flowBy.get(l);
-    if (f) acc += (f.income ?? 0) - (f.expense ?? 0);
+    if (f) acc = round2(acc + (f.income ?? 0) - (f.expense ?? 0));
     const init = initBy.get(l);
-    if (init !== undefined) acc += init;
-    values.push(Math.round(acc * 100) / 100);
+    if (init !== undefined) acc = round2(acc + init);
+    values.push(acc);
   }
   return values;
 }
@@ -253,7 +254,7 @@ export async function getNetAssetSeries(
     db.select<{ v: number }[]>(BASELINE_FLOWS_SQL, [ledgerId, range.start.toISOString()]),
     db.select<{ v: number }[]>(BASELINE_ACCOUNTS_SQL, [ledgerId, range.start.toISOString()]),
   ]);
-  const baseline = (flowRows[0]?.v ?? 0) + (accRows[0]?.v ?? 0);
+  const baseline = round2((flowRows[0]?.v ?? 0) + (accRows[0]?.v ?? 0));
   const [flows, initials] = await Promise.all([
     db.select<{ bucket: string; income: number; expense: number }[]>(
       TREND_SQL(granularity),
