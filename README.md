@@ -17,6 +17,7 @@
 - 邀请码先消费：`JoinByInvite` 在校验成员资格与 INSERT 之前就 `redis.Del`，已成员重进/DB 失败白白烧码；现移到成功加入之后消费。
 - Register TOCTOU：`SELECT EXISTS` 查重与 INSERT 分离，并发同名注册撞唯一约束返回 500；现捕获 `23505` 返回 409。
 - 标签同名去重：`lwwMergeTag` 在 id 未命中时按 `(ledger_id, name, is_deleted=FALSE)` 查重，命中则 UPDATE 旧行而非 INSERT，避免 `UNIQUE(ledger_id,name)` 冲突毒化同步。
+- 前端标签同名去重：`applyRemoteChanges` 的 tags 分支在 id 未命中时按 `(ledger_id, name, is_deleted=0)` 查同名，命中则把 `transaction_tags.tag_id` 改指新 id、删旧标签再插新，避免 `UNIQUE(ledger_id,name)` 冲突（与 categories 分支同款逻辑）。
 - `GetMe` 账本口径与 sync 不一致：`GetMe` 只按 `owner_id` 查账本，经邀请加入的成员重启后拿不到共享账本；现改 owner UNION team_members（与 `getUserLedgerIDs` 同款口径）。
 - `backfillReferenced` 跨账本泄露：反查父行按 id 只查不验账本归属，可把外账本账户金额/额度泄露给已无权限用户；现 `query*ByIDs` 加 `AND ledger_id = ANY($2)` 归属过滤。
 - `mergeByKey` 并发丢更新：合并是「查→判→写」无行锁，两成员并发编辑同一实体较旧写会覆盖较新写（破坏 LWW），并发推同 UUID 新实体撞主键 500；现 SELECT 加 `FOR UPDATE` 行锁，INSERT 撞 `23505` 回退 UPDATE。

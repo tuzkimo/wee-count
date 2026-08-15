@@ -238,6 +238,36 @@ describe("applyRemoteChanges 幂等", () => {
     });
     expect(writeCalls).toHaveLength(0);
   });
+
+  it("同名标签应改指关联并删除本地旧标签，避免 UNIQUE 冲突", async () => {
+    const execute = vi.fn().mockResolvedValue({ rowsAffected: 1, lastInsertId: 1 });
+    const select = vi.fn()
+      .mockResolvedValueOnce([])                    // tags 按 id 查：不存在
+      .mockResolvedValueOnce([{ id: "local-dup" }]); // 同名标签命中
+    const { getUserDb } = await import("@/db/userDb");
+    vi.mocked(getUserDb).mockReturnValue({ select, execute } as never);
+
+    const { applyRemoteChanges } = await import("@/services/sync");
+    await applyRemoteChanges({
+      ledgers: [], accounts: [],
+      tags: [{ id: "remote-tag", ledger_id: "L1", name: "餐饮", updated_at: "2026-07-11T00:00:00Z", is_deleted: false }],
+      categories: [], transactions: [], member_aliases: [],
+    });
+
+    // 断言：改指 transaction_tags.tag_id、DELETE 旧 tag、INSERT 新 tag
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE transaction_tags SET tag_id"),
+      expect.anything()
+    );
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM tags"),
+      expect.anything()
+    );
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO tags"),
+      expect.anything()
+    );
+  });
 });
 
 describe("performSync 互斥（重入保护）", () => {

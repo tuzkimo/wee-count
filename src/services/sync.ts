@@ -298,6 +298,16 @@ export async function applyRemoteChanges(remote: SyncPayload): Promise<void> {
       "SELECT updated_at FROM tags WHERE id = ?", [tag.id]
     );
     if (local.length === 0) {
+      // 检查本地是否已有同名同账本标签（清数据重绑会产生不同 UUID）
+      const dup = await db.select<{ id: string }[]>(
+        "SELECT id FROM tags WHERE ledger_id = ? AND name = ? AND is_deleted = 0 LIMIT 1",
+        [tag.ledger_id, tag.name]
+      );
+      if (dup.length > 0) {
+        // 替换本地重复标签：把关联改指新 id，删除旧标签
+        await db.execute("UPDATE transaction_tags SET tag_id = ? WHERE tag_id = ?", [tag.id, dup[0].id]);
+        await db.execute("DELETE FROM tags WHERE id = ?", [dup[0].id]);
+      }
       await db.execute(
         "INSERT INTO tags (id, ledger_id, name, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?)",
         [tag.id, tag.ledger_id, tag.name, tag.updated_at, tag.is_deleted ? 1 : 0]
