@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { mount, flushPromises } from "@vue/test-utils";
 
 // 从 DateTimePicker.vue 的普通 script 块导入纯函数
-import {
+import DateTimePicker, {
   generateYearMonthOptions,
   generateDayOptions,
   generateHourOptions,
@@ -116,5 +117,51 @@ describe("getDefaultIndex", () => {
 
   it("should return 0 if not found", () => {
     expect(getDefaultIndex(["00", "05"], "07")).toBe(0);
+  });
+});
+
+describe("DateTimePicker confirm", () => {
+  function mountPicker(props: { visible: boolean; modelValue: string }) {
+    return mount(DateTimePicker, {
+      props,
+      global: {
+        // Teleport 内容在 happy-dom 下不在 wrapper 内，stub 成透传
+        stubs: { Teleport: true, Transition: false },
+      },
+    });
+  }
+
+  it("modelValue 年份超出 ±10 年范围时，确认原样回传而非回退到当前年", async () => {
+    const wrapper = mountPicker({ visible: false, modelValue: "2010-05-01T10:00" });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+    await wrapper.find("button.w-full").trigger("click");
+    expect(wrapper.emitted("confirm")?.[0]).toEqual(["2010-05-01T10:00"]);
+  });
+
+  it("越界初始值 + 用户滚动到新日期，确认回传新日期而非原始越界值", async () => {
+    const wrapper = mountPicker({ visible: false, modelValue: "2010-05-01T10:00" });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+
+    // 模拟用户把年月列滚到第一个选项（currentYear+10 年 12 月）
+    const ymScroll = wrapper.find({ ref: "ymScrollRef" });
+    (ymScroll.element as HTMLElement).scrollTop = 0;
+    await ymScroll.trigger("scroll");
+
+    await wrapper.find("button.w-full").trigger("click");
+    const y = new Date().getFullYear();
+    // 回传用户滚动后的新日期，而不是初始越界值 2010-05-01
+    expect(wrapper.emitted("confirm")?.[0]).toEqual([`${y + 10}-12-01T10:00`]);
+  });
+
+  it("modelValue 年月在范围内时，确认仍按选中值拼接", async () => {
+    const y = new Date().getFullYear();
+    const modelValue = `${y}-06-12T14:30`;
+    const wrapper = mountPicker({ visible: false, modelValue });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+    await wrapper.find("button.w-full").trigger("click");
+    expect(wrapper.emitted("confirm")?.[0]).toEqual([modelValue]);
   });
 });

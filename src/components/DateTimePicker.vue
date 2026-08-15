@@ -86,13 +86,13 @@ function getCurrentDefaults(): { year: number; month: number; day: number; hour:
 
 // 生成选项列表
 const currentYear = new Date().getFullYear();
-const yearMonthOptions = generateYearMonthOptions(currentYear);
+const yearMonthOptions = ref<YearMonthOption[]>(generateYearMonthOptions(currentYear));
 
 // 默认选中当前年月
 const defaults = getCurrentDefaults();
-const defaultYearMonth = yearMonthOptions.find(
+const defaultYearMonth = yearMonthOptions.value.find(
   (o) => o.year === defaults.year && o.month === defaults.month
-) ?? yearMonthOptions[0];
+) ?? yearMonthOptions.value[0];
 
 const selectedYearMonth = ref<YearMonthOption>(defaultYearMonth);
 const dayOptions = ref<number[]>(generateDayOptions(defaultYearMonth.year, defaultYearMonth.month));
@@ -127,18 +127,21 @@ function initFromModelValue() {
   const parsed = parseModelValue(props.modelValue);
   const cur = parsed ?? getCurrentDefaults();
 
-  const ymIdx = yearMonthOptions.findIndex(
+  const ymIdx = yearMonthOptions.value.findIndex(
     (o) => o.year === cur.year && o.month === cur.month
   );
   if (ymIdx >= 0) {
-    selectedYearMonth.value = yearMonthOptions[ymIdx];
+    selectedYearMonth.value = yearMonthOptions.value[ymIdx];
   } else {
-    // modelValue 中的年月不在可选范围内，回退到当前年月
-    const fallback = getCurrentDefaults();
-    const fbIdx = yearMonthOptions.findIndex(
-      (o) => o.year === fallback.year && o.month === fallback.month
-    );
-    selectedYearMonth.value = fbIdx >= 0 ? yearMonthOptions[fbIdx] : yearMonthOptions[0];
+    // modelValue 中的年月不在可选范围内：合成该项插入 options 并选中，
+    // 保留原值展示（不再回退当前年月），用户仍可滚动修改
+    const synth: YearMonthOption = {
+      year: cur.year,
+      month: cur.month,
+      label: `${cur.year}年${cur.month}月`,
+    };
+    yearMonthOptions.value.push(synth);
+    selectedYearMonth.value = synth;
   }
 
   dayOptions.value = generateDayOptions(
@@ -154,7 +157,7 @@ function initFromModelValue() {
 async function scrollToSelected() {
   await nextTick();
   if (ymScrollRef.value) {
-    const ymIdx = yearMonthOptions.findIndex(
+    const ymIdx = yearMonthOptions.value.findIndex(
       (o) => o.year === selectedYearMonth.value.year && o.month === selectedYearMonth.value.month
     );
     if (ymIdx >= 0) ymScrollRef.value.scrollTop = ymIdx * ITEM_HEIGHT;
@@ -188,8 +191,8 @@ watch(
 function onYearMonthScroll() {
   if (!ymScrollRef.value) return;
   const idx = Math.round(ymScrollRef.value.scrollTop / ITEM_HEIGHT);
-  if (idx >= 0 && idx < yearMonthOptions.length) {
-    selectedYearMonth.value = yearMonthOptions[idx];
+  if (idx >= 0 && idx < yearMonthOptions.value.length) {
+    selectedYearMonth.value = yearMonthOptions.value[idx];
   }
 }
 
