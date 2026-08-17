@@ -9,6 +9,10 @@
 
 ## 已知问题修复记录
 
+### 团队账本归属串改修复（2026-08-17）
+
+- 团队成员重新绑定在线同步时 `migrateLocalDataToServer` 整本改写归属：迁移源用 `SELECT * FROM ledgers WHERE is_deleted = 0 LIMIT 1` 不看类型，一旦选到团队账本（owner 是团队创建者而非当前用户），迁移分支就把团队账本里的账户/分类按账本整体 `SET owner_id = 当前用户`、并把流水按 `user_id = 团队 owner` 翻到当前用户名下——即「一个成员的流水和账户都变成另一个成员」。现迁移源限定 `type='personal'`，账户/分类归属改写加 `AND owner_id = 旧本地 owner`（与流水已有的 `WHERE user_id = 旧 owner` 对齐），只改写旧本地用户自己的数据、绝不碰团队账本中他人的归属。
+
 ### 二次检查修复（2026-08-15）
 
 - `/sync` 请求体无上限：其余 body 端点都加 `MaxBytesReader`，唯独 sync 没有；任意注册用户发超大 JSON 可撑爆服务端内存并长时间独占全局 advisory 写锁（横向 DoS）。现加 `MaxBytesReader`（32MB，比 auth/team 的 1MB 宽以容纳全量首同步载荷）。

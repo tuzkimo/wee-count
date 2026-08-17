@@ -13,7 +13,7 @@ export async function migrateLocalDataToServer(
   if (!db) return // ponytail: no local session, nothing to migrate
   // 外键约束要求先有父行再改子行，因此用"插入新行 → 更新子表 → 删除旧行"三步走
   const oldRows = await db.select<{ id: string; name: string; type: string; owner_id: string; team_id: string | null; created_at: string; updated_at: string; is_deleted: number }[]>(
-    'SELECT * FROM ledgers WHERE is_deleted = 0 LIMIT 1'
+    "SELECT * FROM ledgers WHERE is_deleted = 0 AND type = 'personal' LIMIT 1"
   )
   if (oldRows.length === 0) return
 
@@ -22,7 +22,7 @@ export async function migrateLocalDataToServer(
 
   // 重新绑定同一账号时，本地账本 ID 已是服务端 ID，跳过迁移
   if (oldLedgerId === serverLedgerId) {
-    await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
+    await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2 AND owner_id = $3', [serverUserId, serverLedgerId, oldOwnerId])
     await db.execute(
       'UPDATE transactions SET user_id = $1 WHERE user_id = $2',
       [serverUserId, oldOwnerId]
@@ -49,9 +49,10 @@ export async function migrateLocalDataToServer(
   // 3. 删除旧账本行（已经没有子行引用它）
   await db.execute('DELETE FROM ledgers WHERE id = $1', [oldLedgerId])
 
-  // 4. 更新所有 owner_id / user_id 为服务端用户 ID
-  await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
-  await db.execute('UPDATE categories SET owner_id = $1 WHERE ledger_id = $2', [serverUserId, serverLedgerId])
+  // 4. 更新「旧本地用户自己的」owner_id / user_id 为服务端用户 ID
+  //    （按 owner_id/user_id 限定，绝不碰团队账本里其他成员的归属）
+  await db.execute('UPDATE accounts SET owner_id = $1 WHERE ledger_id = $2 AND owner_id = $3', [serverUserId, serverLedgerId, oldOwnerId])
+  await db.execute('UPDATE categories SET owner_id = $1 WHERE ledger_id = $2 AND owner_id = $3', [serverUserId, serverLedgerId, oldOwnerId])
   await db.execute(
     'UPDATE transactions SET user_id = $1 WHERE user_id = $2',
     [serverUserId, oldOwnerId]
