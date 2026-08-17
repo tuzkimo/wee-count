@@ -59,9 +59,9 @@ describe("fetchWithTimeout", () => {
 
     const api = await import("@/services/api");
     api.setBaseUrl("http://x");
-    api.setTokens("access", "refresh"); // 写入 localStorage 的 refresh_token
+    api.setTokens("u1", "access", "refresh"); // 写入 localStorage 的 refresh_token
 
-    const p = api.tryRestoreSession();
+    const p = api.tryRestoreSession("u1");
     await vi.advanceTimersByTimeAsync(5000);
     await expect(p).resolves.toBeNull();
   });

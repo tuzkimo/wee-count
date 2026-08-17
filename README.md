@@ -11,6 +11,7 @@
 
 ### 团队账本归属串改修复（2026-08-17）
 
+- 多账号 token 串号（主因）：refresh_token 单份存储（`tokens.json` 单一 key），同设备用户2绑定后覆盖用户1的 token，用户1重新登录 `restoreOnlineSession` 错误恢复成用户2的会话、`mode='online'`，后续 `performSync` 全挂在用户2的 JWT 下，后端 `lwwMergeTransaction/Account` 的「INSERT 用认证 userID 当归属」把用户1的新流水/账户写成用户2——即「一个成员的流水和账户都变成另一个成员」（且「清空数据重登」后从服务端拉到的是已被污染的用户2归属）。现 refresh_token 按 `server_user_id` 独立存取（`tokenStorage` key 带用户 id，`api.setTokens/tryRestoreSession/refreshAccessToken` 全程按用户读写），并在 `restoreOnlineSession` 加防御：恢复出的会话 `id !== 本地 server_user_id` 时清 token、绝不切 online。
 - 团队成员重新绑定在线同步时 `migrateLocalDataToServer` 整本改写归属：迁移源用 `SELECT * FROM ledgers WHERE is_deleted = 0 LIMIT 1` 不看类型，一旦选到团队账本（owner 是团队创建者而非当前用户），迁移分支就把团队账本里的账户/分类按账本整体 `SET owner_id = 当前用户`、并把流水按 `user_id = 团队 owner` 翻到当前用户名下——即「一个成员的流水和账户都变成另一个成员」。现迁移源限定 `type='personal'`，账户/分类归属改写加 `AND owner_id = 旧本地 owner`（与流水已有的 `WHERE user_id = 旧 owner` 对齐），只改写旧本地用户自己的数据、绝不碰团队账本中他人的归属。
 
 ### 二次检查修复（2026-08-15）

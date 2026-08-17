@@ -6,6 +6,8 @@ let baseUrl: string | null = null
 
 let accessToken: string | null = null
 let refreshToken: string | null = null
+// 当前会话归属的服务端用户 id：refresh_token 按它独立存取，避免同设备多账号串号。
+let currentUserId: string | null = null
 
 // refresh 单飞：并发 401 时共享同一个 refresh promise，避免各自触发 refresh 导致竞态。
 let refreshInFlight: Promise<boolean> | null = null
@@ -40,20 +42,23 @@ export async function fetchWithTimeout(
   }
 }
 
-export function setTokens(access: string, refresh: string): void {
+export function setTokens(userId: string, access: string, refresh: string): void {
+  currentUserId = userId
   accessToken = access
   refreshToken = refresh
-  void writeRefreshToken(refresh)
+  void writeRefreshToken(userId, refresh)
 }
 
 export function clearTokens(): void {
+  if (currentUserId) void deleteRefreshToken(currentUserId)
+  currentUserId = null
   accessToken = null
   refreshToken = null
-  void deleteRefreshToken()
 }
 
 export async function getStoredRefreshToken(): Promise<string | null> {
-  return readRefreshToken()
+  if (!currentUserId) return null
+  return readRefreshToken(currentUserId)
 }
 
 async function refreshAccessToken(): Promise<boolean> {
@@ -72,7 +77,7 @@ async function refreshAccessToken(): Promise<boolean> {
       const data = await res.json()
       accessToken = data.access_token
       refreshToken = data.refresh_token
-      void writeRefreshToken(data.refresh_token)
+      if (currentUserId) void writeRefreshToken(currentUserId, data.refresh_token)
       return true
     } catch {
       return false
@@ -161,7 +166,7 @@ export async function login(username: string, password: string): Promise<AuthRes
     throw new Error(body.error || '登录失败')
   }
   const data: AuthResponse = await res.json()
-  setTokens(data.access_token, data.refresh_token)
+  setTokens(data.user.id, data.access_token, data.refresh_token)
   return data
 }
 
@@ -180,7 +185,7 @@ export async function register(
     throw new Error(body.error || '注册失败')
   }
   const data: AuthResponse = await res.json()
-  setTokens(data.access_token, data.refresh_token)
+  setTokens(data.user.id, data.access_token, data.refresh_token)
   return data
 }
 
@@ -200,8 +205,8 @@ export async function updateProfile(data: UpdateProfileRequest): Promise<User> {
   return res.data
 }
 
-export async function tryRestoreSession(): Promise<User | null> {
-  const stored = await getStoredRefreshToken()
+export async function tryRestoreSession(userId: string): Promise<User | null> {
+  const stored = await readRefreshToken(userId)
   if (!stored || !baseUrl) return null
 
   try {
@@ -212,9 +217,10 @@ export async function tryRestoreSession(): Promise<User | null> {
     }, 5000)
     if (!res.ok) return null
     const data = await res.json()
+    currentUserId = userId
     accessToken = data.access_token
     refreshToken = data.refresh_token
-    void writeRefreshToken(data.refresh_token)
+    void writeRefreshToken(userId, data.refresh_token)
     return data.user
   } catch {
     return null

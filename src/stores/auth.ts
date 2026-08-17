@@ -121,7 +121,7 @@ export const useAuthStore = defineStore("auth", () => {
     serverUser: api.AuthResponse
   ): Promise<void> {
     api.setBaseUrl(apiUrl);
-    api.setTokens(serverUser.access_token, serverUser.refresh_token);
+    api.setTokens(serverUser.user.id, serverUser.access_token, serverUser.refresh_token);
 
     await updateLocalUserBinding(
       currentLocalUser.value!.id,
@@ -234,8 +234,15 @@ export const useAuthStore = defineStore("auth", () => {
     if (!user || !user.server_user_id || !user.api_url) return;
 
     api.setBaseUrl(user.api_url);
-    const restored = await api.tryRestoreSession();
+    const restored = await api.tryRestoreSession(user.server_user_id);
     if (restored) {
+      // 防御：恢复出的会话必须属于当前本地用户对应的服务端账号。
+      // 若 token 串号（同设备多账号历史遗留/数据错乱），恢复成他人会致后续同步
+      // 挂在别人身份下、把流水/账户归属写成别人；此时清掉错误 token 且不切 online。
+      if (restored.id !== user.server_user_id) {
+        api.clearTokens();
+        return;
+      }
       onlineUser.value = restored;
       mode.value = 'online';
       stopOnlineRecovery();

@@ -152,6 +152,30 @@ describe("useAuthStore", () => {
     expect(store.onlineUser?.id).toBe("s2");
   });
 
+  it("init 恢复出的会话不属于当前用户时不得切 online（token 串号防串改）", async () => {
+    // 回归：同设备多账号时，若存储的 refresh_token 恢复了别的用户的会话，
+    // 必须拒绝并清理，绝不切 online —— 否则后续同步挂在别人身份下，把流水/账户归属写成别人。
+    const { getLocalUser } = await import("@/db/meta");
+    const api = await import("@/services/api");
+    localStorage.setItem("current_user_id", "u1");
+    (getLocalUser as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "u1", username: "alice", nickname: "Alice", password_hash: "x",
+      api_url: "http://srv", server_user_id: "s1", avatar_url: null,
+      created_at: "", updated_at: "",
+    });
+    // tryRestoreSession 返回了「别人」的会话（s2）
+    (api.tryRestoreSession as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "s2", username: "bob", nickname: "Bob", avatar_url: null,
+      created_at: "", updated_at: "",
+    });
+
+    const store = useAuthStore();
+    await store.init();
+    await vi.waitFor(() => expect(api.clearTokens).toHaveBeenCalled());
+    expect(store.mode).toBe("local");
+    expect(store.onlineUser).toBeNull();
+  });
+
   it("updateProfile 改昵称后刷新 ledger 内存缓存", async () => {
     const { useLedgerStore } = await import("@/stores/ledger");
     const initMock = vi.fn();
