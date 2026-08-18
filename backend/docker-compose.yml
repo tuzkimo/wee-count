@@ -2,6 +2,7 @@
 services:
   api:
     build: .
+    image: ghcr.io/tuzkimo/wee-count-api:latest
     ports: ["8080:8080"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-wee}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wee-count}?sslmode=disable}
