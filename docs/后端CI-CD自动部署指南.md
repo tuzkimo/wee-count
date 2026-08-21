@@ -54,37 +54,22 @@ docker login ghcr.io -u tuzkimo
 
 看到 `Login Succeeded` 即成功。
 
-### 1.3 配置 SSH 密钥 —— 本地电脑 + 服务器
+### 1.3 配置 SSH 密钥 —— 在服务器
 
 目的：让 GitHub Actions 能 SSH 连上你的服务器执行部署命令。
 
-**① 在本地电脑生成密钥：**
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/wee-count-deploy -N ''
-```
-
-会生成两个文件：`wee-count-deploy`（私钥，保密）、`wee-count-deploy.pub`（公钥，可以公开）。
-
-**② 把公钥放到服务器：**
-
-先在本地查看公钥内容：
-
-```bash
-cat ~/.ssh/wee-count-deploy.pub
-```
-
-复制输出的整行内容。然后 SSH 登录服务器，执行：
+SSH 登录服务器后，一次性执行下面命令：生成密钥对，并把公钥加到服务器自己的「允许登录」列表：
 
 ```bash
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
-echo "粘贴刚才复制的公钥整行" >> ~/.ssh/authorized_keys
+ssh-keygen -t ed25519 -f ~/.ssh/wee-count-deploy -N ''
+cat ~/.ssh/wee-count-deploy.pub >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-> 如果你用的是 Linux/Mac 本地，也可以一条命令搞定：`ssh-copy-id -i ~/.ssh/wee-count-deploy.pub -p 29876 tuzkimo@<服务器IP>`。Windows 用户用上面的手动方式。
+> 说明：公钥留在服务器上，表示「允许持有对应私钥的人登录」；私钥你复制一份填到 GitHub 给 Actions 用。因为公钥本来就要放进服务器，直接在服务器上生成最省事，本地电脑完全不参与。
 
-**③ 复制私钥内容（马上要填到 GitHub）：**
+然后查看私钥内容（马上要填到 GitHub）：
 
 ```bash
 cat ~/.ssh/wee-count-deploy
@@ -101,7 +86,7 @@ cat ~/.ssh/wee-count-deploy
 |------|--------|
 | `DEPLOY_HOST` | 服务器公网 IP 或域名，**只要主机名**，不要端口、不要 `user@` |
 | `DEPLOY_USER` | SSH 登录用户名，如 `tuzkimo` |
-| `DEPLOY_SSH_KEY` | 1.3 ③ 复制的私钥全文 |
+| `DEPLOY_SSH_KEY` | 1.3 复制的私钥全文 |
 
 ### 1.5 服务器准备部署目录 —— 在服务器
 
