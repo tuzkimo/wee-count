@@ -23,7 +23,7 @@ func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 			}
 			tokenStr := strings.TrimPrefix(header, "Bearer ")
 
-			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, jwt.ErrSignatureInvalid
 				}

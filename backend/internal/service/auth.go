@@ -217,7 +217,7 @@ func (s *AuthService) Login(ctx context.Context, req model.LoginRequest) (*model
 }
 
 func (s *AuthService) Refresh(ctx context.Context, req model.RefreshRequest) (*model.AuthResponse, error) {
-	token, err := jwt.Parse(req.RefreshToken, func(t *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(req.RefreshToken, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
