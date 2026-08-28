@@ -23,7 +23,7 @@ rm keystore.tmp.b64
 
 > PowerShell 里 `<` 是保留字不可用，`>` 重定向会改写编码，不要用重定向方式处理这一步。
 
-其余三条（密码与 alias，交互式粘贴值，回车结束，与 shell 无关）：
+其余三条（密码与 alias，与 shell 无关）：
 
 ```bash
 gh secret set ANDROID_KEYSTORE_PASSWORD   # storePassword，与 app/key.properties 中一致
@@ -33,6 +33,13 @@ gh secret set ANDROID_KEY_PASSWORD        # keyPassword
 # 确认
 gh secret list
 ```
+
+> **给值方式**：`gh secret set` 只接受 Secret 名一个位置参数，值不能直接跟在名字后面，
+> 否则报 `accepts at most 1 arg(s), received 2`（gh 2.93.0 实测）。三种给值方式：
+> ① 裸命令回车，在 `? Paste your secret:` 提示符粘贴值（推荐，不进 shell 历史）；
+> ② `--body "值"`（明文会被 PowerShell/PSReadLine 历史记录存盘，不推荐）；
+> ③ 管道 `"值" | gh secret set 名字`。
+> 另：参数值里的 `/` 等符号在 PowerShell 中不分割参数，与该报错无关。
 
 预期 `gh secret list` 出现 4 个 `ANDROID_KEY*` Secret。
 
