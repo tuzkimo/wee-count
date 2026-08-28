@@ -31,14 +31,23 @@ describe("utcToLocalDatetimeString", () => {
 
 describe("utcToLocalDateKey", () => {
   it("should return local YYYY-MM-DD, not UTC date", () => {
-    // UTC 2026-07-28T00:00:00Z → 东八区 2026-07-28 08:00，本地日期仍是 07-28
-    expect(utcToLocalDateKey("2026-07-28T00:00:00Z")).toBe("2026-07-28");
+    // 期望值由原生 Date 本地取值计算，不绑定运行环境的时区
+    const d = new Date("2026-07-28T00:00:00Z");
+    const expected = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    expect(utcToLocalDateKey("2026-07-28T00:00:00Z")).toBe(expected);
   });
 
   it("should roll to next local day for early-morning UTC times in positive offset zones", () => {
-    // UTC 2026-07-27T22:00:00Z → 东八区 2026-07-28 06:00
+    // 固定东八区验证跨天滚动：UTC 2026-07-27T22:00:00Z → 本地 2026-07-28 06:00
     // 直接 slice(0,10) 会得到 07-27（错误），本地应为 07-28
-    expect(utcToLocalDateKey("2026-07-27T22:00:00Z")).toBe("2026-07-28");
+    const prevTZ = process.env.TZ;
+    process.env.TZ = "Asia/Shanghai";
+    try {
+      expect(utcToLocalDateKey("2026-07-27T22:00:00Z")).toBe("2026-07-28");
+    } finally {
+      if (prevTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTZ;
+    }
   });
 
   it("should roll to previous local day for late-night UTC times in negative offset zones", () => {
