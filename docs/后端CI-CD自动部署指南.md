@@ -4,10 +4,10 @@
 
 ## 0. 这套流程做了什么
 
-把后端代码 push 到 `main` 分支（且改动涉及 `backend/` 目录）后，GitHub 会自动：
+把后端代码 push 到 `master` 分支（且改动涉及 `backend/` 目录）后，GitHub 会自动：
 
 ```text
-push 到 main
+push 到 master
    │
    ▼
 ① 跑测试 (go test)
@@ -110,7 +110,7 @@ ls -la                   # 确认能看到 docker-compose.yml 和 .env
 ```bash
 git add backend
 git commit -m "feat: 某某改动"
-git push origin main
+git push origin master
 ```
 
 只要改动涉及 `backend/` 目录，部署就自动开始，**无需任何额外操作**。
