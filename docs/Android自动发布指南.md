@@ -5,20 +5,32 @@ Workflow：`.github/workflows/release-android.yml`（推 `v*` tag 触发）
 
 ## 一次性准备（仅需做一次）
 
-签名材料通过 GitHub Secrets 提供，在仓库根目录执行以下命令（需 gh CLI 已登录）：
+签名材料通过 GitHub Secrets 提供，在仓库根目录执行以下命令（需 gh CLI 已登录）。
+
+keystore 转 base64（二选一，按所用 shell）：
+
+```powershell
+# PowerShell（不落临时文件，直接管道）
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("src-tauri\gen\android\wee-count.jks")) | gh secret set ANDROID_KEYSTORE_BASE64
+```
 
 ```bash
-# 1. keystore 转 base64 后存入 Secrets（临时文件用完即删，不留档）
+# Git Bash / macOS / Linux（临时文件用完即删，不留档）
 base64 -w0 src-tauri/gen/android/wee-count.jks > keystore.tmp.b64
 gh secret set ANDROID_KEYSTORE_BASE64 < keystore.tmp.b64
 rm keystore.tmp.b64
+```
 
-# 2. 密码与 alias（执行后按提示粘贴对应值，回车结束）
+> PowerShell 里 `<` 是保留字不可用，`>` 重定向会改写编码，不要用重定向方式处理这一步。
+
+其余三条（密码与 alias，交互式粘贴值，回车结束，与 shell 无关）：
+
+```bash
 gh secret set ANDROID_KEYSTORE_PASSWORD   # storePassword，与 app/key.properties 中一致
 gh secret set ANDROID_KEY_ALIAS           # keyAlias
 gh secret set ANDROID_KEY_PASSWORD        # keyPassword
 
-# 3. 确认
+# 确认
 gh secret list
 ```
 
