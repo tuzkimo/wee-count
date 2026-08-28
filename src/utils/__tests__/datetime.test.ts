@@ -20,9 +20,12 @@ describe("toLocalDatetimeString", () => {
 
 describe("utcToLocalDatetimeString", () => {
   it("should convert UTC ISO to local datetime-local string", () => {
-    const s = utcToLocalDatetimeString("2026-07-28T00:00:00Z");
-    // 东八区 → 2026-07-28T08:00
-    expect(s).toBe("2026-07-28T08:00");
+    // 期望值由原生 Date 本地取值计算，不绑定运行环境的时区
+    const d = new Date("2026-07-28T00:00:00Z");
+    const expected =
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` +
+      `T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    expect(utcToLocalDatetimeString("2026-07-28T00:00:00Z")).toBe(expected);
   });
 });
 
