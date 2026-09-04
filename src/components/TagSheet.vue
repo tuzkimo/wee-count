@@ -41,10 +41,12 @@ const filteredTags = computed(() => {
   return tagStore.tags.filter((t) => t.name.toLowerCase().includes(kw));
 });
 
-// 搜索无结果且输入非空
-const showCreate = computed(() =>
-  search.value.trim().length > 0 && filteredTags.value.length === 0
-);
+// 输入非空且不存在完全同名（忽略大小写）标签时展示新建入口；
+// 前缀命中已有标签（如已有 xxxyy 时输入 xxx）不影响创建
+const showCreate = computed(() => {
+  const name = search.value.trim().toLowerCase();
+  return name.length > 0 && !tagStore.tags.some((t) => t.name.toLowerCase() === name);
+});
 
 function toggle(tag: Tag) {
   const idx = localSelected.value.indexOf(tag.id);

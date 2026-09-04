@@ -467,7 +467,9 @@ async function handleSubmit() {
                     class="rounded bg-primary/15 px-1 text-[10px] text-primary"
                   >匹配</span>
                 </div>
-                <div class="grid grid-cols-8 gap-1.5">
+                <!-- mt-1 给选中态 ring（含 offset 向外溢出 3px）留出空间，
+                     否则 ring 顶部画进 sticky 标题栏的盒子内被其背景盖住 -->
+                <div class="mt-1 grid grid-cols-8 gap-1.5">
                   <button
                     v-for="icon in group.emojis"
                     :key="icon"
