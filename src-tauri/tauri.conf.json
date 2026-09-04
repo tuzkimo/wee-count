@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WeeCount",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "identifier": "cn.tuzkimo.wee-count",
   "build": {
     "beforeDevCommand": "npm run dev",
