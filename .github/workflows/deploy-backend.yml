@@ -58,14 +58,16 @@ jobs:
   deploy:
     needs: build-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
-          port: 29876
+          port: ${{ secrets.DEPLOY_PORT }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
-            cd /home/tuzkimo/wee-count/backend
+            cd ${{ secrets.DEPLOY_PATH }}
             docker compose pull api
             docker compose up -d
