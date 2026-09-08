@@ -76,7 +76,7 @@ JWT_SECRET=<改成随机长字符串>
 ```bash
 docker compose up -d
 # 返回 4xx（缺少请求体）即说明 API 已正常监听
-curl -i http://<服务器IP>:8080/api/v1/auth/register
+curl -i -X POST http://<服务器IP>:8080/api/v1/auth/register
 ```
 
 ## 方式二：源码构建
@@ -113,6 +113,9 @@ App「我的」页 → 在线同步 → 填入 API 地址：
 
 ```
 http://<服务器IP>:8080/api/v1
+
+# 前置 HTTPS 反代时：
+https://<你的域名>/api/v1
 ```
 
 ## HTTPS（生产建议）
@@ -124,9 +127,18 @@ http://<服务器IP>:8080/api/v1
 
 ## 升级
 
+**方式一（免克隆/镜像）**：
+
 ```bash
 docker compose pull api
 docker compose up -d
+```
+
+**方式二（源码构建）**：
+
+```bash
+git pull
+docker compose up -d --build
 ```
 
 数据库迁移随新版本启动自动执行。
@@ -142,3 +154,5 @@ docker compose exec postgres pg_dump -U wee wee-count > wee-count-$(date +%F).sq
 # 恢复
 cat wee-count-2026-09-08.sql | docker compose exec -T postgres psql -U wee wee-count
 ```
+
+以上命令假设 `.env` 使用默认的 `POSTGRES_USER=wee`、`POSTGRES_DB=wee-count`；若你改过这两个值，请对应替换命令中的 `-U wee` 与库名。
