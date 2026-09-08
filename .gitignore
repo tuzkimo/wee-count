@@ -29,3 +29,8 @@ dist-ssr
 
 # SDD scratch workspace
 .superpowers/
+
+# 个人过程文档与运维 SOP（不随公开仓库分发）
+docs/superpowers/
+docs/Android自动发布指南.md
+docs/后端CI-CD自动部署指南.md
