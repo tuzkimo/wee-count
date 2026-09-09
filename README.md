@@ -8,8 +8,9 @@
 
 ## 截图
 
-<!-- TODO(用户): 发布前补充真实截图，建议 4 张（记账页 / 流水首页 / 报表页 / 账户页），
-     存放 docs/screenshots/ 并以 Markdown 图片语法引用 -->
+| 记账 | 流水 | 报表 | 我的 |
+|:---:|:---:|:---:|:---:|
+| ![记账](docs/screenshots/Screenshot_accounting.jpg) | ![流水](docs/screenshots/Screenshot_index.jpg) | ![报表](docs/screenshots/Screenshot_report.jpg) | ![我的](docs/screenshots/Screenshot_me.jpg) |
 
 ## 功能特性
 
