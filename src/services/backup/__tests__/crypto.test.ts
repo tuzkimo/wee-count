@@ -33,7 +33,10 @@ describe("encryptJson/decryptJson", () => {
 
   it("密文被篡改 → decrypt 错误", async () => {
     const boxed = await encryptJson({ x: 1 }, "password123");
-    const tampered = { ...boxed, data: "A" + boxed.data.slice(1) };
+    // 解码为字节并翻转首字节最高位，保证必然改变密文（直接替换 b64 前缀有 ~1.6% 概率不变）
+    const bytes = Uint8Array.from(atob(boxed.data), (c) => c.charCodeAt(0));
+    bytes[0] ^= 0x80;
+    const tampered = { ...boxed, data: btoa(String.fromCharCode(...bytes)) };
     await expect(decryptJson(tampered, "password123")).rejects.toBeInstanceOf(
       BackupError
     );

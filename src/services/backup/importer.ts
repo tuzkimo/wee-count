@@ -81,10 +81,12 @@ export async function readBackup(
 }
 
 function buildInsert(table: string, row: Record<string, unknown>): { sql: string; params: unknown[] } {
+  // 列名来自解密后的 payload（不可信输入），必须引号包裹并转义内部双引号
   const cols = Object.keys(row);
+  const quoted = cols.map((c) => `"${c.replace(/"/g, '""')}"`);
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(", ");
   return {
-    sql: `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`,
+    sql: `INSERT INTO ${table} (${quoted.join(", ")}) VALUES (${placeholders})`,
     params: cols.map((c) => row[c]),
   };
 }

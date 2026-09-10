@@ -149,6 +149,21 @@ describe("restoreBackup", () => {
     expect(restoreMocks.remove).not.toHaveBeenCalled();
   });
 
+  it("恶意/特殊列名 → 标识符引号包裹并转义内部双引号", async () => {
+    // 列名来自解密 payload（不可信输入）：含双引号、SQL 关键字与注入形状的值
+    payload.tables.app_kv = [
+      { key: "k", 'we"ird': "v", order: 1, select: "* FROM users--" },
+    ];
+    await restoreBackup(payload, "new-user");
+
+    const calls = restoreMocks.execute.mock.calls as Array<[string, unknown?]>;
+    const insert = calls.find(([sql]) => sql.startsWith("INSERT INTO app_kv"));
+    expect(insert![0]).toBe(
+      'INSERT INTO app_kv ("key", "we""ird", "order", "select") VALUES ($1, $2, $3, $4)'
+    );
+    expect(insert![1]).toEqual(["k", "v", 1, "* FROM users--"]);
+  });
+
   it("username 冲突时 meta 插入用后缀名", async () => {
     payload.account.username = "taken";
     await restoreBackup(payload, "new-user");

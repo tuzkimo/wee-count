@@ -141,7 +141,11 @@ async function pickBackupFile(): Promise<void> {
     filters: [{ name: "WeeCount 备份", extensions: ["weecount"] }],
   });
   if (!picked) return; // 用户取消
-  rawFile.value = await readTextFile(picked as string);
+  try {
+    rawFile.value = await readTextFile(picked as string);
+  } catch (err) {
+    restoreError.value = `读取失败：${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function decryptBackup(): Promise<void> {
