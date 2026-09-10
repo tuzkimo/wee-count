@@ -34,6 +34,13 @@
         </div>
         <ChevronRight :size="18" class="text-gray-300" />
       </button>
+
+      <!-- 从备份恢复 -->
+      <p class="mt-8 text-center">
+        <button class="text-sm text-text-secondary underline-offset-4 hover:underline" @click="router.push('/backup')">
+          已有备份？从备份文件恢复
+        </button>
+      </p>
     </div>
   </div>
 </template>

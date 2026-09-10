@@ -179,11 +179,11 @@ function handleLogout(): void {
         </div>
       </div>
 
-      <!-- Settings -->
+      <!-- 备份与恢复 -->
       <div class="mt-3">
         <div class="border-y border-gray-100 bg-surface">
-          <button class="flex w-full items-center px-4 py-3" @click="router.push('/settings')">
-            <span class="flex-1 text-left text-text">设置</span>
+          <button class="flex w-full items-center px-4 py-3" @click="router.push('/backup')">
+            <span class="flex-1 text-left text-text">备份与恢复</span>
             <ChevronRight :size="16" class="text-text-secondary" />
           </button>
         </div>

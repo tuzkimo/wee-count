@@ -107,15 +107,17 @@ const router = createRouter({
       meta: { hideTab: true },
     },
     {
-      path: "/settings",
-      component: () => import("@/views/SettingsPage.vue"),
+      path: "/backup",
+      name: "backup",
+      component: () => import("@/views/BackupPage.vue"),
+      meta: { hideTab: true },
     },
   ],
 });
 
 router.beforeEach(async (to) => {
   // 公共页面 (不需要登录)
-  const publicPages = ['/welcome', '/welcome/local', '/login', '/bind-sync']
+  const publicPages = ['/welcome', '/welcome/local', '/login', '/bind-sync', '/backup']
   if (publicPages.includes(to.path)) return true
 
   // 检查是否有本地用户
