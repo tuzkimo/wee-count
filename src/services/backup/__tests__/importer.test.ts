@@ -179,4 +179,12 @@ describe("restoreBackup", () => {
     await expect(restoreBackup(payload, "new-user")).rejects.toMatchObject({ code: "restore" });
     expect(restoreMocks.remove).toHaveBeenCalledWith("/cfg/new-user.db");
   });
+
+  it("username 查询失败 → restore 错误 + 清理库文件，meta 未插入", async () => {
+    restoreMocks.getLocalUserByUsername.mockRejectedValueOnce(new Error("meta query fail"));
+
+    await expect(restoreBackup(payload, "new-user")).rejects.toMatchObject({ code: "restore" });
+    expect(restoreMocks.remove).toHaveBeenCalledWith("/cfg/new-user.db");
+    expect(restoreMocks.createLocalUser).not.toHaveBeenCalled();
+  });
 });

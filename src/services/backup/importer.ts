@@ -138,14 +138,14 @@ export async function restoreBackup(payload: BackupPayload, newUserId: string): 
     throw toRestoreError(err);
   }
 
-  // username 为空的历史备份回填 nickname（与 meta.ts 的回填规则一致）
-  const baseUsername = payload.account.username ?? payload.account.nickname;
-  const username = await resolveUsername(
-    baseUsername,
-    async (u) => (await getLocalUserByUsername(u)) !== null
-  );
-
   try {
+    // username 为空的历史备份回填 nickname（与 meta.ts 的回填规则一致）
+    const baseUsername = payload.account.username ?? payload.account.nickname;
+    const username = await resolveUsername(
+      baseUsername,
+      async (u) => (await getLocalUserByUsername(u)) !== null
+    );
+
     await createLocalUser(newUserId, username, payload.account.nickname, payload.account.password_hash);
     if (payload.account.avatar_url) {
       await updateLocalUserProfile(newUserId, payload.account.nickname, payload.account.avatar_url);
