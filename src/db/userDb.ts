@@ -31,6 +31,14 @@ export async function openUserDb(userId: string, nickname?: string): Promise<Dat
   return db
 }
 
+// 打开独立于当前会话的用户库连接（恢复备份用）：只建表，不注入默认账本。
+// 不改动模块级 userDb/currentUserId，恢复期间当前会话保持不变。
+export async function openRestoreUserDb(userId: string): Promise<Database> {
+  const db = await Database.load(`sqlite:${userId}.db`)
+  await initUserTables(db)
+  return db
+}
+
 async function initUserTables(db: Database): Promise<void> {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS ledgers (

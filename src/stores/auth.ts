@@ -275,6 +275,15 @@ export const useAuthStore = defineStore("auth", () => {
     }
   }
 
+  // 恢复备份后切换会话：账户行是本地刚创建的，免密码验证直接切换
+  async function switchToLocalUser(user: LocalUser): Promise<void> {
+    if (mode.value !== 'none') logout();
+    await openUserDb(user.id, user.nickname);
+    currentLocalUser.value = user;
+    mode.value = 'local';
+    localStorage.setItem("current_user_id", user.id);
+  }
+
   async function updateProfile(data: { nickname?: string; avatar_url?: string | null }): Promise<void> {
     // 在线模式：先同步到服务端
     if (mode.value === 'online') {
@@ -343,6 +352,7 @@ export const useAuthStore = defineStore("auth", () => {
     unbindOnline,
     notifySyncComplete,
     updateProfile,
+    switchToLocalUser,
     init,
   };
 });
