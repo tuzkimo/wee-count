@@ -17,10 +17,10 @@
           </p>
           <button
             class="mt-3 w-full rounded-lg bg-primary py-2.5 text-sm text-white disabled:opacity-50"
-            :disabled="exporting"
+            :disabled="exportStage !== null"
             @click="showPasswordDialog = true"
           >
-            {{ exporting ? "导出中..." : "导出备份文件" }}
+            {{ exportStage ?? "导出备份文件" }}
           </button>
           <p v-if="exportDone" class="mt-2 text-xs text-green-600">备份文件已导出</p>
           <p v-if="exportError" class="mt-2 text-xs text-red-500">{{ exportError }}</p>
@@ -88,13 +88,33 @@ const showRestore = computed(
 
 // --- 导出 ---
 const showPasswordDialog = ref(false);
-const exporting = ref(false);
+/** 当前导出阶段文案；null=空闲。既是 UI 反馈也是卡点诊断输出 */
+const exportStage = ref<string | null>(null);
 const exportDone = ref(false);
 const exportError = ref("");
 
+function logStage(stage: string): void {
+  console.log(`[backup] stage: ${stage}`);
+  exportStage.value = stage;
+}
+
+/** 写文件等必须有限时完成的步骤，超时视为挂起并给出逃生出口 */
+async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} 超时（${ms / 1000}s）`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function onExportPassword(password: string): Promise<void> {
   showPasswordDialog.value = false;
-  exporting.value = true;
   exportDone.value = false;
   exportError.value = "";
   try {
@@ -109,20 +129,30 @@ async function onExportPassword(password: string): Promise<void> {
     };
     const db = getUserDb();
     if (!db) throw new BackupError("invalid", "用户数据库未打开");
-    const payload = await collectPayload(db, account);
-    const json = await buildEnvelopeJson(payload, password, await getVersion());
 
+    logStage("正在读取数据…");
+    const payload = await collectPayload(db, account);
+    console.log(`[backup] rows: ${payload.tables.transactions.length} tx, ${payload.tables.accounts.length} accounts`);
+
+    logStage("正在加密…");
+    const json = await buildEnvelopeJson(payload, password, await getVersion());
+    console.log(`[backup] encrypted size: ${json.length}`);
+
+    logStage("请在系统保存框中选择位置…");
     const path = await save({
       defaultPath: buildBackupFileName(),
       filters: [{ name: "WeeCount 备份", extensions: ["weecount"] }],
     });
     if (!path) return; // 用户取消，不算错误
-    await writeTextFile(path, json);
+    console.log(`[backup] save resolved: ${String(path).slice(0, 80)}`);
+
+    logStage("正在写入文件…");
+    await withTimeout(writeTextFile(path, json), 30000, "写入文件");
     exportDone.value = true;
   } catch (err) {
     exportError.value = err instanceof BackupError ? err.message : `导出失败：${err instanceof Error ? err.message : String(err)}`;
   } finally {
-    exporting.value = false;
+    exportStage.value = null;
   }
 }
 
