@@ -116,8 +116,13 @@ function toRestoreError(err: unknown): BackupError {
 /**
  * 恢复编排：新库（独立连接）单事务写入 9 表 → meta 库插入 local_users 行。
  * 业务表按 BACKUP_TABLES 顺序写入（被引用表在前）；失败时回滚/清理，不留半成品。
+ * username 显式传入时直接采用（调用方已在确认弹窗前解析并展示）；缺省时内部解析冲突后缀。
  */
-export async function restoreBackup(payload: BackupPayload, newUserId: string): Promise<void> {
+export async function restoreBackup(
+  payload: BackupPayload,
+  newUserId: string,
+  username?: string
+): Promise<void> {
   const db = await openRestoreUserDb(newUserId);
 
   try {
@@ -143,12 +148,10 @@ export async function restoreBackup(payload: BackupPayload, newUserId: string): 
   try {
     // username 为空的历史备份回填 nickname（与 meta.ts 的回填规则一致）
     const baseUsername = payload.account.username ?? payload.account.nickname;
-    const username = await resolveUsername(
-      baseUsername,
-      async (u) => (await getLocalUserByUsername(u)) !== null
-    );
+    const finalUsername =
+      username ?? (await resolveUsername(baseUsername, async (u) => (await getLocalUserByUsername(u)) !== null));
 
-    await createLocalUser(newUserId, username, payload.account.nickname, payload.account.password_hash);
+    await createLocalUser(newUserId, finalUsername, payload.account.nickname, payload.account.password_hash);
     if (payload.account.avatar_url) {
       await updateLocalUserProfile(newUserId, payload.account.nickname, payload.account.avatar_url);
     }

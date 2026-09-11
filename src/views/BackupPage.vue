@@ -70,9 +70,9 @@ import { writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import { getVersion } from "@tauri-apps/api/app";
 import { useAuthStore } from "@/stores/auth";
 import { getUserDb } from "@/db/userDb";
-import { getLocalUser } from "@/db/meta";
+import { getLocalUser, getLocalUserByUsername } from "@/db/meta";
 import { collectPayload, buildEnvelopeJson, buildBackupFileName } from "@/services/backup/exporter";
-import { readBackup, restoreBackup } from "@/services/backup/importer";
+import { readBackup, restoreBackup, resolveUsername } from "@/services/backup/importer";
 import { BackupError, type BackupPayload } from "@/services/backup/types";
 import BackupPasswordDialog from "@/components/BackupPasswordDialog.vue";
 import RestoreConfirmDialog, { type RestoreSummary } from "@/components/RestoreConfirmDialog.vue";
@@ -129,7 +129,12 @@ async function onExportPassword(password: string): Promise<void> {
 // --- 恢复 ---
 const rawFile = ref<string | null>(null);
 const restorePassword = ref("");
-const pending = ref<{ payload: BackupPayload; exportedAt: string } | null>(null);
+const pending = ref<{
+  payload: BackupPayload;
+  exportedAt: string;
+  loginUsername: string;
+  usernameAdjusted: boolean;
+} | null>(null);
 const showConfirm = ref(false);
 const restoring = ref(false);
 const restoreError = ref("");
@@ -152,7 +157,11 @@ async function decryptBackup(): Promise<void> {
   restoreError.value = "";
   if (!rawFile.value) return;
   try {
-    pending.value = await readBackup(rawFile.value, restorePassword.value);
+    const { payload, exportedAt } = await readBackup(rawFile.value, restorePassword.value);
+    // 确认弹窗前解析最终登录名并展示，让用户明确知道恢复出的账户叫什么
+    const base = payload.account.username ?? payload.account.nickname;
+    const loginUsername = await resolveUsername(base, async (u) => (await getLocalUserByUsername(u)) !== null);
+    pending.value = { payload, exportedAt, loginUsername, usernameAdjusted: loginUsername !== base };
     showConfirm.value = true;
   } catch (err) {
     restoreError.value = err instanceof BackupError ? err.message : `读取失败：${String(err)}`;
@@ -162,6 +171,8 @@ async function decryptBackup(): Promise<void> {
 const summary = computed<RestoreSummary>(() => ({
   nickname: pending.value?.payload.account.nickname ?? "",
   username: pending.value?.payload.account.username ?? null,
+  loginUsername: pending.value?.loginUsername ?? "",
+  usernameAdjusted: pending.value?.usernameAdjusted ?? false,
   exportedAt: pending.value?.exportedAt ?? "",
   transactions: pending.value?.payload.tables.transactions.length ?? 0,
   accounts: pending.value?.payload.tables.accounts.length ?? 0,
@@ -175,7 +186,7 @@ async function onConfirmRestore(): Promise<void> {
   restoreError.value = "";
   try {
     const newUserId = crypto.randomUUID();
-    await restoreBackup(pending.value.payload, newUserId);
+    await restoreBackup(pending.value.payload, newUserId, pending.value.loginUsername);
     const row = await getLocalUser(newUserId);
     if (!row) throw new BackupError("restore", "恢复完成但账户行缺失");
     await auth.switchToLocalUser(row);

@@ -172,6 +172,15 @@ describe("restoreBackup", () => {
     );
   });
 
+  it("显式传入 username 时直接采用，跳过冲突解析", async () => {
+    // 即使查询仍报冲突（弹窗前已解析并展示过），也不得再改写
+    restoreMocks.getLocalUserByUsername.mockResolvedValueOnce({ id: "x" });
+    await restoreBackup(payload, "new-user", "test2");
+    expect(restoreMocks.createLocalUser).toHaveBeenCalledWith(
+      "new-user", "test2", "Tuzki", "$2a$10$hash"
+    );
+  });
+
   it("INSERT 失败 → ROLLBACK + 清理库文件 + restore 错误", async () => {
     restoreMocks.execute.mockImplementation(async (sql: string) => {
       if (sql.startsWith("INSERT")) throw new Error("constraint failed");
