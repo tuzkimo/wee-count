@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { getLocalUsers } from "@/db/meta";
 import { useAuthStore } from "@/stores/auth";
+import { useLockStore } from "@/stores/lock";
+import { resolveLockRedirect } from "@/router/lockGuard";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -117,8 +119,14 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   // 公共页面 (不需要登录)
-  const publicPages = ['/welcome', '/welcome/local', '/login', '/bind-sync', '/backup']
+  // `/unlock` 必须在列：否则锁定时跳转到解锁页会被守卫再次拦截，形成无限重定向。
+  const publicPages = ['/welcome', '/welcome/local', '/login', '/bind-sync', '/backup', '/unlock']
   if (publicPages.includes(to.path)) return true
+
+  // 应用锁：锁定时业务页面根本不渲染，而不是盖遮罩。
+  // 放在 getLocalUsers() 之前，避免被锁时还去查库。
+  const lockRedirect = resolveLockRedirect(to.path, { isLocked: useLockStore().isLocked }, publicPages)
+  if (lockRedirect !== true) return lockRedirect
 
   // 检查是否有本地用户
   const users = await getLocalUsers()
