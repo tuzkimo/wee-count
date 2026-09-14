@@ -8,6 +8,7 @@ import {
   type AppLockConfig,
   type LockType,
 } from "@/services/lockStorage";
+import { usePrefsStore } from "@/stores/prefs";
 import { hashPassword, verifyPassword } from "@/utils/passwordHash";
 import { PIN_LENGTH, isWeakPin } from "@/utils/pin";
 import { encodePattern, isValidPattern } from "@/utils/pattern";
@@ -15,7 +16,21 @@ import { encodePattern, isValidPattern } from "@/utils/pattern";
 /** 连续错误达到此值后，只接受账户密码。 */
 export const MAX_UNLOCK_ATTEMPTS = 5;
 
-const DEFAULT_AUTO_LOCK_SECONDS = 60;
+/**
+ * 锁的非口令设置默认值。
+ *
+ * ref 的初始值与 `applyConfig(null)` 的复位**共用这一份**：只此一套默认值，
+ * 才不会出现「未配置态」与「默认值态」两个各自漂移的状态。
+ */
+const LOCK_SETTINGS_DEFAULTS: {
+  type: LockType;
+  autoLockSeconds: number;
+  screenshotProtection: boolean;
+} = {
+  type: "pin",
+  autoLockSeconds: 60,
+  screenshotProtection: true,
+};
 
 /**
  * 应用锁状态机。
@@ -27,11 +42,11 @@ const DEFAULT_AUTO_LOCK_SECONDS = 60;
 export const useLockStore = defineStore("lock", () => {
   const isLocked = ref(false);
   const isLockConfigured = ref(false);
-  const lockType = ref<LockType>("pin");
+  const lockType = ref<LockType>(LOCK_SETTINGS_DEFAULTS.type);
   /** 生物识别本轮不做，恒为 false，且不提供任何写入入口。 */
   const biometricEnabled = ref(false);
-  const autoLockSeconds = ref(DEFAULT_AUTO_LOCK_SECONDS);
-  const screenshotProtection = ref(true);
+  const autoLockSeconds = ref(LOCK_SETTINGS_DEFAULTS.autoLockSeconds);
+  const screenshotProtection = ref(LOCK_SETTINGS_DEFAULTS.screenshotProtection);
   const failedAttempts = ref(0);
 
   /** 当前锁的 bcrypt 哈希，仅内存持有；未配置锁时为 null。 */
@@ -39,10 +54,26 @@ export const useLockStore = defineStore("lock", () => {
 
   const requireAccountPassword = computed(() => failedAttempts.value >= MAX_UNLOCK_ATTEMPTS);
 
+  /**
+   * 把非口令设置复位为默认值（`LOCK_SETTINGS_DEFAULTS`）。
+   *
+   * 未配置态**必须等于**默认值态：否则「在设置里关掉截屏防护 → 关闭应用锁 → 再开启」
+   * 会让新锁带出上一会话遗留的 `screenshot_protection: false`，
+   * 与「默认从严」的定义直接矛盾。
+   */
+  function applyDefaults(): void {
+    lockType.value = LOCK_SETTINGS_DEFAULTS.type;
+    autoLockSeconds.value = LOCK_SETTINGS_DEFAULTS.autoLockSeconds;
+    screenshotProtection.value = LOCK_SETTINGS_DEFAULTS.screenshotProtection;
+    // 生物识别不在本轮范围，默认值恒为 false，这里只可能写到 false。
+    biometricEnabled.value = false;
+  }
+
   function applyConfig(config: AppLockConfig | null): void {
     if (!config) {
       isLockConfigured.value = false;
       hash.value = null;
+      applyDefaults();
       return;
     }
     isLockConfigured.value = true;
@@ -63,9 +94,10 @@ export const useLockStore = defineStore("lock", () => {
     failedAttempts.value = 0;
     // 自动锁定后金额必须回到隐藏：用户点开眼睛看完、切后台被锁，
     // 解锁回来若仍是显示态，「默认隐藏」就在锁定路径上被绕过了。
-    void import("@/stores/prefs").then(({ usePrefsStore }) => {
-      usePrefsStore().hideAmounts();
-    });
+    // 静态 import prefs：prefs 只依赖 pinia/vue，不存在 lock ↔ prefs 循环依赖，
+    // 因此不必用动态 import + void，也就没有任何 unhandled rejection 的可能；
+    // 顺带让遮蔽同步生效，消掉「已锁定但金额仍可见」的那一个微任务窗口。
+    usePrefsStore().hideAmounts();
   }
 
   function unlock(): void {
@@ -103,7 +135,17 @@ export const useLockStore = defineStore("lock", () => {
     return verifySecret(encodePattern(dots));
   }
 
-  /** 降级路径：连错达阈值后，用账户密码证明身份，随后要求重设锁。 */
+  /**
+   * 用账户密码证明身份。两条入口共用这一条路径：
+   * - 降级态：连错达阈值后 PIN/图案一律不再放行，只接受账户密码；
+   * - 「忘记密码？」：该按钮在**非降级态也渲染**（忘了 PIN 的用户唯一的出路），
+   *   所以本 action 在**任何状态**下都可调用——不校验 `requireAccountPassword`
+   *   是刻意为之的契约，否则忘记密码就成了死路、用户被永久锁在门外。
+   *
+   * **成功后不放行**：本 action 不改变 `isLocked`，只清零错误计数；
+   * 调用方必须就地重设一个新锁才谈得上放行（锁屏页只在
+   * `SetLockDialog` 发出 `saved` 之后才调用 `leave()`）。因此它**不构成解锁后门**。
+   */
   async function unlockWithAccountPassword(username: string, password: string): Promise<boolean> {
     const { useAuthStore } = await import("@/stores/auth");
     const ok = await useAuthStore().localLogin(username, password);

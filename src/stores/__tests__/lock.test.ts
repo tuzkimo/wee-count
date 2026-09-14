@@ -76,8 +76,22 @@ describe("lock store", () => {
     prefs.showAmounts();
     expect(prefs.amountsHidden).toBe(false);
     lock.lock();
-    // lock() 内部对 prefs 用的是动态 import（避免 lock ↔ prefs 循环依赖），故需等待微任务
-    await vi.waitFor(() => expect(prefs.amountsHidden).toBe(true));
+    // lock() 静态 import prefs（两者无循环依赖），遮蔽同步生效，无需等微任务
+    expect(prefs.amountsHidden).toBe(true);
+  });
+
+  it("lock() 在未配置锁时是空操作", () => {
+    const lock = useLockStore();
+    const prefs = usePrefsStore();
+    prefs.showAmounts();
+    expect(lock.isLockConfigured).toBe(false);
+
+    lock.lock();
+
+    // 不自设 isLocked，否则未配置锁的用户会被自己的「锁」挡在门外
+    expect(lock.isLocked).toBe(false);
+    // 空操作要空得干净：也不该顺带改动金额遮蔽
+    expect(prefs.amountsHidden).toBe(false);
   });
 
   it("图案锁按规范化编码校验", async () => {
@@ -128,6 +142,65 @@ describe("lock store", () => {
     await lock.clearLock();
     expect(lock.isLockConfigured).toBe(false);
     expect(lock.isLocked).toBe(false);
+  });
+
+  it("updateSettings 改非口令设置并落盘，不影响口令", async () => {
+    const lock = await configuredLock();
+    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    expect(lock.autoLockSeconds).toBe(300);
+    expect(lock.screenshotProtection).toBe(false);
+
+    const fresh = useLockStore();
+    await fresh.load();
+    expect(fresh.autoLockSeconds).toBe(300);
+    expect(fresh.screenshotProtection).toBe(false);
+    // 改设置不换口令、不换锁型
+    expect(fresh.lockType).toBe("pin");
+    expect(await fresh.verifyPin("194726")).toBe(true);
+  });
+
+  it("updateSettings 未配置锁时是空操作，且忽略 biometric_enabled", async () => {
+    const lock = useLockStore();
+    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    // 未配置锁时既不落盘也不改内存态
+    expect(localStorage.getItem("app_lock")).toBeNull();
+    expect(lock.autoLockSeconds).toBe(60);
+
+    await configuredLock();
+    await lock.updateSettings({ biometric_enabled: true });
+    // 生物识别本轮不做：patch 里的 biometric_enabled 必须被忽略，且不落盘
+    expect(lock.biometricEnabled).toBe(false);
+    const stored = JSON.parse(localStorage.getItem("app_lock") ?? "{}") as Record<string, unknown>;
+    expect(stored.biometric_enabled).toBe(false);
+  });
+
+  it("clearLock 后重设锁回落默认设置，而非沿用上一会话的旧值", async () => {
+    const lock = useLockStore();
+    // 未配置态即默认值态：先记下出厂默认，作为回落目标
+    const defaults = {
+      type: lock.lockType,
+      autoLockSeconds: lock.autoLockSeconds,
+      screenshotProtection: lock.screenshotProtection,
+    };
+    expect(defaults).toEqual({ type: "pin", autoLockSeconds: 60, screenshotProtection: true });
+
+    // 复现路径：在设置里关掉截屏防护、顺手拉长自动锁定时长，然后关闭应用锁
+    await lock.setLock("pattern", [1, 2, 3, 5]);
+    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    expect(lock.screenshotProtection).toBe(false);
+    await lock.clearLock();
+
+    expect(lock.autoLockSeconds).toBe(defaults.autoLockSeconds);
+    expect(lock.screenshotProtection).toBe(defaults.screenshotProtection);
+    expect(lock.lockType).toBe(defaults.type);
+
+    // 再次开启：新锁必须带默认值，不能是上一会话的设置
+    await lock.setLock("pin", "194726");
+    const fresh = useLockStore();
+    await fresh.load();
+    expect(fresh.autoLockSeconds).toBe(60);
+    expect(fresh.screenshotProtection).toBe(true);
+    expect(fresh.lockType).toBe("pin");
   });
 
   it("load 读取持久化配置与默认值", async () => {
