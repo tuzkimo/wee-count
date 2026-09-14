@@ -13,6 +13,7 @@ import { computed, ref, watch } from "vue";
 import { useLedgerStore } from "@/stores/ledger";
 import { useMemberInfo } from "@/composables/useMemberInfo";
 import MemberAvatar from "@/components/MemberAvatar.vue";
+import { useAmountMask } from "@/composables/useAmountMask";
 
 const props = defineProps<{
   account: Account;
@@ -36,6 +37,7 @@ const typeLabel = computed(() => ACCOUNT_TYPE_LABELS[props.account.type]);
 
 const ledgerStore = useLedgerStore();
 const { getMember } = useMemberInfo();
+const { maskCurrency } = useAmountMask();
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
 const ownerName = ref("");
 
@@ -51,15 +53,6 @@ watch(
   },
   { immediate: true },
 );
-
-function formatBalance(value: number): string {
-  const abs = Math.abs(value);
-  const formatted = abs.toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  return value < 0 ? `-¥${formatted}` : `¥${formatted}`;
-}
 
 const balanceClass = computed(() => {
   const bal = props.account.current_balance ?? 0;
@@ -92,7 +85,7 @@ const balanceClass = computed(() => {
     </div>
     <div class="text-right">
       <p class="text-base font-semibold" :class="balanceClass">
-        {{ formatBalance(account.current_balance ?? 0) }}
+        {{ maskCurrency(account.current_balance ?? 0) }}
       </p>
     </div>
   </div>
