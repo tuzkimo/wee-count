@@ -27,6 +27,10 @@ describe("SecurityPage", () => {
     setActivePinia(createPinia());
     localStorage.clear();
     vi.clearAllMocks();
+    // 每条用例都从「系统层调用成功」起步：个别用例会临时把它改成 reject，
+    // 而页面在 onMounted 里也会重放一次（R68），不复位就会泄漏到下一条用例。
+    vi.mocked(applyScreenshotProtection).mockReset();
+    vi.mocked(applyScreenshotProtection).mockImplementation(async () => undefined);
   });
 
   afterEach(() => {
@@ -189,6 +193,10 @@ describe("SecurityPage", () => {
     const w = mount(SecurityPage);
     await flushPromises();
 
+    // 页面挂载时已按当时的真实值重放过一次（R68）。这里只关心**这次失败的写入**
+    // 有没有下发系统层调用，所以从这一刻起重新计数。
+    vi.mocked(applyScreenshotProtection).mockClear();
+
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal("localStorage", undefined);
 
@@ -243,5 +251,131 @@ describe("SecurityPage", () => {
     expect(w.text()).not.toContain("指纹");
     expect(w.text()).not.toContain("面容");
     expect(w.text()).not.toContain("生物识别");
+  });
+
+  // ---- 收尾修复轮：R66 / R67 / R68 ----
+
+  it("R66：打开设置对话框后点取消，总开关回到「未开启」的真实态", async () => {
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    await w.find('[data-test="lock-enabled"]').setValue(true);
+    expect(w.find('[data-test="set-lock-dialog"]').exists()).toBe(true);
+    // 前提（正是缺陷的成因）：浏览器已把 DOM 原生翻到勾选态，而 store 仍未被配置。
+    // 此时 `:checked` 的 prop 值没有变化，Vue 不会回写 DOM。
+    expect((w.find('[data-test="lock-enabled"]').element as HTMLInputElement).checked).toBe(true);
+    expect(useLockStore().isLockConfigured).toBe(false);
+
+    await w.find('[data-test="set-lock-cancel"]').trigger("click");
+    await flushPromises();
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-test="set-lock-dialog"]').exists()).toBe(false);
+    const el = w.find('[data-test="lock-enabled"]').element as HTMLInputElement;
+    // DOM 真实态，以及它与 store 的一致性 —— R66 的全部要求。
+    expect(el.checked).toBe(false);
+    expect(el.checked).toBe(useLockStore().isLockConfigured);
+    // 不靠一条红色提示去「解释」这个不一致：状态本身就该是对的。
+    expect(w.find('[data-test="security-error"]').exists()).toBe(false);
+  });
+
+  it("R66：setLock 落盘失败后再点取消，开关同样回到未开启", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    await w.find('[data-test="lock-enabled"]').setValue(true);
+
+    // 落盘必失败（与 R34 同一条路径）：localStorage 不可用 → writeAppLock reject。
+    vi.stubGlobal("localStorage", undefined);
+    for (const d of PIN) await w.find(`[data-test="pin-key-${d}"]`).trigger("click");
+    for (const d of PIN) await w.find(`[data-test="pin-key-${d}"]`).trigger("click");
+    // 落盘要过真实 bcrypt（跨多轮宏任务），等到那条失败提示出现，才确认这次
+    // 走到的是「设置失败后再取消」，而不是被别的路径挡住。
+    await vi.waitFor(() => {
+      expect(w.find('[data-test="set-lock-message"]').text()).toContain("设置失败");
+    });
+
+    expect(useLockStore().isLockConfigured).toBe(false);
+    expect(w.find('[data-test="set-lock-dialog"]').exists()).toBe(true);
+
+    await w.find('[data-test="set-lock-cancel"]').trigger("click");
+    await flushPromises();
+    await w.vm.$nextTick();
+
+    const el = w.find('[data-test="lock-enabled"]').element as HTMLInputElement;
+    expect(w.find('[data-test="set-lock-dialog"]').exists()).toBe(false);
+    expect(el.checked).toBe(false);
+    expect(el.checked).toBe(useLockStore().isLockConfigured);
+    warn.mockRestore();
+  });
+
+  it("R67：未配置锁时不渲染「禁止截屏」开关（点了也不会有任何效果）", async () => {
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    // 未配置锁时 `updateSettings` 是空操作（有意行为）：渲染一个可点却写不进去的
+    // 开关，等于让页面撒谎，还会真的把系统级防护关掉。
+    expect(w.find('[data-test="screenshot-protection"]').exists()).toBe(false);
+    expect(w.text()).not.toContain("禁止截屏");
+
+    // 正对照：配置锁之后同一个开关确实出现，证明上面不是选择器写错的恒真断言。
+    await useLockStore().setLock("pin", PIN);
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="screenshot-protection"]').exists()).toBe(true);
+  });
+
+  it("R68：关锁后把复位后的截屏防护值重放到系统层", async () => {
+    const lock = useLockStore();
+    await lock.setLock("pin", PIN);
+    // 用户此前把截屏防护关掉了：持久化 false，系统层也已经关掉。
+    await lock.updateSettings({ screenshot_protection: false });
+    expect(lock.screenshotProtection).toBe(false);
+
+    const w = mount(SecurityPage);
+    await flushPromises();
+    // 开页面时先按当前值重放一次（与 main.ts 启动时同一个动作，幂等）。
+    expect(applyScreenshotProtection).toHaveBeenLastCalledWith(false);
+
+    await w.find('[data-test="lock-enabled"]').setValue(false);
+    await flushPromises();
+
+    // clearLock 把 store 复位成默认 true；系统层必须跟着变成 true，
+    // 否则本次会话里「配置说开启、系统其实关着」，要等下次冷启动才被纠正。
+    expect(lock.isLockConfigured).toBe(false);
+    expect(lock.screenshotProtection).toBe(true);
+    expect(applyScreenshotProtection).toHaveBeenLastCalledWith(true);
+  });
+
+  it("R68：关锁后重放失败时如实提示，且不说「关闭失败」", async () => {
+    await useLockStore().setLock("pin", PIN);
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    vi.mocked(applyScreenshotProtection).mockRejectedValue(new Error("FLAG_SECURE 设置失败"));
+
+    await w.find('[data-test="lock-enabled"]').setValue(false);
+    await flushPromises();
+
+    // 锁确实关掉了：不能谎报「关闭失败」。
+    expect(useLockStore().isLockConfigured).toBe(false);
+    const err = w.find('[data-test="security-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("截屏防护未能同步");
+    expect(err.text()).not.toContain("关闭失败");
+  });
+
+  it("R68：开页面时重放失败只留日志，不弹提示也不阻断渲染", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(applyScreenshotProtection).mockRejectedValue(new Error("not in tauri"));
+    await useLockStore().setLock("pin", PIN);
+
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    expect(w.find('[data-test="screenshot-protection"]').exists()).toBe(true);
+    expect(w.find('[data-test="security-error"]').exists()).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

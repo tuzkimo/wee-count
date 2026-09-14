@@ -26,7 +26,30 @@ const screenshotToggleEl = ref<HTMLInputElement | null>(null);
 onMounted(async () => {
   // 读路径永不抛错（见 lockStorage.readAppLock），不会产生未处理的 rejection。
   await lock.load();
+  await replayScreenshotProtection();
 });
+
+/**
+ * 把 store 当前的截屏防护值重放到系统层（与 `main.ts` 启动时同一个动作）。
+ *
+ * R68：`lock.clearLock()` 会把非口令设置复位成默认值（截屏防护回到 `true`），
+ * 而系统层不会被 store 自动同步 —— 只改内存值就会留下
+ * 「配置说开启、系统其实关着」的缝。冷启动时 `main.ts` 会重放一次纠正它，
+ * 但那要等用户重启应用；页面自己改动了这个值，就得自己负责重放。
+ *
+ * 重放是幂等的：同一个值重复下发没有副作用，所以 `main.ts` 做过一次也不冲突。
+ *
+ * 失败只留警告、不弹页面提示：这条路径不是用户动作触发的（开页面时的重放），
+ * 在界面上凭空冒一条红色错误没有对应用户动作；真正由用户切换而失败的那条路径
+ * （`toggleScreenshot` / `clearLock`）会如实报错，不靠这里兜。
+ */
+async function replayScreenshotProtection(): Promise<void> {
+  try {
+    await applyScreenshotProtection(lock.screenshotProtection);
+  } catch (cause) {
+    console.warn("截屏防护重放失败", cause);
+  }
+}
 
 const lockTypeLabel = computed(() => (lock.lockType === "pin" ? "数字密码" : "图案"));
 
@@ -73,8 +96,20 @@ async function clearLock(): Promise<void> {
   } catch {
     saveError.value = "关闭失败，应用锁仍开启，请重试";
     syncCheckbox(lockToggleEl.value, lock.isLockConfigured);
+    // 关锁没成功，配置没有被复位，系统层也就没有要重放的新值。
+    return;
   } finally {
     clearing.value = false;
+  }
+
+  // R68：关锁成功后 store 已复位（截屏防护回到默认 `true`），而系统层还停在用户
+  // 上次把它关掉的状态。必须按**复位后的新值**重放一次系统层，
+  // 否则本次会话里「配置说开启、系统其实关着」，要等下次冷启动才被纠正。
+  try {
+    await applyScreenshotProtection(lock.screenshotProtection);
+  } catch {
+    // 锁确实关掉了，不能说「关闭失败」；但系统层没跟上，也不能装作无事发生。
+    saveError.value = "应用锁已关闭，但截屏防护未能同步，请重试";
   }
 }
 
@@ -96,6 +131,25 @@ function openChangeDialog(): void {
 function onLockSaved(): void {
   dialogOpen.value = false;
   saveError.value = "";
+}
+
+/**
+ * 关闭设置锁对话框（点「取消」、或落盘失败后放弃）。R66。
+ *
+ * 总开关是**受控** checkbox（`:checked` + `@change`，不是 `v-model`），而 Vue 只在
+ * prop 值变化时回写 DOM：用户点开关那一刻浏览器已经把它原生翻成 `true`，而 store 里
+ * `isLockConfigured` 仍是 `false`、prop 也就**没有变化**，Vue 不会去纠正这个 DOM。
+ * 于是「打开对话框 → 点取消」之后总开关会停在「已开启」，而锁其实没配置：
+ * 三段配置全不渲染、也没有任何提示 —— 正是 R34 认定不可接受的假确认。
+ *
+ * 所以关闭路径必须显式同步一次。放在这里（而不是只在 `onToggleLock(true)` 里）是因为
+ * 对话框的任何退出方式都会经过它：**包括 `setLock` 落盘失败之后再取消**——
+ * 那条路径上 store 依然是未配置态，DOM 同样停在勾选态。
+ */
+async function onDialogClose(): Promise<void> {
+  dialogOpen.value = false;
+  await nextTick();
+  syncCheckbox(lockToggleEl.value, lock.isLockConfigured);
 }
 
 async function chooseAutoLock(seconds: number): Promise<void> {
@@ -212,8 +266,14 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
         </p>
       </div>
 
-      <!-- 隐私 -->
-      <div class="mt-3">
+      <!--
+        隐私区（R67）：与「自动锁定」一样只在**已配置锁**时渲染。
+        未配置锁时 `updateSettings` 是无意为之的空操作（见 stores/lock.ts：没有 hash
+        就静默 return，那是有意行为，不要改），可开关却照常渲染 —— 用户点一下
+        DOM 翻到未勾选、store 仍是 true、没有任何提示，页面还真的把系统级防护关掉了，
+        下次冷启动又按默认 true 打开。那就是「UI 在说谎且零反馈」，比不显示这个开关更糟。
+      -->
+      <div v-if="lock.isLockConfigured" class="mt-3">
         <p class="px-4 py-2 text-xs font-medium uppercase text-text-secondary">隐私</p>
         <div class="border-y border-gray-100 bg-surface">
           <label class="flex items-center gap-3 px-4 py-3">
@@ -261,7 +321,7 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
       :open="dialogOpen"
       :mode="dialogMode"
       @saved="onLockSaved"
-      @close="dialogOpen = false"
+      @close="onDialogClose"
     />
   </div>
 </template>
