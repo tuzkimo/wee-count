@@ -5311,6 +5311,7 @@ dependencies = [
 name = "wee-count"
 version = "1.0.0"
 dependencies = [
+ "jni",
  "serde",
  "serde_json",
  "tauri",
