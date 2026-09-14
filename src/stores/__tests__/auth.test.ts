@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useAuthStore } from "../auth";
+import { hashPassword, verifyPassword } from "@/utils/passwordHash";
 
 // mock api module
 vi.mock("@/services/api", () => ({
@@ -104,6 +105,53 @@ describe("useAuthStore", () => {
     expect(openUserDb).not.toHaveBeenCalled();
     expect(updateLocalUsername).not.toHaveBeenCalled();
     expect(api.clearTokens).toHaveBeenCalled();
+  });
+
+  it("localLogin 命中本地用户时走真实 bcrypt 校验：正确密码通过、错误密码拒绝", async () => {
+    // 回归（接线断言）：上面两条用例把 getLocalUserByUsername mock 成 null，只覆盖 fallback
+    // 分支，从未执行 auth.ts 的 `await verifyPassword(password, user.password_hash)`。
+    // 因此把 verifyPassword 的两个实参调换、或把 auth.ts:17 的 import 换成任意其它可编译的
+    // 实现，既有用例都不会变红。本用例用现算的真实 bcrypt 哈希把这处接线钉死。
+    const { getLocalUserByUsername } = await import("@/db/meta");
+    const { openUserDb } = await import("@/db/userDb");
+    const passwordHash = await hashPassword("alice-pw-123");
+    (getLocalUserByUsername as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "u-alice", username: "alice", nickname: "Alice", password_hash: passwordHash,
+      api_url: null, server_user_id: null, avatar_url: null,
+      created_at: "", updated_at: "",
+    });
+
+    const store = useAuthStore();
+
+    // 错误密码：必须被 bcrypt compare 拒绝，且不进登录态、不开用户库
+    expect(await store.localLogin("alice", "wrong-pw")).toBe(false);
+    expect(store.mode).toBe("none");
+    expect(store.currentLocalUser).toBeNull();
+    expect(openUserDb).not.toHaveBeenCalled();
+
+    // 正确密码：真实 bcrypt 路径通过 → 登录成功并打开该用户的库
+    expect(await store.localLogin("alice", "alice-pw-123")).toBe(true);
+    expect(store.mode).toBe("local");
+    expect(store.currentLocalUser?.id).toBe("u-alice");
+    expect(openUserDb).toHaveBeenCalledWith("u-alice", "Alice");
+  });
+
+  it("createLocalAccount 写入的 password_hash 是可用原密码验证的真实 bcrypt 哈希", async () => {
+    // 接线断言：覆盖 auth.ts 里 hashPassword 的调用点（原为本地函数，现抽到 utils/passwordHash）。
+    const { createLocalUser } = await import("@/db/meta");
+    const store = useAuthStore();
+
+    const id = await store.createLocalAccount("carol", "Carol", "carol-pw-456");
+
+    // 落库的那个哈希必须能验证原密码（占位符或明文都会让下面两条断言失败）
+    const storedHash = (createLocalUser as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls[0][3] as string;
+    expect(storedHash).not.toBe("carol-pw-456");
+    expect(await verifyPassword("carol-pw-456", storedHash)).toBe(true);
+    expect(await verifyPassword("wrong-pw", storedHash)).toBe(false);
+    expect(createLocalUser).toHaveBeenCalledWith(id, "carol", "Carol", storedHash);
+    expect(store.currentLocalUser?.password_hash).toBe(storedHash);
+    expect(store.mode).toBe("local");
   });
 
   it("init 对绑定在线同步的用户不阻塞：tryRestoreSession 挂起时仍立即以 local 就绪", async () => {
