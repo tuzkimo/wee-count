@@ -2,8 +2,12 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { Home, BarChart3, Wallet, User } from "lucide-vue-next";
+import { useAutoLock } from "@/composables/useAutoLock";
 
 const route = useRoute();
+
+// 前后台切换自动锁定：挂在根组件上，随应用生命周期只注册一次。
+useAutoLock();
 
 const tabs = [
   { path: "/", label: "首页", icon: Home },

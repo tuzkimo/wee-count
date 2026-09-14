@@ -114,6 +114,15 @@ const router = createRouter({
       component: () => import("@/views/BackupPage.vue"),
       meta: { hideTab: true },
     },
+    // 锁定态的唯一放行页（见 `LOCK_ALLOWED_PAGES`）。这条路由必须有，
+    // 否则守卫重定向过来会命中 `No match found`，锁直接不可用（空白视图）。
+    // `hideTab`：锁定态下任何 tab 点了都会被守卫弹回这里，不如不显示。
+    {
+      path: "/unlock",
+      name: "unlock",
+      component: () => import("@/views/UnlockPage.vue"),
+      meta: { hideTab: true },
+    },
   ],
 });
 

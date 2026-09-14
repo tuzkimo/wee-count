@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import type { RouteRecordNormalized } from "vue-router";
 import router from "@/router";
+import UnlockPage from "@/views/UnlockPage.vue";
 import { useLockStore } from "@/stores/lock";
 
 /**
@@ -31,13 +33,10 @@ vi.mock("@/views/LoginPage.vue", () => stubView("LoginPageStub"));
 vi.mock("@/views/AccountList.vue", () => stubView("AccountListStub"));
 vi.mock("@/views/RecordPage.vue", () => stubView("RecordPageStub"));
 
-// `/unlock` 路由与解锁页组件属于任务 10 的范围，本分支上尚不存在。
-// 这里补一条最小路由，让「重定向目标可达、且不会被再次拦截」可测。
-router.addRoute({
-  path: "/unlock",
-  name: "unlock-test-stub",
-  component: { name: "UnlockStub", render: () => null },
-});
+// `/unlock` 与解锁页组件由任务 10 注册进真实路由表（`src/router/index.ts`）。
+// 这里曾补过一条最小替身路由，但替身会**遮蔽**真实路由：即便 `index.ts` 漏注册
+// `/unlock`（`[Vue Router warn]: No match found` + 空白视图），用替身的用例照样全绿。
+// 现在直接用真实路由，R60 才有真正的回归防线。
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -50,6 +49,13 @@ function enterLockedState(): void {
   const lock = useLockStore();
   lock.isLockConfigured = true;
   lock.lock();
+}
+
+/** 取唯一一条匹配记录。匹配不到（= `No match found`）就直接失败，说明路由缺失。 */
+function firstMatch(loc: { matched: RouteRecordNormalized[] }): RouteRecordNormalized {
+  const record = loc.matched[0];
+  if (!record) throw new Error("没有匹配到任何路由记录：路由未注册");
+  return record;
 }
 
 describe("锁守卫接线（真实 router）", () => {
@@ -93,6 +99,24 @@ describe("锁守卫接线（真实 router）", () => {
 
     expect(router.currentRoute.value.path).toBe("/unlock");
     expect(router.currentRoute.value.query).toEqual({});
+  });
+
+  it("锁定态：/unlock 命中真实注册的路由（真实解锁页 + 懒加载 + 隐藏底部标签栏）", async () => {
+    enterLockedState();
+    await router.push("/unlock");
+
+    const current = router.currentRoute.value;
+    expect(current.matched).toHaveLength(1);
+    // 解析出的就是解锁页本身，不是替身：路由指错组件这类回归同样要拦住。
+    expect(firstMatch(current).components?.default).toBe(UnlockPage);
+    // 解锁页上不能出现「可点、但点了必然被守卫弹回」的底部 tab。
+    expect(current.meta.hideTab).toBe(true);
+
+    // 懒加载：导航会把 loader 的解析结果写回记录，所以要在一个**没加载过**的
+    // 新模块注册表里看原始形态——是函数才说明解锁页没有进首包。
+    vi.resetModules();
+    const { default: freshRouter } = await import("@/router");
+    expect(typeof firstMatch(freshRouter.resolve("/unlock")).components?.default).toBe("function");
   });
 
   it("锁定态：深链的 query 随回跳参数保留", async () => {
