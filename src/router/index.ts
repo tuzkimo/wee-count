@@ -118,6 +118,12 @@ const router = createRouter({
     // 否则守卫重定向过来会命中 `No match found`，锁直接不可用（空白视图）。
     // `hideTab`：锁定态下任何 tab 点了都会被守卫弹回这里，不如不显示。
     {
+      path: "/security",
+      name: "security",
+      component: () => import("@/views/SecurityPage.vue"),
+      meta: { hideTab: true },
+    },
+    {
       path: "/unlock",
       name: "unlock",
       component: () => import("@/views/UnlockPage.vue"),

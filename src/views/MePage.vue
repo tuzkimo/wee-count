@@ -179,6 +179,20 @@ function handleLogout(): void {
         </div>
       </div>
 
+      <!-- 安全 -->
+      <div class="mt-3">
+        <div class="border-y border-gray-100 bg-surface">
+          <button
+            data-test="me-security-entry"
+            class="flex w-full items-center px-4 py-3"
+            @click="router.push('/security')"
+          >
+            <span class="flex-1 text-left text-text">安全</span>
+            <ChevronRight :size="16" class="text-text-secondary" />
+          </button>
+        </div>
+      </div>
+
       <!-- 备份与恢复 -->
       <div class="mt-3">
         <div class="border-y border-gray-100 bg-surface">
