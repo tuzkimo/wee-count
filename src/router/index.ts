@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import { getLocalUsers } from "@/db/meta";
 import { useAuthStore } from "@/stores/auth";
 import { useLockStore } from "@/stores/lock";
-import { resolveLockRedirect } from "@/router/lockGuard";
+import { LOCK_ALLOWED_PAGES, resolveLockRedirect } from "@/router/lockGuard";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -118,15 +118,30 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
+  // 应用锁：锁定时业务页面根本不渲染，而不是盖遮罩。
+  //
+  // 两点是刻意的，别顺手「优化」掉：
+  // 1. 锁判定必须在下面 `publicPages` 早返回**之前**，且用**锁专用窄名单**
+  //    （`LOCK_ALLOWED_PAGES`，只有 `/unlock`）。`publicPages` 是给「未登录」用的；
+  //    锁定态复用它等于放行两条真实数据出口——`/backup` 能经
+  //    `localStorage.current_user_id` 无口令恢复会话后全量导出账目，
+  //    `/bind-sync` 会把本地全量账本 POST 到页面输入框里填的任意地址。
+  //    忘记 PIN 的出路是解锁页上的账户密码路径，不是这两页。
+  // 2. 回跳带 `to.fullPath` 而不是 `to.path`，否则深链的 query 解锁后丢失。
+  //    窄名单仍然按 `to.path` 匹配（见 LockGuardTarget 的说明）。
+  //
+  // 也放在 getLocalUsers() 之前，避免被锁时还去查库。
+  const lockRedirect = resolveLockRedirect(
+    { path: to.path, fullPath: to.fullPath },
+    { isLocked: useLockStore().isLocked },
+    LOCK_ALLOWED_PAGES,
+  )
+  if (lockRedirect !== true) return lockRedirect
+
   // 公共页面 (不需要登录)
   // `/unlock` 必须在列：否则锁定时跳转到解锁页会被守卫再次拦截，形成无限重定向。
   const publicPages = ['/welcome', '/welcome/local', '/login', '/bind-sync', '/backup', '/unlock']
   if (publicPages.includes(to.path)) return true
-
-  // 应用锁：锁定时业务页面根本不渲染，而不是盖遮罩。
-  // 放在 getLocalUsers() 之前，避免被锁时还去查库。
-  const lockRedirect = resolveLockRedirect(to.path, { isLocked: useLockStore().isLocked }, publicPages)
-  if (lockRedirect !== true) return lockRedirect
 
   // 检查是否有本地用户
   const users = await getLocalUsers()

@@ -8,32 +8,46 @@ import { applyScreenshotProtection } from "@/services/screenshotProtection";
 
 const app = createApp(App);
 app.use(createPinia()); // 必须先装 Pinia，useLockStore() 才有活跃实例
-app.use(router);
 
 /**
- * 启动引导。
+ * 启动引导。三条顺序约束，改动前先读这里——每一条都对应一个已复现的故障：
  *
- * 首帧门禁：必须在 mount() 之前完成。否则路由守卫是 async 的（要 await getLocalUsers()），
- * 这段空窗会渲染出真实数据。
+ * 1. 门禁必须**早于 `app.use(router)`**。vue-router 在 install 时就发起初始导航
+ *    （`push(routerHistory.location)`）并跑守卫；若那时锁还没装上，守卫读到的
+ *    `isLocked` 仍是 `false`，首屏会直接渲染业务页 —— 而 `auth.ts` 会经
+ *    `localStorage.current_user_id` 无口令恢复会话并打开用户库，页面能读到真实数据。
+ *    真实链路里 `load()` 有 ≥3 个 await（Tauri 下还要等 plugin-store 的 IPC），
+ *    所以「先 use(router) 再装锁」不是偶发竞态，是稳定输掉。
+ *    冷启动总是要求解锁：`load()` 之后立刻 `lock()`。
+ * 2. 整个门禁——**包括 `useLockStore()` 本身**——必须包在 try 里。它抛错时降级为
+ *    「不锁启动」，但绝不能因此跳过 mount：Android 上跳过 mount 就是白屏。
+ * 3. `app.mount()` 无条件执行，且在任何 await 之后。
  *
- * 顺序是刻意的：lock.load() / lock.lock() 在任何可能失败的调用之前，
- * 这样即使后面失败，应用也是「锁着启动」而非「没锁启动」。
- * 门禁整体再包一层 try：门禁本身若意外抛错，也要降级为「不锁启动」，
- * 而绝不能跳过 mount —— Android 上跳过 mount 就是白屏。
+ * 另外不能用顶层 await：vite 默认的模块目标不含 top-level await，`npm run build` 会失败。
  */
 async function bootstrap(): Promise<void> {
-  const lock = useLockStore();
+  // 截屏防护的取值。门禁失败时保持这里的从严默认值，
+  // 与 stores/lock.ts 的 LOCK_SETTINGS_DEFAULTS.screenshotProtection 一致。
+  let screenshotProtection = true;
+
   try {
+    const lock = useLockStore();
     await lock.load();
     if (lock.isLockConfigured) lock.lock();
+    screenshotProtection = lock.screenshotProtection;
   } catch (cause) {
     console.error("启动门禁失败，降级为不锁启动", cause);
   }
+
+  // 锁已就位，现在才让 router install：初始导航的守卫因此能读到真实的 isLocked。
+  app.use(router);
+
   try {
-    await applyScreenshotProtection(lock.screenshotProtection);
+    await applyScreenshotProtection(screenshotProtection);
   } catch (cause) {
     console.warn("应用截屏防护启用失败", cause);
   }
+
   app.mount("#app");
 }
 
