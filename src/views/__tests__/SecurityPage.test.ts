@@ -378,4 +378,25 @@ describe("SecurityPage", () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it("R69：系统层切换失败时页面提示可达（那条分支不再是死代码）", async () => {
+    await useLockStore().setLock("pin", PIN);
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    // 落盘成功、系统层失败：配置已经是 false，但系统调用 reject。
+    // R69 之前服务层把失败吞掉，这条 catch 永远走不到。
+    vi.mocked(applyScreenshotProtection).mockImplementation(async (enabled: boolean) => {
+      if (!enabled) throw new Error("设置 FLAG_SECURE 失败");
+    });
+
+    await w.find('[data-test="screenshot-protection"]').setValue(false);
+    await flushPromises();
+
+    // 配置如实落盘（不谎称失败），但系统层没跟上必须说出来。
+    expect(useLockStore().screenshotProtection).toBe(false);
+    expect((w.find('[data-test="screenshot-protection"]').element as HTMLInputElement).checked)
+      .toBe(false);
+    expect(w.find('[data-test="security-error"]').text()).toContain("截屏防护设置失败，请重试");
+  });
 });

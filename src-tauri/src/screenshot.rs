@@ -76,14 +76,32 @@ used_on_android_only! {
 mod android {
     use super::{describe_error, flag_call};
     use jni::objects::JValue;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use tauri::WebviewWindow;
+
+    /// 等 JNI 回调送回结果的上限。
+    ///
+    /// 必须有界：`JniHandle::exec` 是**投递式**的（把闭包排进 wry 的主线程管道，
+    /// 没有回执通道），结果只能等回调自己送回来。若窗口在回调执行前被销毁，
+    /// 回调就永远不会来 —— 没有上限的话这条线程会被永久挂住。
+    const JNI_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// 在 Android 上开关 `FLAG_SECURE`。
     ///
     /// 必须拿到真实 Activity 才能改窗口标志位，所以走
     /// `WebviewWindow::with_webview` + `JniHandle::exec`。
+    ///
+    /// **JNI 失败必须沿 `Err` 冒泡**：前端据此显示「截屏防护设置失败，请重试」，
+    /// 若只 `eprintln!` 记一笔，那条提示就永远不可达 —— 界面会显示「已关闭」，
+    /// 而系统层其实还开着。`exec` 没有回执通道，所以这里自带一条 `mpsc` 回执通道，
+    /// 等回调把结果送回来再返回。
+    ///
+    /// 调用方必须跑在**非主线程**（`lib.rs` 里用 `#[tauri::command(async)]` 保证）：
+    /// JNI 回调是在 Android 主线程上执行的，在主线程上等它等于自锁。
     pub fn set(window: &WebviewWindow, enabled: bool) -> Result<(), String> {
         let (method, flag) = flag_call(enabled);
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
 
         window
             .with_webview(move |webview| {
@@ -98,13 +116,23 @@ mod android {
                         Ok(())
                     })();
 
-                    // 单次开关失败不该让 App 崩掉，记一笔日志即可。
-                    if let Err(e) = result {
-                        eprintln!("[screenshot] {}", describe_error(e));
-                    }
+                    // 接收端可能已经超时走人；通道断了不是错误，忽略即可。
+                    let _ = tx.send(result.map_err(describe_error));
                 });
             })
-            .map_err(|e| format!("无法访问 WebView: {e}"))
+            .map_err(|e| format!("无法访问 WebView: {e}"))?;
+
+        match rx.recv_timeout(JNI_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(message),
+            // 拿不到回执时按失败上报：宁可让用户重试一次，也不能谎称已生效。
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err("等待系统窗口响应超时，截屏防护未生效".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("截屏防护的系统调用未能执行".to_string())
+            }
+        }
     }
 }
 

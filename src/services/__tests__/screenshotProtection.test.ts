@@ -12,19 +12,20 @@ import { applyScreenshotProtection } from "@/services/screenshotProtection";
 /**
  * 截屏防护的接线测试。
  *
- * 这一层只有两个契约：把布尔值原样送到 Rust command；任何失败都不许外泄成 rejection。
- * 后者是硬要求——`main.ts` 在 `app.mount()` 之前调用它，抛出去就是白屏。
+ * 这一层只有两个契约：把布尔值原样送到 Rust command；**失败必须 reject**。
+ * 后者是 R69 的裁决：Rust 侧已把系统层失败沿 `Err` 冒泡，这里若再吞一次，
+ * `SecurityPage.vue` 那条「截屏防护设置失败，请重试」就永远是死代码 ——
+ * 用户在界面上关掉防护、系统层其实还开着，且零反馈。
+ * rejection 不会白屏：两个调用方（`main.ts` / `SecurityPage.vue`）都自有 try/catch。
  */
 describe("applyScreenshotProtection", () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    invoke.mockImplementation(async () => undefined);
   });
 
   afterEach(() => {
-    warnSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
   it("调用 Rust command 并传 enabled", async () => {
@@ -37,25 +38,33 @@ describe("applyScreenshotProtection", () => {
     expect(invoke).toHaveBeenCalledWith("set_screenshot_protection", { enabled: false });
   });
 
-  it("非 Tauri 环境（invoke 抛错）时静默忽略，不阻断启动", async () => {
+  it("非 Tauri 环境（invoke 抛错）时把失败外泄给调用方，由调用方决定怎么呈现", async () => {
     invoke.mockRejectedValueOnce(new Error("not in tauri"));
-    await expect(applyScreenshotProtection(true)).resolves.toBeUndefined();
+    await expect(applyScreenshotProtection(true)).rejects.toThrow("not in tauri");
   });
 
-  it("invoke 失败时留一条告警日志，便于排障", async () => {
-    invoke.mockRejectedValueOnce(new Error("not in tauri"));
-    await applyScreenshotProtection(true);
-    expect(warnSpy).toHaveBeenCalled();
+  it("Rust command 返回 Err（字符串）时同样 reject，且原样带出原因", async () => {
+    invoke.mockRejectedValueOnce("设置 FLAG_SECURE 失败: jni: null pointer");
+    await expect(applyScreenshotProtection(false)).rejects.toBe(
+      "设置 FLAG_SECURE 失败: jni: null pointer",
+    );
+  });
+
+  it("失败不被吞掉：调用方 await 之后不会继续往下走", async () => {
+    invoke.mockRejectedValueOnce(new Error("FLAG_SECURE 设置失败"));
+    let reached = false;
+    try {
+      await applyScreenshotProtection(false);
+      reached = true;
+    } catch {
+      // 预期路径
+    }
+    expect(reached).toBe(false);
   });
 
   it("每个开关各调用一次，不重复下发", async () => {
     await applyScreenshotProtection(true);
     await applyScreenshotProtection(false);
     expect(invoke).toHaveBeenCalledTimes(2);
-  });
-
-  it("Rust command 返回 Err 时同样不外泄", async () => {
-    invoke.mockRejectedValueOnce("FLAG_SECURE 设置失败");
-    await expect(applyScreenshotProtection(false)).resolves.toBeUndefined();
   });
 });
