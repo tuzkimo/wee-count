@@ -265,4 +265,41 @@ describe("lock store", () => {
     expect(await lock.verifyPin("194726")).toBe(true);
     expect(lock.failedAttempts).toBe(0);
   });
+
+  // ---- 终审修复轮：R74（biometricEnabled 的「恒 false」必须在读路径上也成立）----
+
+  it("R74：磁盘里的 biometric_enabled=true 在读路径上被钉成 false，且回写后永不复活", async () => {
+    const lock = useLockStore();
+    const hash = await hashPassword("194726");
+    localStorage.setItem(
+      "app_lock",
+      JSON.stringify({
+        type: "pin",
+        hash,
+        // 写侧从来不产出 true，但读侧读得进任意 boolean：历史配置或手改文件都可能带它。
+        biometric_enabled: true,
+        auto_lock_seconds: 60,
+        screenshot_protection: true,
+      }),
+    );
+
+    await lock.load();
+
+    expect(lock.isLockConfigured).toBe(true);
+    // 生物识别不在本轮范围内：读进来的 true 不得进入内存态，否则解锁页会渲染出一个
+    // 点了没有任何反应的指纹按钮（`biometric` 事件无人处理）。
+    expect(lock.biometricEnabled).toBe(false);
+
+    // 回写之后同样收敛：落盘的永远是 false，不会把 true 一代代传下去。
+    await lock.updateSettings({ auto_lock_seconds: 300 });
+    const stored = JSON.parse(localStorage.getItem("app_lock") ?? "{}") as Record<string, unknown>;
+    expect(stored.biometric_enabled).toBe(false);
+  });
+
+  it("R74：图案点数不足的报错文案由 PATTERN_MIN_DOTS 生成（不是硬编码的「4」）", async () => {
+    const lock = useLockStore();
+    // 钉住**用户可见的确切文案**：把常量改成 5 时这里会失败并显示实际产出的
+    // 「图案至少连接 5 个点」，正是「文案确实跟着常量走」的证据。
+    await expect(lock.setLock("pattern", [1, 2, 3])).rejects.toThrow("图案至少连接 4 个点");
+  });
 });

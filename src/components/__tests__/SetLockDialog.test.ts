@@ -31,6 +31,35 @@ async function typePin(w: ReturnType<typeof mount>, pin: string) {
   await flushPromises();
 }
 
+/**
+ * happy-dom 不做布局，rect 恒为 0；按真实边长喂 rect，指针坐标才能 1:1 换算。
+ * 与 `UnlockPage.test.ts` 里的同名助手一致：图案路径不能只测「点数够」的那一支。
+ */
+function stubRect(width: number): void {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+    left: 0, top: 0, right: width, bottom: width,
+    width, height: width, x: 0, y: 0,
+    toJSON: () => ({}),
+  } as DOMRect);
+}
+
+/** 在九宫格上划出给定点位序列。 */
+async function dragPattern(w: ReturnType<typeof mount>, dots: number[]): Promise<void> {
+  const svg = w.find('[data-test="pattern-lock"]');
+  const size = Number(svg.attributes("width"));
+  stubRect(size);
+  const cell = size / 3;
+  const at = (dot: number) => ({
+    clientX: ((dot - 1) % 3 + 0.5) * cell,
+    clientY: (Math.floor((dot - 1) / 3) + 0.5) * cell,
+    pointerId: 1,
+  });
+  await svg.trigger("pointerdown", at(dots[0]));
+  for (const dot of dots.slice(1)) await svg.trigger("pointermove", at(dot));
+  await svg.trigger("pointerup", { pointerId: 1 });
+  await flushPromises();
+}
+
 describe("SetLockDialog", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -173,6 +202,20 @@ describe("SetLockDialog", () => {
       .toBe("尝试次数过多，请关闭对话框后在锁屏页改用账户密码，再重新设置应用锁");
     expect(w.text()).not.toContain("密码错误");
     expect(w.text()).not.toContain("设置新应用锁");
+  });
+
+  it("R74：图案点数不足的提示由 PATTERN_MIN_DOTS 生成（文案不再硬编码「4」）", async () => {
+    const w = mount(SetLockDialog, { props: { open: true } });
+    await w.find('[data-test="lock-type-pattern"]').trigger("click");
+    expect(w.find('[data-test="pattern-lock"]').exists()).toBe(true);
+
+    // 只连 3 个点：PatternLock 结算出 invalid，对话框据此提示。
+    await dragPattern(w, [1, 2, 3]);
+
+    expect(w.find('[data-test="set-lock-message"]').text()).toBe("图案至少需要连接 4 个点");
+    // 未完成输入同样不算一次失败验证，也不该留下「已保存」的痕迹。
+    expect(w.emitted("saved")).toBeUndefined();
+    expect(useLockStore().isLockConfigured).toBe(false);
   });
 
   it("落盘进行中禁用「取消」：点取消既不放行、也不关闭对话框", async () => {

@@ -14,6 +14,8 @@ const state = vi.hoisted(() => ({
   loadRejects: false,
   screenshotFails: false,
   routerInstallThrows: false,
+  /** `LOCK_SETTINGS_DEFAULTS.screenshotProtection` 的替身取值（R74）。 */
+  defaultScreenshot: true,
 }));
 
 vi.mock("@/App.vue", () => ({
@@ -41,6 +43,15 @@ vi.mock("@/services/screenshotProtection", () => ({
 }));
 
 vi.mock("@/stores/lock", () => ({
+  // 取值走 getter：用例可以把它改成一个与字面量 `true` 不同的值，用来证明 main.ts
+  // 读的是这个共用常量，而不是自己抄的一份字面量（R74）。
+  LOCK_SETTINGS_DEFAULTS: {
+    type: "pin",
+    autoLockSeconds: 60,
+    get screenshotProtection() {
+      return state.defaultScreenshot;
+    },
+  },
   useLockStore: () => {
     state.order.push("useLockStore");
     if (state.lockStoreThrows) throw new Error("no active pinia");
@@ -67,6 +78,7 @@ beforeEach(() => {
   state.loadRejects = false;
   state.screenshotFails = false;
   state.routerInstallThrows = false;
+  state.defaultScreenshot = true;
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -153,5 +165,15 @@ describe("main.ts 启动顺序", () => {
 
     expect(warnSpy).toHaveBeenCalledWith("应用截屏防护启用失败", expect.any(Error));
     expect(state.order).toContain("render");
+  });
+
+  it("R74：门禁失败时的截屏防护默认值来自 LOCK_SETTINGS_DEFAULTS，不是另抄的字面量", async () => {
+    // 把共用常量换成与字面量 `true` 不同的值：main.ts 若仍写死 `true`，这里必失败。
+    state.defaultScreenshot = false;
+    state.lockStoreThrows = true;
+
+    await startApp();
+
+    expect(state.order).toContain("screenshot:false");
   });
 });

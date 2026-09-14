@@ -11,7 +11,7 @@ import {
 import { usePrefsStore } from "@/stores/prefs";
 import { hashPassword, verifyPassword } from "@/utils/passwordHash";
 import { PIN_LENGTH, isWeakPin } from "@/utils/pin";
-import { encodePattern, isValidPattern } from "@/utils/pattern";
+import { PATTERN_MIN_DOTS, encodePattern, isValidPattern } from "@/utils/pattern";
 
 /** 连续错误达到此值后，只接受账户密码。 */
 export const MAX_UNLOCK_ATTEMPTS = 5;
@@ -21,8 +21,11 @@ export const MAX_UNLOCK_ATTEMPTS = 5;
  *
  * ref 的初始值与 `applyConfig(null)` 的复位**共用这一份**：只此一套默认值，
  * 才不会出现「未配置态」与「默认值态」两个各自漂移的状态。
+ *
+ * 导出是给 `main.ts` 用的（R74）：启动门禁失败时要保持的那个从严默认值必须与这里
+ * 是**同一个**常量，否则两处只靠注释相连，改一处另一处静默漂移。
  */
-const LOCK_SETTINGS_DEFAULTS: {
+export const LOCK_SETTINGS_DEFAULTS: {
   type: LockType;
   autoLockSeconds: number;
   screenshotProtection: boolean;
@@ -79,7 +82,11 @@ export const useLockStore = defineStore("lock", () => {
     isLockConfigured.value = true;
     lockType.value = config.type;
     hash.value = config.hash;
-    biometricEnabled.value = config.biometric_enabled;
+    // 生物识别不在本轮范围：这里**钉成 false**，不采信磁盘上的取值（R74）。
+    // 读路径会从 settings.json 读入任意 boolean，而 `setLock`/`updateSettings` 会把它
+    // 原样回写 —— 一份 `biometric_enabled: true` 会这样一直传下去，让解锁页渲染出一个
+    // 点了没有任何反应的指纹按钮（`biometric` 事件无人处理）。
+    biometricEnabled.value = false;
     autoLockSeconds.value = config.auto_lock_seconds;
     screenshotProtection.value = config.screenshot_protection;
   }
@@ -183,7 +190,7 @@ export const useLockStore = defineStore("lock", () => {
       }
     } else {
       if (typeof secret === "string" || !isValidPattern(secret)) {
-        throw new Error("图案至少连接 4 个点");
+        throw new Error(`图案至少连接 ${PATTERN_MIN_DOTS} 个点`);
       }
     }
 

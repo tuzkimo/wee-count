@@ -351,4 +351,22 @@ describe("UnlockPage", () => {
     expect(w.find('[data-test="unlock-account-form"]').exists()).toBe(false);
     expect(w.find('[data-test="unlock-back"]').exists()).toBe(false);
   });
+
+  // ---- 终审修复轮：R74 ----
+
+  it("R74：磁盘配置带 biometric_enabled=true 也不渲染指纹按钮（本轮不做生物识别）", async () => {
+    const lock = useLockStore();
+    // 篡改落盘配置：读路径会读入任意 boolean，而写侧只会写 false。
+    const stored = JSON.parse(localStorage.getItem("app_lock") ?? "{}") as Record<string, unknown>;
+    localStorage.setItem("app_lock", JSON.stringify({ ...stored, biometric_enabled: true }));
+
+    await lock.load();
+    lock.lock();
+
+    const w = mount(UnlockPage);
+
+    // 读路径把这一位钉成 false，界面上才不会出现一个「点了没反应」的指纹按钮。
+    expect(lock.biometricEnabled).toBe(false);
+    expect(w.find('[data-test="pin-biometric"]').exists()).toBe(false);
+  });
 });

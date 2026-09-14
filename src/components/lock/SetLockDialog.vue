@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue";
 import NumberPinPad from "@/components/lock/NumberPinPad.vue";
 import PatternLock from "@/components/lock/PatternLock.vue";
 import { useLockStore } from "@/stores/lock";
+import { PATTERN_MIN_DOTS } from "@/utils/pattern";
 import type { LockType } from "@/services/lockStorage";
 
 const props = withDefaults(defineProps<{
@@ -158,7 +159,7 @@ async function accept(entry: string | readonly number[]): Promise<void> {
 }
 
 function onInvalidPattern(): void {
-  fail("图案至少需要连接 4 个点");
+  fail(`图案至少需要连接 ${PATTERN_MIN_DOTS} 个点`);
 }
 
 /** 切换锁类型：验证阶段锁的类型是既有事实，不允许改。 */

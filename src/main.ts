@@ -3,7 +3,7 @@ import { createPinia } from "pinia";
 import App from "@/App.vue";
 import router from "@/router";
 import "@/assets/main.css";
-import { useLockStore } from "@/stores/lock";
+import { LOCK_SETTINGS_DEFAULTS, useLockStore } from "@/stores/lock";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
 
 const app = createApp(App);
@@ -29,9 +29,11 @@ app.use(createPinia()); // 必须先装 Pinia，useLockStore() 才有活跃实�
  * 另外不能用顶层 await：vite 默认的模块目标不含 top-level await，`npm run build` 会失败。
  */
 async function bootstrap(): Promise<void> {
-  // 截屏防护的取值。门禁失败时保持这里的从严默认值，
-  // 与 stores/lock.ts 的 LOCK_SETTINGS_DEFAULTS.screenshotProtection 一致。
-  let screenshotProtection = true;
+  // 截屏防护的取值。门禁失败时保持这里的从严默认值 —— 直接共用
+  // `LOCK_SETTINGS_DEFAULTS.screenshotProtection`，不另抄一份字面量：
+  // 两处各写各的只会靠一句注释相连，改一处另一处就静默漂移（门禁失败的降级路径
+  // 会按一个与 store 默认值不同的值去动系统层）。
+  let screenshotProtection = LOCK_SETTINGS_DEFAULTS.screenshotProtection;
 
   try {
     try {

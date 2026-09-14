@@ -7,6 +7,7 @@ import PatternLock from "@/components/lock/PatternLock.vue";
 import SetLockDialog from "@/components/lock/SetLockDialog.vue";
 import { useLockStore } from "@/stores/lock";
 import { sanitizeRedirect } from "@/router/lockGuard";
+import { PATTERN_MIN_DOTS } from "@/utils/pattern";
 
 const route = useRoute();
 const router = useRouter();
@@ -90,7 +91,7 @@ async function onPattern(dots: number[]): Promise<void> {
  */
 function onInvalidPattern(): void {
   error.value = true;
-  message.value = "图案至少需要连接 4 个点";
+  message.value = `图案至少需要连接 ${PATTERN_MIN_DOTS} 个点`;
 }
 
 /** 取消重设 → 关掉对话框，人仍留在锁内（R18：`close` 必须有人接）。 */
