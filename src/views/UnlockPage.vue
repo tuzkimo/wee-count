@@ -35,6 +35,8 @@ function leave(): void {
   // （守卫重定向、或路由实现延迟），残留的 `showAccountForm` 会让人在解锁页上
   // 多看一眼本不该出现的表单。
   showAccountForm.value = false;
+  // 放行原语。`verifyPin`/`verifyPattern` 只验证、不放行（R72），PIN/图案两条路径
+  // 的解锁全靠这一句 —— 删掉它用户就再也解不开锁（比漏洞更糟），不要挪走。
   lock.unlock();
   void router.replace(sanitizeRedirect(route.query.redirect));
 }

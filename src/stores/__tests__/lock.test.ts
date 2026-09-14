@@ -228,4 +228,41 @@ describe("lock store", () => {
     await lock.load();
     expect(lock.isLockConfigured).toBe(false);
   });
+
+  // ---- 终审修复轮：R72（验证与放行在 store 层分开）----
+
+  it("R72：PIN 正确只算验证通过，不放行（isLocked 保持为真）", async () => {
+    const lock = await configuredLock();
+    lock.lock();
+    expect(lock.isLocked).toBe(true);
+
+    expect(await lock.verifyPin("194726")).toBe(true);
+    // 验证成功 ≠ 放行：放行是调用方（`UnlockPage.leave()`）显式调 `unlock()` 的事。
+    expect(lock.isLocked).toBe(true);
+
+    // 正对照：调用方显式 `unlock()` 之后确实解锁 —— 证明上面那条不是「压根没验成功」。
+    lock.unlock();
+    expect(lock.isLocked).toBe(false);
+  });
+
+  it("R72：图案正确只算验证通过，不放行（isLocked 保持为真）", async () => {
+    const lock = await configuredLock("pattern");
+    lock.lock();
+
+    expect(await lock.verifyPattern([1, 2, 3, 5])).toBe(true);
+    expect(lock.isLocked).toBe(true);
+
+    lock.unlock();
+    expect(lock.isLocked).toBe(false);
+  });
+
+  it("R72：验证成功仍然清零失败计数（既有语义不因拆分而削弱）", async () => {
+    const lock = await configuredLock();
+    await lock.verifyPin("000001");
+    await lock.verifyPin("000001");
+    expect(lock.failedAttempts).toBe(2);
+
+    expect(await lock.verifyPin("194726")).toBe(true);
+    expect(lock.failedAttempts).toBe(0);
+  });
 });

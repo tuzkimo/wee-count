@@ -86,6 +86,21 @@ describe("SetLockDialog", () => {
     expect(w.text()).toContain("设置新应用锁");
   });
 
+  it("R72：mode=change 验旧锁成功也不放行（锁定态下 isLocked 保持为真）", async () => {
+    const lock = useLockStore();
+    await lock.setLock("pin", "194726");
+    lock.lock();
+    expect(lock.isLocked).toBe(true);
+
+    const w = mount(SetLockDialog, { props: { open: true, mode: "change" } });
+    await typePin(w, "194726");
+
+    // 旧锁验过了，对话框确实推进到设置新锁阶段……
+    expect(w.text()).toContain("设置新应用锁");
+    // ……但人仍在锁内：验证不是放行原语，放行只能由调用方显式 `unlock()`。
+    expect(lock.isLocked).toBe(true);
+  });
+
   it("mode=change 时旧锁错误则停在验证阶段并提示", async () => {
     await useLockStore().setLock("pin", "194726");
 

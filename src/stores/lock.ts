@@ -105,6 +105,20 @@ export const useLockStore = defineStore("lock", () => {
     failedAttempts.value = 0;
   }
 
+  /**
+   * 校验口令。**只验证，不放行**（R72）。
+   *
+   * 验证与放行是两件事，刻意拆开：成功时只清掉失败计数，`isLocked` 一动不动，
+   * 由**调用方**在明确要放行时自己调 `unlock()`。若这里顺手 `unlock()`，
+   * `verifyPin`/`verifyPattern` 本身就是解锁原语——「改锁」对话框验旧锁那一步
+   * （`SetLockDialog` 的 `mode="change"`）会变成「验旧锁即放行、且不必设新锁」的旁路，
+   * 与 R33 对账户密码路径的刻意设计正好相反。
+   *
+   * 现有调用方（全量清单，改动时同步核对）：
+   * - `UnlockPage.onPin` / `onPattern`：验证成功后走 `leave()`，那里**显式**调
+   *   `lock.unlock()` —— 解锁链完整；
+   * - `SetLockDialog.accept` 的 `verify` 阶段：只借它验旧锁，不该放行。
+   */
   async function verifySecret(secret: string): Promise<boolean> {
     if (!hash.value) return false;
     // 降级态下即使输入正确也不再放行，否则「连错 5 次」形同虚设。
@@ -114,7 +128,8 @@ export const useLockStore = defineStore("lock", () => {
     }
     const ok = await verifyPassword(secret, hash.value);
     if (ok) {
-      unlock();
+      // 验对了就把计数清零（与放行与否无关），保持「正确输入即归零」的既有语义。
+      failedAttempts.value = 0;
     } else {
       failedAttempts.value++;
     }

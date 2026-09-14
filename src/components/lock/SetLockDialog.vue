@@ -110,6 +110,9 @@ async function accept(entry: string | readonly number[]): Promise<void> {
   const secret = toSecret(entry);
 
   if (stage.value === "verify") {
+    // 只验旧锁、**不放行**（R72）：`verifyPin`/`verifyPattern` 成功后不再动 `isLocked`。
+    // 本对话框的宿主在守卫之后（`SecurityPage`），这里放行就等于「验旧锁即解锁」；
+    // 真正的放行只发生在解锁页 `leave()`，且必须在设好新锁之后。
     const ok = typeof entry === "string"
       ? await lock.verifyPin(entry)
       : await lock.verifyPattern(entry);

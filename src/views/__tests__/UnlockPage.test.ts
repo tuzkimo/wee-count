@@ -133,6 +133,8 @@ describe("UnlockPage", () => {
   it("正确 PIN 解锁并回跳 redirect", async () => {
     const w = mount(UnlockPage);
     await typePin(w, PIN);
+    // 端到端：验证本身不放行（R72），真正解锁的是 `leave()` 里那句 `lock.unlock()`。
+    // 断言的是最终状态而不是 `verifyPin` 的返回值 —— 漏掉那一步用户就解不开锁。
     expect(useLockStore().isLocked).toBe(false);
     expect(replace).toHaveBeenCalledWith("/accounts");
   });
@@ -169,6 +171,7 @@ describe("UnlockPage", () => {
     await dragPattern(w, [1, 2, 3, 4]);
     await settle(w);
 
+    // 图案这条链同样端到端：验证不放行（R72），`leave()` 的 `unlock()` 才放行。
     expect(useLockStore().isLocked).toBe(false);
     expect(replace).toHaveBeenCalledWith("/accounts");
   });
