@@ -25,6 +25,16 @@ describe("useAmountMask", () => {
     expect(maskNumber(0)).toBe("0.00");
   });
 
+  it("maskNumber 负值不变量：显示态保留负号，遮蔽态仍是纯占位符", () => {
+    const { maskNumber } = useAmountMask();
+    const masked = maskNumber(-1234.56);
+    expect(masked).toBe(AMOUNT_PLACEHOLDER);
+    expect(masked).not.toContain("-");
+
+    usePrefsStore().showAmounts();
+    expect(maskNumber(-1234.56)).toBe("-1,234.56");
+  });
+
   it("默认状态下 maskCurrency 返回带 ¥ 的占位符", () => {
     const { maskCurrency } = useAmountMask();
     expect(maskCurrency(1234.56)).toBe(`¥${AMOUNT_PLACEHOLDER}`);
