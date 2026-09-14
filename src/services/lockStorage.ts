@@ -37,6 +37,14 @@ function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+/**
+ * 构造持久化失败的错误。target 是 ES2020，用不了 `new Error(msg, { cause })`，
+ * 因此把根因挂在 `cause` 属性上，方便调用方与日志追溯。
+ */
+function persistError(message: string, cause: unknown): Error {
+  return Object.assign(new Error(message), { cause });
+}
+
 // 只缓存成功结果。失败不锁存，下次调用会重新 load()，
 // 避免暂时性故障变成永久降级（降级后配置只会写进 localStorage，与重启后的真相源漂移）。
 let storePromise: Promise<Store> | null = null;
@@ -80,9 +88,14 @@ export function parseAppLock(raw: unknown): AppLockConfig | null {
 }
 
 /**
- * 读锁配置，**永不抛错**（Tauri 分支的 store 操作同样被兜住）：
+ * 读锁配置，**读路径永不抛错**：
+ * - Tauri 分支：load() 失败与 store.get() 抛错都被兜住；
+ * - web 分支：localStorage 缺失或 getItem 抛 SecurityError 也被兜住。
+ *
  * 启动路径是 `await readAppLock(); ...; app.mount("#app")`，这里 reject 会直接白屏。
  * 读不出来按「未配置锁」处理。
+ *
+ * 范围仅限**读**：写/清除是用户主动发起的动作，持久化失败必须 reject（见 writeAppLock）。
  */
 export async function readAppLock(): Promise<AppLockConfig | null> {
   const resolved = await resolveStore();
@@ -93,7 +106,15 @@ export async function readAppLock(): Promise<AppLockConfig | null> {
   }
 
   if (resolved.kind === "web") {
-    const text = localStorage.getItem(KEY);
+    // WebView 存储被禁用/受限时 getItem 会抛 SecurityError；localStorage 本身也可能不存在。
+    // 读路径一律吞掉，绝不因为读不到配置就让启动路径崩掉。
+    let text: string | null;
+    try {
+      text = typeof localStorage === "undefined" ? null : localStorage.getItem(KEY);
+    } catch (cause) {
+      console.warn("[lockStorage] localStorage 读取失败，本次按未配置锁处理", cause);
+      return null;
+    }
     if (!text) return null;
     let raw: unknown;
     try {
@@ -113,8 +134,15 @@ export async function readAppLock(): Promise<AppLockConfig | null> {
   }
 }
 
-/** 写入前先过一遍 parseAppLock：写入方是应用自己的代码，非法输入应当立刻炸在根因处。 */
+/**
+ * 写入锁配置。
+ *
+ * 与读路径不同，**持久化失败必须 reject**：这是用户主动发起的动作，
+ * 静默返回等于对用户动作做假确认（UI 提示「已开启」而磁盘上什么都没有，
+ * 下次启动锁直接消失）。调用方 await 到 rejection 就会自然跳过成功提示。
+ */
 export async function writeAppLock(config: AppLockConfig): Promise<void> {
+  // 写入前先过一遍 parseAppLock：写入方是应用自己的代码，非法输入应当立刻炸在根因处。
   const parsed = parseAppLock(config);
   if (!parsed) {
     throw new Error("writeAppLock: 锁配置不合法，拒绝写入");
@@ -126,11 +154,22 @@ export async function writeAppLock(config: AppLockConfig): Promise<void> {
   // （新设的锁下次启动消失、清掉的锁下次启动复活、锁配置永久迁到 WebView）。
   if (resolved.kind === "error") {
     console.warn("[lockStorage] settings.json 加载失败，锁配置未写入", resolved.cause);
-    return;
+    throw persistError("writeAppLock: settings.json 加载失败，锁配置未写入", resolved.cause);
   }
 
   if (resolved.kind === "web") {
-    localStorage.setItem(KEY, JSON.stringify(parsed));
+    if (typeof localStorage === "undefined") {
+      const cause = new Error("localStorage 不可用");
+      console.warn("[lockStorage] localStorage 不可用，锁配置未写入", cause);
+      throw persistError("writeAppLock: localStorage 不可用，锁配置未写入", cause);
+    }
+    try {
+      localStorage.setItem(KEY, JSON.stringify(parsed));
+    } catch (cause) {
+      // 存储被禁用（SecurityError）或配额耗尽（QuotaExceededError）。
+      console.warn("[lockStorage] 写入 localStorage 失败", cause);
+      throw persistError("writeAppLock: 锁配置写入 localStorage 失败", cause);
+    }
     return;
   }
 
@@ -139,20 +178,32 @@ export async function writeAppLock(config: AppLockConfig): Promise<void> {
     await resolved.store.save();
   } catch (cause) {
     console.warn("[lockStorage] 写入锁配置失败", cause);
+    throw persistError("writeAppLock: 写入 settings.json 失败", cause);
   }
 }
 
+/** 清除锁配置。持久化失败同样必须 reject，理由见 writeAppLock。 */
 export async function clearAppLock(): Promise<void> {
   const resolved = await resolveStore();
 
   // 同理：error 态只删 localStorage 会让 settings.json 里的合法锁在下次启动复活。
   if (resolved.kind === "error") {
     console.warn("[lockStorage] settings.json 加载失败，锁配置未清除", resolved.cause);
-    return;
+    throw persistError("clearAppLock: settings.json 加载失败，锁配置未清除", resolved.cause);
   }
 
   if (resolved.kind === "web") {
-    localStorage.removeItem(KEY);
+    if (typeof localStorage === "undefined") {
+      const cause = new Error("localStorage 不可用");
+      console.warn("[lockStorage] localStorage 不可用，锁配置未清除", cause);
+      throw persistError("clearAppLock: localStorage 不可用，锁配置未清除", cause);
+    }
+    try {
+      localStorage.removeItem(KEY);
+    } catch (cause) {
+      console.warn("[lockStorage] 清除 localStorage 中的锁配置失败", cause);
+      throw persistError("clearAppLock: 清除 localStorage 中的锁配置失败", cause);
+    }
     return;
   }
 
@@ -161,5 +212,6 @@ export async function clearAppLock(): Promise<void> {
     await resolved.store.save();
   } catch (cause) {
     console.warn("[lockStorage] 清除锁配置失败", cause);
+    throw persistError("clearAppLock: 清除 settings.json 中的锁配置失败", cause);
   }
 }
