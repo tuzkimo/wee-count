@@ -5,6 +5,8 @@ import { createPinia, setActivePinia } from "pinia";
 import { toLocalDatetimeString } from "@/utils/datetime";
 import { usePrefsStore } from "@/stores/prefs";
 import LineChart from "@/components/charts/LineChart.vue";
+import DonutChart from "@/components/charts/DonutChart.vue";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 import type { ReportData } from "@/services/reports";
 
 const setUnit = vi.fn(); const shift = vi.fn(); const reload = vi.fn();
@@ -122,28 +124,39 @@ describe("ReportsPage", () => {
       global: { plugins: [createPinia()], stubs: { LineChart: true, DonutChart: true } },
     });
     await flushPromises();
-    // totals: income 3 / expense 1 / balance 2；期末净资产 105（netAsset 末值）
-    expect(w.text()).toContain("••••••");
+    // 六处汇总金额的真值都必须缺席：收入 3 / 支出 1 / 结余 2 / 期末净资产 105（netAsset 末值）
+    // / 分类合计 1（breakdown.total + breakdown.list[0].total）。涨跌幅百分比渲染为 "+10%" 之类，
+    // 与 "X.00" 形态不冲突，不会误伤。
+    expect(w.text()).toContain(AMOUNT_PLACEHOLDER);
     expect(w.text()).not.toContain("105.00");
+    expect(w.text()).not.toContain("3.00");
     expect(w.text()).not.toContain("2.00");
+    expect(w.text()).not.toContain("1.00");
   });
 
   it("点击眼睛按钮后显示真实金额", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
-    usePrefsStore().showAmounts();
     const w = mount(ReportsPage, {
       global: { plugins: [pinia], stubs: { LineChart: true, DonutChart: true } },
     });
     await flushPromises();
+    // 遮蔽态先坐实，否则「点击后显示真值」可能是本来就显示
+    expect(w.text()).toContain(AMOUNT_PLACEHOLDER);
+    // 真实点击页面上的眼睛按钮，覆盖 <AmountMaskToggle /> 的存在性与点击联通性
+    await w.find('[data-test="amount-mask-toggle"]').trigger("click");
+    await flushPromises();
     expect(w.text()).toContain("105.00");
     expect(w.text()).toContain("3.00");
     expect(w.text()).toContain("1.00");
+    expect(w.text()).toContain("2.00");
+    expect(w.text()).not.toContain(AMOUNT_PLACEHOLDER);
   });
 
   // 两张图（② 收支趋势、④ 账户资产变动）的 y 轴刻度与 tooltip 都会渲染汇总金额，
   // 上面的用例把 LineChart stub 掉了，测不到 mask-values 接线，故此处用真实组件钉住。
-  it("两个 LineChart 的 maskValues 均跟随遮蔽开关", async () => {
+  // DonutChart 用 stub 挂载，但其 props 仍由 VTU 保留，故同样在此断言中心值接线。
+  it("两个 LineChart 的 maskValues 与 DonutChart 中心值均跟随遮蔽开关", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const w = mount(ReportsPage, { global: { plugins: [pinia], stubs: { DonutChart: true } } });
@@ -154,6 +167,7 @@ describe("ReportsPage", () => {
     for (const chart of masked) {
       expect(chart.props("maskValues")).toBe(true);
     }
+    expect(w.findComponent(DonutChart).props("centerValue")).toBe(AMOUNT_PLACEHOLDER);
 
     usePrefsStore().showAmounts();
     await flushPromises();
@@ -162,5 +176,6 @@ describe("ReportsPage", () => {
     for (const chart of shown) {
       expect(chart.props("maskValues")).toBe(false);
     }
+    expect(w.findComponent(DonutChart).props("centerValue")).toBe("1.00");
   });
 });
