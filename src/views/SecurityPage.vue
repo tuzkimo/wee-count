@@ -23,10 +23,24 @@ const savingScreenshot = ref(false);
 const lockToggleEl = ref<HTMLInputElement | null>(null);
 const screenshotToggleEl = ref<HTMLInputElement | null>(null);
 
-onMounted(async () => {
-  // 读路径永不抛错（见 lockStorage.readAppLock），不会产生未处理的 rejection。
-  await lock.load();
-  await replayScreenshotProtection();
+/**
+ * 本页**不**在这里重新读盘（R71）。
+ *
+ * store 已在 `main.ts` 的启动门禁里 `load()` 过一次，这里再读一次不是「刷新」而是
+ * 一次**覆盖**：`readAppLock` 的契约是任何读失败都 fail-open 返回 `null`
+ * （冷启动语境下的刻意裁决，R26），于是 `load()` → `applyConfig(null)` 会把本会话里
+ * 已经生效的锁**静默降级**成「未配置 + 默认值」——`lock()` 因 `isLockConfigured=false`
+ * 直接空转、总开关显示关闭、没有任何提示；紧接着的 `replayScreenshotProtection()`
+ * 还会拿复位出来的默认 `true` 把系统级截屏防护重新打开。
+ *
+ * 冷启动那条 fail-open 的理由（别把用户锁在自己明文数据的门外）在这里并不成立：
+ * 用户此刻显然已经进来了。所以本页只认会话内的真实状态，系统层重放照旧。
+ *
+ * `replayScreenshotProtection` 自己吞掉失败（见其文档），这里不必也不该 await 它的
+ * rejection：`void` 掉即可，不存在未处理的 rejection。
+ */
+onMounted(() => {
+  void replayScreenshotProtection();
 });
 
 /**

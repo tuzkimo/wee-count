@@ -399,4 +399,37 @@ describe("SecurityPage", () => {
       .toBe(false);
     expect(w.find('[data-test="security-error"]').text()).toContain("截屏防护设置失败，请重试");
   });
+
+  // ---- 终审修复轮：R71（本页不得把已配置的锁静默降级）----
+
+  it("R71：读盘 fail-open 返回 null 也不把已配置的锁降级，且重放的是真实值", async () => {
+    const lock = useLockStore();
+    await lock.setLock("pin", PIN);
+    // 用户此前拉长了自动锁定时长、关掉了截屏防护：这是本会话的真相，也是系统层的真相。
+    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    vi.mocked(applyScreenshotProtection).mockClear();
+
+    // 让读路径 fail-open：`readAppLock` 对任何读/解析失败都返回 null（刻意的 R26 契约）。
+    // 页面若在 onMounted 里再 `load()` 一次，就会以 null 覆盖会话状态 →
+    // 锁降级成「未配置 + 默认值」，紧接着又拿默认 `true` 重放系统层。
+    localStorage.setItem("app_lock", "garbage");
+
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    // 锁还是已配置的锁：口令/锁型都没被抹掉。
+    expect(lock.isLockConfigured).toBe(true);
+    expect(lock.lockType).toBe("pin");
+    // 总开关仍是勾选态、改锁入口仍在（降级会让两者一起消失）。
+    expect((w.find('[data-test="lock-enabled"]').element as HTMLInputElement).checked).toBe(true);
+    expect(w.find('[data-test="change-lock"]').exists()).toBe(true);
+
+    // 设置也没被复位成 LOCK_SETTINGS_DEFAULTS。
+    expect(lock.autoLockSeconds).toBe(300);
+    expect(lock.screenshotProtection).toBe(false);
+    expect((w.find('[data-test="screenshot-protection"]').element as HTMLInputElement).checked)
+      .toBe(false);
+    // 系统层重放的是真实的 false，而不是复位出来的默认 true。
+    expect(applyScreenshotProtection).toHaveBeenCalledWith(false);
+  });
 });
