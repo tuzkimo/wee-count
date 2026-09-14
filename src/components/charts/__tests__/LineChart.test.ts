@@ -29,4 +29,27 @@ describe("LineChart", () => {
     await svg.trigger("pointerleave");
     expect(w.find('[data-test="tooltip"]').exists()).toBe(false);
   });
+
+  it("默认不遮蔽：y 轴刻度与 tooltip 显示真实数值", async () => {
+    const w = mount(LineChart, { props });
+    const tickTexts = w.findAll("text").map((t) => t.text());
+    expect(tickTexts.some((t) => /^\d+(\.\d+)?$/.test(t))).toBe(true);
+
+    await w.find("svg").trigger("pointerdown", { clientX: 10, clientY: 10 });
+    const tooltip = w.find('[data-test="tooltip"]').text();
+    expect(tooltip).toMatch(/\d+\.\d{2}/);
+  });
+
+  it("maskValues=true 时不渲染 y 轴刻度数字，tooltip 显示占位符", async () => {
+    const w = mount(LineChart, { props: { ...props, maskValues: true } });
+    const tickTexts = w.findAll("text").map((t) => t.text());
+    expect(tickTexts.some((t) => /^\d+(\.\d+)?$/.test(t))).toBe(false);
+    // x 轴日期标签必须保留
+    expect(tickTexts).toContain("08-01");
+
+    await w.find("svg").trigger("pointerdown", { clientX: 10, clientY: 10 });
+    const tooltip = w.find('[data-test="tooltip"]').text();
+    expect(tooltip).toContain("••••••");
+    expect(tooltip).not.toMatch(/\d+\.\d{2}/);
+  });
 });

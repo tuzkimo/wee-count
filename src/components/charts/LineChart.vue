@@ -2,13 +2,16 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { computeLinePoints, niceTicks, nearestIndex } from "@/utils/chart";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 
 const props = withDefaults(defineProps<{
   labels: string[];
   series: { name: string; color: string; values: number[] }[];
   height?: number;
   fill?: boolean;
-}>(), { height: 200, fill: true });
+  /** 隐私遮蔽：y 轴刻度数字整体隐藏，tooltip 数值显示占位符。 */
+  maskValues?: boolean;
+}>(), { height: 200, fill: true, maskValues: false });
 
 const W = 320;
 const H = 160;
@@ -71,7 +74,7 @@ function onPointerLeave() {
           :x1="PAD" :x2="W - PAD" :y1="yTick(t)" :y2="yTick(t)"
           stroke="#e5e7eb" stroke-width="1"
         />
-        <text :x="PAD" :y="yTick(t) - 3" class="fill-gray-400" font-size="9">{{ t }}</text>
+        <text v-if="!maskValues" :x="PAD" :y="yTick(t) - 3" class="fill-gray-400" font-size="9">{{ t }}</text>
       </g>
       <!-- x 轴标签 -->
       <g>
@@ -103,7 +106,7 @@ function onPointerLeave() {
       <p class="mb-0.5 font-medium text-gray-600">{{ labels[tooltip.idx] }}</p>
       <p v-for="s in series" :key="s.name" class="text-gray-700">
         <span :style="{ color: s.color }">●</span>
-        {{ s.name }} <span class="font-semibold">{{ Number(s.values[tooltip.idx] ?? 0).toFixed(2) }}</span>
+        {{ s.name }} <span class="font-semibold">{{ maskValues ? AMOUNT_PLACEHOLDER : Number(s.values[tooltip.idx] ?? 0).toFixed(2) }}</span>
       </p>
     </div>
   </div>
