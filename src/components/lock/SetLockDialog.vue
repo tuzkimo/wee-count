@@ -38,7 +38,7 @@ const firstEntry = ref("");
 /** 传给子组件的 error：置真时键盘/画布会清空上一次输入并标红。 */
 const error = ref(false);
 const message = ref("");
-/** 落盘进行中：期间禁止再输入、再切换类型。 */
+/** 落盘进行中：期间禁止再输入、再切换类型，也禁止「取消」（见模板上的取消按钮）。 */
 const busy = ref(false);
 /**
  * 输入组件的重挂载计数。
@@ -225,10 +225,17 @@ const title = computed(() => {
       {{ message }}
     </p>
 
+    <!--
+      「取消」在落盘进行中（busy）必须是禁用的：写入一旦开始就撤销不了，此时放行「取消」
+      只会制造一个说不通的中间态 —— 用户以为「我没改锁」，而锁其实已经落盘，消费方又可能
+      已经在 saved 之后放行（用户按了取消却被放行）。窗口只有一次 bcrypt 结算的量级，
+      让用户等它由 saved 或失败提示给出真实结果。
+    -->
     <button
       type="button"
       data-test="set-lock-cancel"
-      class="text-sm text-text-secondary underline"
+      class="text-sm text-text-secondary underline disabled:opacity-40"
+      :disabled="busy"
       @click="emit('close')"
     >
       取消
