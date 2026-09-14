@@ -9,7 +9,7 @@ const props = withDefaults(defineProps<{
   series: { name: string; color: string; values: number[] }[];
   height?: number;
   fill?: boolean;
-  /** 隐私遮蔽：y 轴刻度数字整体隐藏，tooltip 数值显示占位符。 */
+  /** 隐私遮蔽：y 轴刻度数字不渲染（从 DOM 移除，而非 CSS 隐藏），tooltip 数值显示占位符。 */
   maskValues?: boolean;
 }>(), { height: 200, fill: true, maskValues: false });
 

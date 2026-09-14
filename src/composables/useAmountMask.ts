@@ -20,7 +20,7 @@ export function useAmountMask() {
   const prefs = usePrefsStore();
   const { amountsHidden } = storeToRefs(prefs);
 
-  /** 报表类场景：只要数字，不带货币符号、不带正负号（与报表页原先的 formatMoney 输出一致）。 */
+  /** 报表类场景：只要数字，保留 toLocaleString 自带的负号（负结余必须看得出是负的），不带货币符号。 */
   function maskNumber(n: number): string {
     if (amountsHidden.value) return AMOUNT_PLACEHOLDER;
     return n.toLocaleString("zh-CN", NUMBER_FORMAT);
