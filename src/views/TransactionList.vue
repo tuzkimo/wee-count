@@ -29,7 +29,7 @@ const tagStore = useTagStore();
 const categoryStore = useCategoryStore();
 const transactionStore = useTransactionStore();
 const authStore = useAuthStore();
-const { maskCurrency } = useAmountMask();
+const { maskCurrency, amountsHidden } = useAmountMask();
 
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
 
@@ -503,7 +503,7 @@ function onTxClick(tx: Transaction) {
             <p class="text-xs text-text-secondary">结余</p>
             <p
               class="mt-1 text-lg font-bold"
-              :class="totalBalance >= 0 ? 'text-text' : 'text-expense'"
+              :class="amountsHidden || totalBalance >= 0 ? 'text-text' : 'text-expense'"
             >
               {{ maskCurrency(totalBalance) }}
             </p>

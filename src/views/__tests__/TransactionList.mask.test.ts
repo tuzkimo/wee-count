@@ -5,6 +5,8 @@ import { ref } from "vue";
 
 // 可切换的 route params：账户详情模式用例需要让 useRoute 返回 params.id
 const routeParams = vi.hoisted(() => ({ value: {} as Record<string, string> }));
+// 可切换的收支合计：结余为负的用例需要构造 totalIncome - totalExpense < 0
+const txTotals = vi.hoisted(() => ({ income: 3000, expense: 1234.56 }));
 
 vi.mock("@/stores/ledger", () => ({
   useLedgerStore: () => ({
@@ -27,8 +29,8 @@ vi.mock("@/stores/category", () => ({
 vi.mock("@/stores/transaction", () => ({
   useTransactionStore: () => ({
     transactions: [],
-    totalIncome: 3000,
-    totalExpense: 1234.56,
+    totalIncome: txTotals.income,
+    totalExpense: txTotals.expense,
     fetchAll: vi.fn(async () => {}),
     batchRemove: vi.fn(async () => {}),
   }),
@@ -57,10 +59,13 @@ describe("TransactionList 汇总金额遮蔽", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     routeParams.value = {};
+    txTotals.income = 3000;
+    txTotals.expense = 1234.56;
   });
 
   function mountPage() {
-    return mount(TransactionList);
+    // FAB 使用 <router-link>，而本文件 mock 掉了 vue-router；stub 掉以避免 Vue warn
+    return mount(TransactionList, { global: { stubs: { RouterLink: true } } });
   }
 
   it("默认遮蔽收入/支出/结余，渲染结果不含真实数字", async () => {
@@ -95,5 +100,33 @@ describe("TransactionList 汇总金额遮蔽", () => {
     await flushPromises();
     expect(w.text()).toContain("支出 ¥1,234.56");
     expect(w.text()).not.toContain("-¥1,234.56");
+  });
+
+  it("账户详情模式默认遮蔽，当前余额与收支合计均为占位符", async () => {
+    routeParams.value = { id: "acc-1" };
+    const w = mountPage();
+    await flushPromises();
+    expect(w.text()).toContain("¥••••••");
+    expect(w.text()).not.toContain("1,234.56");
+    expect(w.text()).not.toContain("3,000.00");
+  });
+
+  it("默认遮蔽结余为负时结余单元格不带红色（符号不由颜色泄露）", async () => {
+    txTotals.income = 1000;
+    txTotals.expense = 1234.56; // 结余 -234.56
+    const w = mountPage();
+    await flushPromises();
+
+    const balanceCell = w.findAll("div.flex-1.text-center").find((c) => c.text().includes("结余"));
+    expect(balanceCell).toBeDefined();
+    const balanceAmount = balanceCell!.find("p.mt-1");
+    expect(balanceAmount.text()).toBe("¥••••••");
+    expect(balanceAmount.classes()).not.toContain("text-expense");
+
+    // 显示态下负值仍应由符号派生红色
+    usePrefsStore().showAmounts();
+    await flushPromises();
+    expect(balanceAmount.text()).toBe("-¥234.56");
+    expect(balanceAmount.classes()).toContain("text-expense");
   });
 });

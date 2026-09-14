@@ -56,4 +56,19 @@ describe("AccountCard 金额遮蔽", () => {
     await flushPromises();
     expect(w.text()).toContain("-¥1,234.56");
   });
+
+  it("默认遮蔽时负债账户的负余额不带红色（符号不由颜色泄露）", async () => {
+    const account = { ...makeAccount(-1234.56), category: "liability" as const };
+
+    const masked = mount(AccountCard, { props: { account } });
+    await flushPromises();
+    expect(masked.find("p.text-base").text()).toBe("¥••••••");
+    expect(masked.find("p.text-base").classes()).not.toContain("text-expense");
+
+    // 显示态下负值仍应由符号派生红色
+    usePrefsStore().showAmounts();
+    const shown = mount(AccountCard, { props: { account } });
+    await flushPromises();
+    expect(shown.find("p.text-base").classes()).toContain("text-expense");
+  });
 });

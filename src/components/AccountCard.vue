@@ -37,7 +37,7 @@ const typeLabel = computed(() => ACCOUNT_TYPE_LABELS[props.account.type]);
 
 const ledgerStore = useLedgerStore();
 const { getMember } = useMemberInfo();
-const { maskCurrency } = useAmountMask();
+const { maskCurrency, amountsHidden } = useAmountMask();
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
 const ownerName = ref("");
 
@@ -56,7 +56,8 @@ watch(
 
 const balanceClass = computed(() => {
   const bal = props.account.current_balance ?? 0;
-  if (props.account.category === "liability" && bal < 0) {
+  // 遮蔽态下金额是占位符，红色会反过来泄露「余额为负」，故强制中性色
+  if (!amountsHidden.value && props.account.category === "liability" && bal < 0) {
     return "text-expense";
   }
   return "text-text";
