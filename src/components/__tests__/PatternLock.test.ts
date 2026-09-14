@@ -42,7 +42,7 @@ describe("PatternLock", () => {
     expect(w.emitted("complete")?.[0]).toEqual([[1, 2, 3, 5]]);
   });
 
-  it("跨过中间点时自动补入（1→3 得到 [1,2,3,4]）", async () => {
+  it("跨过中间点时自动补入（1→3 补出 2，得到 [1,2,3,6,9]）", async () => {
     const w = mount(PatternLock, { props: { size: SIZE } });
     await drag(w, [1, 3, 6, 9]);
     expect(w.emitted("complete")?.[0]).toEqual([[1, 2, 3, 6, 9]]);

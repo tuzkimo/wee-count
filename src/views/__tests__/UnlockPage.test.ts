@@ -289,4 +289,63 @@ describe("UnlockPage", () => {
     expect(useLockStore().isLocked).toBe(false);
     expect(replace).toHaveBeenCalledWith("/");
   });
+
+  // ---- 收尾修复轮：R64（「忘记密码？」不是单向门）----
+
+  it("R64：从「忘记密码？」进入账户密码表单后能返回键盘", async () => {
+    const w = mount(UnlockPage);
+    await w.find('[data-test="unlock-forgot"]').trigger("click");
+    expect(w.find('[data-test="unlock-account-form"]').exists()).toBe(true);
+    expect(w.find('[data-test="pin-key-1"]').exists()).toBe(false);
+
+    await w.find('[data-test="unlock-back"]').trigger("click");
+
+    // 回到键盘：表单收起、「忘记密码？」重新可用、返回入口自己消失。
+    expect(w.find('[data-test="unlock-account-form"]').exists()).toBe(false);
+    expect(w.find('[data-test="pin-key-1"]').exists()).toBe(true);
+    expect(w.find('[data-test="unlock-forgot"]').exists()).toBe(true);
+    expect(w.find('[data-test="unlock-back"]').exists()).toBe(false);
+    // 没有因为「退回去」而放行。
+    expect(useLockStore().isLocked).toBe(true);
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("R64：返回键盘时清掉表单留下的失败提示", async () => {
+    localLogin.mockImplementation(async () => false);
+
+    const w = mount(UnlockPage);
+    await w.find('[data-test="unlock-forgot"]').trigger("click");
+    await submitAccount(w, "alice", "wrong");
+    expect(w.find('[data-test="unlock-message"]').text()).toContain("用户名或密码错误");
+
+    await w.find('[data-test="unlock-back"]').trigger("click");
+
+    // 退回键盘时不该还挂着账户密码的错误提示（会让人以为是 PIN 输错了）。
+    expect(w.find('[data-test="unlock-message"]').exists()).toBe(false);
+    expect(w.find('[data-test="pin-key-1"]').exists()).toBe(true);
+  });
+
+  it("R64：降级态不提供返回入口（那时 PIN/图案一律不放行，退回去是死路）", async () => {
+    const w = mount(UnlockPage);
+    await exhaustAttempts(w);
+
+    expect(w.find('[data-test="unlock-account-form"]').exists()).toBe(true);
+    expect(w.find('[data-test="unlock-back"]').exists()).toBe(false);
+  });
+
+  it("R64：放行时账户密码表单被一并收起（leave 里复位）", async () => {
+    const w = mount(UnlockPage);
+    await w.find('[data-test="unlock-forgot"]').trigger("click");
+    await submitAccount(w, "alice", "secret");
+    expect(w.find('[data-test="set-lock-dialog"]').exists()).toBe(true);
+
+    // 账户密码验过 → 就地重设新锁 → @saved 才放行。
+    await typePin(w, NEW_PIN);
+    await typePin(w, NEW_PIN);
+
+    expect(replace).toHaveBeenCalledWith("/accounts");
+    // 放行之际表单状态也要复位：残留的 showAccountForm 会让解锁页多留一帧表单。
+    expect(w.find('[data-test="unlock-account-form"]').exists()).toBe(false);
+    expect(w.find('[data-test="unlock-back"]').exists()).toBe(false);
+  });
 });

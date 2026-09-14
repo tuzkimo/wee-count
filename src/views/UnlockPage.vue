@@ -31,8 +31,29 @@ const useAccountForm = computed(() => showAccountForm.value || lock.requireAccou
  * 用户可以直接深链 `/unlock?redirect=<任意值>` 把未经消毒的原文送进来。
  */
 function leave(): void {
+  // 「忘记密码？」进来的账户密码表单必须在这里一并收起：放行后本组件不保证立刻卸载
+  // （守卫重定向、或路由实现延迟），残留的 `showAccountForm` 会让人在解锁页上
+  // 多看一眼本不该出现的表单。
+  showAccountForm.value = false;
   lock.unlock();
   void router.replace(sanitizeRedirect(route.query.redirect));
+}
+
+/**
+ * 从账户密码表单退回 PIN/图案键盘（R64）。
+ *
+ * 「忘记密码？」不能是单向门：点错了、或者又想起 PIN 的用户必须能退回去。
+ * 同时清掉上一次结算的痕迹——退回键盘时还挂着「用户名或密码错误」会让人以为
+ * 是刚才那次 PIN 输入错了；密码框也一并清空（口令不留在界面上）。
+ *
+ * 降级态（连错达阈值）不提供这个入口，见模板上的 `v-if`：那时 PIN/图案一律不放行，
+ * 退回去只是一条死路。
+ */
+function backToPin(): void {
+  showAccountForm.value = false;
+  error.value = false;
+  message.value = "";
+  password.value = "";
 }
 
 function fail(): void {
@@ -162,6 +183,18 @@ async function submitAccountPassword(): Promise<void> {
     <!-- 一次输入的结算提示。两条路径共用：账户密码的失败提示若被
          `!useAccountForm` 挡掉，用户点「解锁」就会毫无反馈。 -->
     <p v-if="message" data-test="unlock-message" class="text-sm text-red-500">{{ message }}</p>
+
+    <!-- 退路（R64）：从「忘记密码？」进来的表单必须能退回键盘。
+         降级态不给这个入口：那时 PIN/图案一律不放行，退回去只是死路。 -->
+    <button
+      v-if="showAccountForm && !lock.requireAccountPassword"
+      type="button"
+      data-test="unlock-back"
+      class="text-sm text-text-secondary underline"
+      @click="backToPin"
+    >
+      返回
+    </button>
 
     <button
       v-if="!useAccountForm && !mustResetLock"
