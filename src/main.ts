@@ -21,7 +21,10 @@ app.use(createPinia()); // 必须先装 Pinia，useLockStore() 才有活跃实�
  *    冷启动总是要求解锁：`load()` 之后立刻 `lock()`。
  * 2. 整个门禁——**包括 `useLockStore()` 本身**——必须包在 try 里。它抛错时降级为
  *    「不锁启动」，但绝不能因此跳过 mount：Android 上跳过 mount 就是白屏。
- * 3. `app.mount()` 无条件执行，且在任何 await 之后。
+ *    `app.use(router)` 同理包在 try 里：注册失败只是功能降级，同样不许挡住宿主流程
+ *    （否则这条 rejection 会直接冲出 `bootstrap()`，成为无人处理的失败）。
+ * 3. `app.mount()` **无条件执行**，且在任何 await 之后：它放在最外层 `finally` 里，
+ *    这一层里任何同步抛错都不许跳过挂载（R45：Android 白屏防线）。
  *
  * 另外不能用顶层 await：vite 默认的模块目标不含 top-level await，`npm run build` 会失败。
  */
@@ -31,24 +34,33 @@ async function bootstrap(): Promise<void> {
   let screenshotProtection = true;
 
   try {
-    const lock = useLockStore();
-    await lock.load();
-    if (lock.isLockConfigured) lock.lock();
-    screenshotProtection = lock.screenshotProtection;
-  } catch (cause) {
-    console.error("启动门禁失败，降级为不锁启动", cause);
+    try {
+      const lock = useLockStore();
+      await lock.load();
+      if (lock.isLockConfigured) lock.lock();
+      screenshotProtection = lock.screenshotProtection;
+    } catch (cause) {
+      console.error("启动门禁失败，降级为不锁启动", cause);
+    }
+
+    // 锁已就位，现在才让 router install：初始导航的守卫因此能读到真实的 isLocked。
+    try {
+      app.use(router);
+    } catch (cause) {
+      // 装不上 router 仍然必须 mount：没有路由只是功能降级，白屏是彻底不可用。
+      console.error("路由注册失败，继续挂载", cause);
+    }
+
+    try {
+      await applyScreenshotProtection(screenshotProtection);
+    } catch (cause) {
+      console.warn("应用截屏防护启用失败", cause);
+    }
+  } finally {
+    // 兜底中的兜底：把 mount 放在最外层 finally，bootstrap 里任何同步抛错
+    // （包括将来新加的语句）都不会再跳过它。
+    app.mount("#app");
   }
-
-  // 锁已就位，现在才让 router install：初始导航的守卫因此能读到真实的 isLocked。
-  app.use(router);
-
-  try {
-    await applyScreenshotProtection(screenshotProtection);
-  } catch (cause) {
-    console.warn("应用截屏防护启用失败", cause);
-  }
-
-  app.mount("#app");
 }
 
 void bootstrap();

@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   lockStoreThrows: false,
   loadRejects: false,
   screenshotFails: false,
+  routerInstallThrows: false,
 }));
 
 vi.mock("@/App.vue", () => ({
@@ -27,6 +28,7 @@ vi.mock("@/router", () => ({
   default: {
     install: () => {
       state.order.push("router-install");
+      if (state.routerInstallThrows) throw new Error("router install failed");
     },
   },
 }));
@@ -64,6 +66,7 @@ beforeEach(() => {
   state.lockStoreThrows = false;
   state.loadRejects = false;
   state.screenshotFails = false;
+  state.routerInstallThrows = false;
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -111,7 +114,36 @@ describe("main.ts 启动顺序", () => {
 
     expect(state.order).not.toContain("load");
     expect(state.order).toContain("router-install");
+    // 「也要 mount」必须真的验到：只断言 router 装过是不够的（mount 才是白屏防线）。
+    expect(state.order).toContain("render");
     expect(errorSpy).toHaveBeenCalledWith("启动门禁失败，降级为不锁启动", expect.any(Error));
+  });
+
+  it("R45：try 块里同步抛错也绝不跳过 mount", async () => {
+    // 与上一条不同的路径：这次是 `useLockStore()` 在 try 的第一条语句上同步抛错，
+    // 门禁整体降级，而 mount 仍必须发生。
+    state.lockStoreThrows = true;
+
+    await startApp();
+
+    expect(state.order).toEqual(["useLockStore", "router-install", "screenshot:true", "render"]);
+  });
+
+  it("R45：app.use(router) 同步抛错也要 mount（它就在两个 try 之间，原先无人保护）", async () => {
+    state.routerInstallThrows = true;
+
+    await startApp();
+
+    // 顺序约束没被破坏：门禁先就位，router 才 install。
+    expect(state.order).toEqual([
+      "useLockStore",
+      "load",
+      "lock",
+      "router-install", // install 抛错，但它已经在顺序里了
+      "screenshot:true",
+      "render", // = app.mount()：router 装不上也照样挂载
+    ]);
+    expect(errorSpy).toHaveBeenCalledWith("路由注册失败，继续挂载", expect.any(Error));
   });
 
   it("截屏防护失败不阻塞 mount", async () => {
