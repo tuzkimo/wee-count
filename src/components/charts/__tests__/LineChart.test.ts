@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import LineChart from "@/components/charts/LineChart.vue";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 
 describe("LineChart", () => {
   const props = {
@@ -49,7 +50,7 @@ describe("LineChart", () => {
 
     await w.find("svg").trigger("pointerdown", { clientX: 10, clientY: 10 });
     const tooltip = w.find('[data-test="tooltip"]').text();
-    expect(tooltip).toContain("••••••");
+    expect(tooltip).toContain(AMOUNT_PLACEHOLDER);
     expect(tooltip).not.toMatch(/\d+\.\d{2}/);
   });
 });

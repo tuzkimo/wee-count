@@ -128,28 +128,37 @@ const balanceDeltaPct = computed<number | null>(() => {
 
       <template v-else>
         <!-- ① 总览卡片 -->
-        <section class="mb-4">
-          <div class="mb-1 flex justify-end">
-            <AmountMaskToggle />
-          </div>
+        <section class="relative mb-4">
+          <AmountMaskToggle class="absolute right-1 top-1 z-10" />
           <div class="grid grid-cols-3 gap-3">
-            <div class="rounded-2xl bg-surface p-3">
+            <div class="min-w-0 rounded-2xl bg-surface p-3">
               <p class="text-xs text-text-secondary">收入</p>
-              <p class="mt-1 text-lg font-semibold" :style="{ color: INCOME_COLOR }">{{ maskNumber(data.totals.income) }}</p>
+              <p
+                class="mt-1 text-lg font-semibold"
+                :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+                :style="{ color: INCOME_COLOR }"
+              >{{ maskNumber(data.totals.income) }}</p>
               <p class="mt-0.5 text-xs" :class="(deltas.incomeDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
                 {{ deltas.incomeDeltaPct === null ? "—" : `${deltas.incomeDeltaPct > 0 ? "+" : ""}${deltas.incomeDeltaPct}%` }}
               </p>
             </div>
-            <div class="rounded-2xl bg-surface p-3">
+            <div class="min-w-0 rounded-2xl bg-surface p-3">
               <p class="text-xs text-text-secondary">支出</p>
-              <p class="mt-1 text-lg font-semibold" :style="{ color: EXPENSE_COLOR }">{{ maskNumber(data.totals.expense) }}</p>
+              <p
+                class="mt-1 text-lg font-semibold"
+                :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+                :style="{ color: EXPENSE_COLOR }"
+              >{{ maskNumber(data.totals.expense) }}</p>
               <p class="mt-0.5 text-xs" :class="(deltas.expenseDeltaPct ?? 0) <= 0 ? 'text-green-600' : 'text-red-600'">
                 {{ deltas.expenseDeltaPct === null ? "—" : `${deltas.expenseDeltaPct > 0 ? "+" : ""}${deltas.expenseDeltaPct}%` }}
               </p>
             </div>
-            <div class="rounded-2xl bg-surface p-3">
+            <div class="min-w-0 rounded-2xl bg-surface p-3">
               <p class="text-xs text-text-secondary">结余</p>
-              <p class="mt-1 text-lg font-semibold text-text">{{ maskNumber(data.totals.balance) }}</p>
+              <p
+                class="mt-1 text-lg font-semibold text-text"
+                :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+              >{{ maskNumber(data.totals.balance) }}</p>
               <p class="mt-0.5 text-xs" :class="(balanceDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
                 {{ balanceDeltaPct === null ? "—" : `${balanceDeltaPct > 0 ? "+" : ""}${balanceDeltaPct}%` }}
               </p>

@@ -13,6 +13,7 @@ vi.mock("@/composables/useMemberInfo", () => ({
 
 import AccountCard from "@/components/AccountCard.vue";
 import { usePrefsStore } from "@/stores/prefs";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 
 function makeAccount(currentBalance: number): Account {
   return {
@@ -39,7 +40,7 @@ describe("AccountCard 金额遮蔽", () => {
   it("默认遮蔽余额，渲染结果不含真实数字", async () => {
     const w = mount(AccountCard, { props: { account: makeAccount(1234.56) } });
     await flushPromises();
-    expect(w.text()).toContain("¥••••••");
+    expect(w.text()).toContain(`¥${AMOUNT_PLACEHOLDER}`);
     expect(w.text()).not.toContain("1,234.56");
   });
 
@@ -62,7 +63,7 @@ describe("AccountCard 金额遮蔽", () => {
 
     const masked = mount(AccountCard, { props: { account } });
     await flushPromises();
-    expect(masked.find("p.text-base").text()).toBe("¥••••••");
+    expect(masked.find("p.text-base").text()).toBe(`¥${AMOUNT_PLACEHOLDER}`);
     expect(masked.find("p.text-base").classes()).not.toContain("text-expense");
 
     // 显示态下负值仍应由符号派生红色

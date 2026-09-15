@@ -487,23 +487,32 @@ function onTxClick(tx: Transaction) {
       <!-- 首页模式：收入 / 支出 / 结余 -->
       <template v-if="!isAccountMode">
         <div class="flex gap-4 pr-8">
-          <div class="flex-1 text-center">
+          <div class="min-w-0 flex-1 text-center">
             <p class="text-xs text-text-secondary">收入</p>
-            <p class="mt-1 text-lg font-bold text-income">
+            <p
+              class="mt-1 text-lg font-bold text-income"
+              :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+            >
               {{ maskCurrency(totalIncome) }}
             </p>
           </div>
-          <div class="flex-1 text-center">
+          <div class="min-w-0 flex-1 text-center">
             <p class="text-xs text-text-secondary">支出</p>
-            <p class="mt-1 text-lg font-bold text-expense">
+            <p
+              class="mt-1 text-lg font-bold text-expense"
+              :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+            >
               {{ maskCurrency(-Math.abs(totalExpense)) }}
             </p>
           </div>
-          <div class="flex-1 text-center">
+          <div class="min-w-0 flex-1 text-center">
             <p class="text-xs text-text-secondary">结余</p>
             <p
               class="mt-1 text-lg font-bold"
-              :class="amountsHidden || totalBalance >= 0 ? 'text-text' : 'text-expense'"
+              :class="[
+                amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : '',
+                amountsHidden || totalBalance >= 0 ? 'text-text' : 'text-expense',
+              ]"
             >
               {{ maskCurrency(totalBalance) }}
             </p>

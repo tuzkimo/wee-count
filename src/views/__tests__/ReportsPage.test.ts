@@ -134,6 +134,49 @@ describe("ReportsPage", () => {
     expect(w.text()).not.toContain("1.00");
   });
 
+  // 结构断言，不是布局断言：happy-dom 没有布局引擎，无法测量「省下了一行高度」或
+  // 「4 个点是否真的装进卡片」。这里只钉住 DOM 结构（眼睛挂在总览 section 上、
+  // 绝对定位、且不再被一个占位的 wrapper div 包着）与窄布局的收缩类名，
+  // 真实观感必须靠真机/浏览器复看。
+  it("眼睛按钮绝对定位在总览 section 内，不再单独占一行", async () => {
+    const w = mount(ReportsPage, {
+      global: { plugins: [createPinia()], stubs: { LineChart: true, DonutChart: true } },
+    });
+    await flushPromises();
+
+    const toggle = w.find('[data-test="amount-mask-toggle"]');
+    expect(toggle.exists()).toBe(true);
+    expect(toggle.classes()).toContain("absolute");
+
+    const section = toggle.element.closest("section");
+    expect(section).not.toBeNull();
+    // 父节点就是 section：原来的 <div class="mb-1 flex justify-end"> 已删除
+    expect(toggle.element.parentElement).toBe(section);
+    expect(section!.className).toContain("relative");
+    expect(section!.className).toContain("mb-4");
+    // 同一个 section 里仍是那三列总览网格
+    expect(section!.querySelectorAll(".grid.grid-cols-3 > div")).toHaveLength(3);
+  });
+
+  it("总览三列的子项可收缩，蔽态金额不换行", async () => {
+    const w = mount(ReportsPage, {
+      global: { plugins: [createPinia()], stubs: { LineChart: true, DonutChart: true } },
+    });
+    await flushPromises();
+
+    const cells = w.findAll(".grid.grid-cols-3 > div");
+    expect(cells).toHaveLength(3);
+    for (const cell of cells) {
+      expect(cell.classes()).toContain("min-w-0");
+      const amount = cell.find("p.mt-1");
+      expect(amount.text()).toBe(AMOUNT_PLACEHOLDER);
+      // 遮蔽态：降一档字号 + 不换行；leading-7 与 text-lg 默认行高同为 1.75rem，行高不变
+      expect(amount.classes()).toContain("text-sm");
+      expect(amount.classes()).toContain("leading-7");
+      expect(amount.classes()).toContain("whitespace-nowrap");
+    }
+  });
+
   it("点击眼睛按钮后显示真实金额", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

@@ -13,6 +13,18 @@ describe("useAmountMask", () => {
     expect(AMOUNT_PLACEHOLDER).not.toMatch(/\d/);
   });
 
+  // 上一条只验字符种类，改成任意长度都绿；这一条钉住长度上限。
+  // 宽度预算：`•`（U+2022）在中文字体栈里按 ≈0.86em 全角渲染，故
+  // `¥${AMOUNT_PLACEHOLDER}` 宽度 ≈ (`¥` + n × 0.86em)。
+  // 最窄的两个容器：流水页三列（360px 视口每列 ≈88px）、报表页总览卡内宽
+  // （360px 视口 ≈77px、320px 视口 ≈64px）。4 个点在 text-sm（14px）下 ≈58px，装得下；
+  // 6 个点在 text-sm 下 ≈82px（320px 视口只有 ≈64px 可用）、在 text-lg（18px）下 ≈105px
+  // （连 88px 的流水列也撑破，整行超宽会让 Android WebView 缩放/位移整页）。
+  it("占位符点号数量不超过 4（窄布局宽度预算）", () => {
+    expect(AMOUNT_PLACEHOLDER.length).toBeGreaterThan(0);
+    expect(AMOUNT_PLACEHOLDER.length).toBeLessThanOrEqual(4);
+  });
+
   it("默认状态下 maskNumber 返回占位符", () => {
     const { maskNumber } = useAmountMask();
     expect(maskNumber(1234.56)).toBe(AMOUNT_PLACEHOLDER);

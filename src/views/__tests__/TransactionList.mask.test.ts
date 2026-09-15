@@ -54,6 +54,7 @@ vi.mock("vue-router", () => ({
 
 import TransactionList from "@/views/TransactionList.vue";
 import { usePrefsStore } from "@/stores/prefs";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 
 describe("TransactionList 汇总金额遮蔽", () => {
   beforeEach(() => {
@@ -71,7 +72,7 @@ describe("TransactionList 汇总金额遮蔽", () => {
   it("默认遮蔽收入/支出/结余，渲染结果不含真实数字", async () => {
     const w = mountPage();
     await flushPromises();
-    expect(w.text()).toContain("¥••••••");
+    expect(w.text()).toContain(`¥${AMOUNT_PLACEHOLDER}`);
     expect(w.text()).not.toContain("1,234.56");
     expect(w.text()).not.toContain("3,000.00");
   });
@@ -106,7 +107,7 @@ describe("TransactionList 汇总金额遮蔽", () => {
     routeParams.value = { id: "acc-1" };
     const w = mountPage();
     await flushPromises();
-    expect(w.text()).toContain("¥••••••");
+    expect(w.text()).toContain(`¥${AMOUNT_PLACEHOLDER}`);
     expect(w.text()).not.toContain("1,234.56");
     expect(w.text()).not.toContain("3,000.00");
   });
@@ -120,7 +121,7 @@ describe("TransactionList 汇总金额遮蔽", () => {
     const balanceCell = w.findAll("div.flex-1.text-center").find((c) => c.text().includes("结余"));
     expect(balanceCell).toBeDefined();
     const balanceAmount = balanceCell!.find("p.mt-1");
-    expect(balanceAmount.text()).toBe("¥••••••");
+    expect(balanceAmount.text()).toBe(`¥${AMOUNT_PLACEHOLDER}`);
     expect(balanceAmount.classes()).not.toContain("text-expense");
 
     // 显示态下负值仍应由符号派生红色

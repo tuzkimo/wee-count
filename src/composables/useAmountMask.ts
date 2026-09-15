@@ -2,8 +2,17 @@
 import { storeToRefs } from "pinia";
 import { usePrefsStore } from "@/stores/prefs";
 
-/** 遮蔽占位符的唯一来源。6 个 U+2022 BULLET，不含任何数字。 */
-export const AMOUNT_PLACEHOLDER = "••••••";
+/**
+ * 遮蔽占位符的唯一来源。4 个 U+2022 BULLET，不含任何数字。
+ *
+ * 长度是宽度预算的一部分，不要随手加长：`•` 在中文字体栈里按 ≈0.86em 全角渲染，
+ * 所以 `¥${AMOUNT_PLACEHOLDER}` 的宽度 ≈ `¥` + n × 0.86em。
+ * 最窄的两个容器是流水页三列（360px 视口下每列 ≈88px）与报表页总览卡内宽
+ * （360px 视口 ≈77px、320px 视口 ≈64px）；4 个点在 `text-sm`（14px）下 ≈58px，
+ * 两者都装得下。6 个点在 `text-sm` 下已 ≈82px（320px 视口的卡内宽只有 ≈64px）、
+ * 在 `text-lg`（18px）下 ≈105px，会把整行撑得比视口宽（Android WebView 随后缩放/位移整页）。
+ */
+export const AMOUNT_PLACEHOLDER = "••••";
 
 const NUMBER_FORMAT: Intl.NumberFormatOptions = {
   minimumFractionDigits: 2,
