@@ -28,4 +28,9 @@ tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 
+# 只在 Android 上需要：直接调 android.view.Window 的 addFlags/clearFlags。
+# tauri 经 wry 已经依赖 jni 0.21，这里显式声明是为了能在自身代码里 `use jni::...`。
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 

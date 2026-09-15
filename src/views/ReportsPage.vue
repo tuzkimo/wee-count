@@ -6,9 +6,13 @@ import { useReports } from "@/composables/useReports";
 import LineChart from "@/components/charts/LineChart.vue";
 import DonutChart from "@/components/charts/DonutChart.vue";
 import { toLocalDatetimeString } from "@/utils/datetime";
+import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
+import { useAmountMask } from "@/composables/useAmountMask";
 
 const router = useRouter();
 const { unit, data, loading, error, breakdownType, deltas, setUnit, shift, reload } = useReports();
+
+const { amountsHidden, maskNumber } = useAmountMask();
 
 const UNITS: { key: "month" | "quarter" | "year" | "twelveMonths"; label: string }[] = [
   { key: "month", label: "月" },
@@ -41,10 +45,6 @@ const donutSegments = computed<{ id: string | null; name: string; total: number;
   }))
 );
 
-function formatMoney(n: number): string {
-  return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
 function onSegmentClick(seg: { id: string | null }): void {
   if (!data.value) return;
   if (seg.id === "other") return; // 合并项不可下钻
@@ -58,9 +58,9 @@ function onSegmentClick(seg: { id: string | null }): void {
   void router.push({ path: "/", query: q });
 }
 
-function netAssetValue(): string {
+function netAssetValue(): number {
   const v = data.value?.netAsset.values;
-  return v && v.length > 0 ? formatMoney(v[v.length - 1]) : "0.00";
+  return v && v.length > 0 ? v[v.length - 1] : 0;
 }
 
 function hasAnyNonZero(arr: number[]): boolean {
@@ -128,27 +128,41 @@ const balanceDeltaPct = computed<number | null>(() => {
 
       <template v-else>
         <!-- ① 总览卡片 -->
-        <section class="mb-4 grid grid-cols-3 gap-3">
-          <div class="rounded-2xl bg-surface p-3">
-            <p class="text-xs text-text-secondary">收入</p>
-            <p class="mt-1 text-lg font-semibold" :style="{ color: INCOME_COLOR }">{{ formatMoney(data.totals.income) }}</p>
-            <p class="mt-0.5 text-xs" :class="(deltas.incomeDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
-              {{ deltas.incomeDeltaPct === null ? "—" : `${deltas.incomeDeltaPct > 0 ? "+" : ""}${deltas.incomeDeltaPct}%` }}
-            </p>
-          </div>
-          <div class="rounded-2xl bg-surface p-3">
-            <p class="text-xs text-text-secondary">支出</p>
-            <p class="mt-1 text-lg font-semibold" :style="{ color: EXPENSE_COLOR }">{{ formatMoney(data.totals.expense) }}</p>
-            <p class="mt-0.5 text-xs" :class="(deltas.expenseDeltaPct ?? 0) <= 0 ? 'text-green-600' : 'text-red-600'">
-              {{ deltas.expenseDeltaPct === null ? "—" : `${deltas.expenseDeltaPct > 0 ? "+" : ""}${deltas.expenseDeltaPct}%` }}
-            </p>
-          </div>
-          <div class="rounded-2xl bg-surface p-3">
-            <p class="text-xs text-text-secondary">结余</p>
-            <p class="mt-1 text-lg font-semibold text-text">{{ formatMoney(data.totals.balance) }}</p>
-            <p class="mt-0.5 text-xs" :class="(balanceDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
-              {{ balanceDeltaPct === null ? "—" : `${balanceDeltaPct > 0 ? "+" : ""}${balanceDeltaPct}%` }}
-            </p>
+        <section class="relative mb-4">
+          <AmountMaskToggle class="absolute right-1 top-1 z-10" />
+          <div class="grid grid-cols-3 gap-3">
+            <div class="min-w-0 rounded-2xl bg-surface p-3">
+              <p class="text-xs text-text-secondary">收入</p>
+              <p
+                class="mt-1 text-lg font-semibold"
+                :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+                :style="{ color: INCOME_COLOR }"
+              >{{ maskNumber(data.totals.income) }}</p>
+              <p class="mt-0.5 text-xs" :class="(deltas.incomeDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
+                {{ deltas.incomeDeltaPct === null ? "—" : `${deltas.incomeDeltaPct > 0 ? "+" : ""}${deltas.incomeDeltaPct}%` }}
+              </p>
+            </div>
+            <div class="min-w-0 rounded-2xl bg-surface p-3">
+              <p class="text-xs text-text-secondary">支出</p>
+              <p
+                class="mt-1 text-lg font-semibold"
+                :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+                :style="{ color: EXPENSE_COLOR }"
+              >{{ maskNumber(data.totals.expense) }}</p>
+              <p class="mt-0.5 text-xs" :class="(deltas.expenseDeltaPct ?? 0) <= 0 ? 'text-green-600' : 'text-red-600'">
+                {{ deltas.expenseDeltaPct === null ? "—" : `${deltas.expenseDeltaPct > 0 ? "+" : ""}${deltas.expenseDeltaPct}%` }}
+              </p>
+            </div>
+            <div class="min-w-0 rounded-2xl bg-surface p-3">
+              <p class="text-xs text-text-secondary">结余</p>
+              <p
+                class="mt-1 text-lg font-semibold text-text"
+                :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+              >{{ maskNumber(data.totals.balance) }}</p>
+              <p class="mt-0.5 text-xs" :class="(balanceDeltaPct ?? 0) >= 0 ? 'text-green-600' : 'text-red-600'">
+                {{ balanceDeltaPct === null ? "—" : `${balanceDeltaPct > 0 ? "+" : ""}${balanceDeltaPct}%` }}
+              </p>
+            </div>
           </div>
         </section>
 
@@ -162,6 +176,7 @@ const balanceDeltaPct = computed<number | null>(() => {
               { name: '收入', color: INCOME_COLOR, values: data.trend.income },
               { name: '支出', color: EXPENSE_COLOR, values: data.trend.expense },
             ]"
+            :mask-values="amountsHidden"
           />
           <p v-else class="py-8 text-center text-xs text-text-secondary">本期暂无流水</p>
         </section>
@@ -184,7 +199,7 @@ const balanceDeltaPct = computed<number | null>(() => {
             <DonutChart
               :segments="donutSegments"
               :center-label="breakdownType === 'expense' ? '总支出' : '总收入'"
-              :center-value="formatMoney(breakdown.total)"
+              :center-value="maskNumber(breakdown.total)"
               @segment-click="onSegmentClick"
             />
             <ul class="category-list mt-3 space-y-2">
@@ -197,7 +212,7 @@ const balanceDeltaPct = computed<number | null>(() => {
                 <span class="text-base">{{ seg.icon }}</span>
                 <span class="flex-1 truncate text-text">{{ seg.name }}</span>
                 <span class="text-xs text-text-secondary">{{ seg.percent }}%</span>
-                <span class="w-20 text-right font-medium text-text">{{ formatMoney(seg.total) }}</span>
+                <span class="w-20 text-right font-medium text-text">{{ maskNumber(seg.total) }}</span>
               </li>
             </ul>
           </template>
@@ -209,13 +224,14 @@ const balanceDeltaPct = computed<number | null>(() => {
           <div class="mb-2 flex items-baseline justify-between">
             <h2 class="text-sm font-semibold text-text">账户资产变动</h2>
             <span class="text-xs text-text-secondary">
-              期末净资产 <span class="font-semibold text-text">{{ netAssetValue() }}</span>
+              期末净资产 <span class="font-semibold text-text">{{ maskNumber(netAssetValue()) }}</span>
             </span>
           </div>
           <LineChart
             v-if="hasAnyNonZero(data.netAsset.values)"
             :labels="data.netAsset.labels"
             :series="[{ name: '净资产', color: NET_COLOR, values: data.netAsset.values }]"
+            :mask-values="amountsHidden"
           />
           <p v-else class="py-8 text-center text-xs text-text-secondary">本期暂无数据</p>
         </section>

@@ -8,6 +8,8 @@ import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountCard from "@/components/AccountCard.vue";
+import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
+import { useAmountMask } from "@/composables/useAmountMask";
 import AccountSheet from "@/components/AccountSheet.vue";
 import type { AccountType } from "@/types";
 import { ACCOUNT_CATEGORY } from "@/types";
@@ -16,6 +18,7 @@ const router = useRouter();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const auth = useAuthStore();
+const { maskCurrency } = useAmountMask();
 
 const sheetVisible = ref(false);
 const isLoading = ref(true);
@@ -73,18 +76,15 @@ async function handleSubmit(data: {
     </AppHeader>
 
     <!-- 净资产汇总 -->
-    <div class="bg-surface px-4 py-4">
+    <div class="relative bg-surface px-4 py-4">
+      <AmountMaskToggle class="absolute right-3 top-3" />
       <p class="text-xs text-text-secondary">净资产</p>
       <p class="mt-0.5 text-2xl font-bold text-text">
-        ¥{{ accountStore.netAssets.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+        {{ maskCurrency(accountStore.netAssets) }}
       </p>
       <div class="mt-2 flex gap-6 text-xs">
-        <span class="text-text-secondary">
-          资产 ¥{{ accountStore.assetsTotal.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-        </span>
-        <span class="text-text-secondary">
-          负债 ¥{{ Math.abs(accountStore.liabilitiesTotal).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-        </span>
+        <span class="text-text-secondary">资产 {{ maskCurrency(accountStore.assetsTotal) }}</span>
+        <span class="text-text-secondary">负债 {{ maskCurrency(Math.abs(accountStore.liabilitiesTotal)) }}</span>
       </div>
     </div>
 

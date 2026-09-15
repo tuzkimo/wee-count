@@ -14,6 +14,7 @@ import { openUserDb, closeUserDb, getUserDb } from "@/db/userDb";
 import * as api from "@/services/api";
 import { performSync, clearPendingSync, resetSyncTimers } from "@/services/sync";
 import type { Ledger } from "@/types";
+import { hashPassword, verifyPassword } from "@/utils/passwordHash";
 
 export type AuthMode = 'none' | 'local' | 'online'
 
@@ -356,14 +357,3 @@ export const useAuthStore = defineStore("auth", () => {
     init,
   };
 });
-
-// 密码工具函数 (使用 bcryptjs)
-async function hashPassword(password: string): Promise<string> {
-  const bcrypt = await import('bcryptjs');
-  return bcrypt.hash(password, 10);
-}
-
-async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const bcrypt = await import('bcryptjs');
-  return bcrypt.compare(password, hash);
-}

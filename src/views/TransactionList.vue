@@ -18,6 +18,8 @@ import { formatDateRange } from "@/utils/datetime";
 import { isDefaultCurrentMonth } from "@/utils/filter";
 import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, transferFromUid, transferToUid, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate } from "@/utils/transaction";
 import type { Transaction } from "@/types";
+import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
+import { useAmountMask } from "@/composables/useAmountMask";
 
 const route = useRoute();
 const router = useRouter();
@@ -27,6 +29,7 @@ const tagStore = useTagStore();
 const categoryStore = useCategoryStore();
 const transactionStore = useTransactionStore();
 const authStore = useAuthStore();
+const { maskCurrency, amountsHidden } = useAmountMask();
 
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === 'team');
 
@@ -479,29 +482,39 @@ function onTxClick(tx: Transaction) {
     </div>
 
     <!-- 汇总卡片 -->
-    <div class="shrink-0 bg-surface px-4 py-3">
+    <div class="relative shrink-0 bg-surface px-4 py-3">
+      <AmountMaskToggle class="absolute right-2 top-2 z-10" />
       <!-- 首页模式：收入 / 支出 / 结余 -->
       <template v-if="!isAccountMode">
-        <div class="flex gap-4">
-          <div class="flex-1 text-center">
+        <div class="flex gap-4 pr-8">
+          <div class="min-w-0 flex-1 text-center">
             <p class="text-xs text-text-secondary">收入</p>
-            <p class="mt-1 text-lg font-bold text-income">
-              ¥{{ totalIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            <p
+              class="mt-1 text-lg font-bold text-income"
+              :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+            >
+              {{ maskCurrency(totalIncome) }}
             </p>
           </div>
-          <div class="flex-1 text-center">
+          <div class="min-w-0 flex-1 text-center">
             <p class="text-xs text-text-secondary">支出</p>
-            <p class="mt-1 text-lg font-bold text-expense">
-              -¥{{ totalExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            <p
+              class="mt-1 text-lg font-bold text-expense"
+              :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+            >
+              {{ maskCurrency(-Math.abs(totalExpense)) }}
             </p>
           </div>
-          <div class="flex-1 text-center">
+          <div class="min-w-0 flex-1 text-center">
             <p class="text-xs text-text-secondary">结余</p>
             <p
               class="mt-1 text-lg font-bold"
-              :class="totalBalance >= 0 ? 'text-text' : 'text-expense'"
+              :class="[
+                amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : '',
+                amountsHidden || totalBalance >= 0 ? 'text-text' : 'text-expense',
+              ]"
             >
-              {{ totalBalance >= 0 ? '' : '-' }}¥{{ Math.abs(totalBalance).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+              {{ maskCurrency(totalBalance) }}
             </p>
           </div>
         </div>
@@ -511,14 +524,14 @@ function onTxClick(tx: Transaction) {
       <template v-else>
         <p class="text-xs text-text-secondary">当前余额</p>
         <p class="mt-0.5 text-2xl font-bold text-text">
-          ¥{{ (currentAccount?.current_balance ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          {{ maskCurrency(currentAccount?.current_balance ?? 0) }}
         </p>
         <div class="mt-2 flex gap-6 text-xs">
           <span class="text-text-secondary">
-            收入 ¥{{ totalIncome.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            收入 {{ maskCurrency(totalIncome) }}
           </span>
           <span class="text-text-secondary">
-            支出 ¥{{ totalExpense.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+            支出 {{ maskCurrency(totalExpense) }}
           </span>
         </div>
       </template>
