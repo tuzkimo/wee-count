@@ -64,8 +64,14 @@ function handleLogout(): void {
       </div>
     </div>
 
-    <!-- Logged in -->
-    <div v-else class="flex flex-1 flex-col">
+    <!--
+      Logged in
+      正文必须包在 overflow-auto 容器里：本页高度被 App.vue 的 `flex-1 min-h-0` 钉成
+      「视口 - 状态栏 - tab 栏」，内容一超出，溢出部分就被 DOM 顺序在后的 tab 栏盖住
+      （在线模式多出「团队管理」「退出在线同步」两块，正好把底部按钮顶到栏下），
+      而根节点本身不滚动，用户无从滑动。
+    -->
+    <div v-else class="flex-1 overflow-auto pb-4">
       <!-- User info -->
       <div
         class="flex items-center gap-3 bg-surface px-4 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
