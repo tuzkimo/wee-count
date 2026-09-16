@@ -20,6 +20,7 @@ import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, transferF
 import type { Transaction } from "@/types";
 import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
 import { useAmountMask } from "@/composables/useAmountMask";
+import { pickAmountSizeClass } from "@/utils/amountFit";
 
 const route = useRoute();
 const router = useRouter();
@@ -161,6 +162,24 @@ const isAccountOwner = computed(() => {
 const totalIncome = computed(() => transactionStore.totalIncome);
 const totalExpense = computed(() => transactionStore.totalExpense);
 const totalBalance = computed(() => totalIncome.value - totalExpense.value);
+
+// 首页模式的三列汇总：三列共用 summarySizeClass 的一个字号，避免长短金额各自换行/大小不一
+const summaryCells = computed(() => [
+  { label: "收入", amount: maskCurrency(totalIncome.value), color: "text-income" },
+  { label: "支出", amount: maskCurrency(-Math.abs(totalExpense.value)), color: "text-expense" },
+  {
+    label: "结余",
+    amount: maskCurrency(totalBalance.value),
+    // 遮蔽态不用颜色泄露「结余为负」
+    color: amountsHidden.value || totalBalance.value >= 0 ? "text-text" : "text-expense",
+  },
+]);
+
+const summarySizeClass = computed(() =>
+  amountsHidden.value
+    ? "text-sm leading-7"
+    : pickAmountSizeClass(summaryCells.value.map((c) => c.amount))
+);
 
 function closeLedgerSwitcher() {
   showLedgerSwitcher.value = false;
@@ -487,34 +506,17 @@ function onTxClick(tx: Transaction) {
       <!-- 首页模式：收入 / 支出 / 结余 -->
       <template v-if="!isAccountMode">
         <div class="flex gap-4 pr-8">
-          <div class="min-w-0 flex-1 text-center">
-            <p class="text-xs text-text-secondary">收入</p>
+          <div
+            v-for="cell in summaryCells"
+            :key="cell.label"
+            class="min-w-0 flex-1 text-center"
+          >
+            <p class="text-xs text-text-secondary">{{ cell.label }}</p>
             <p
-              class="mt-1 text-lg font-bold text-income"
-              :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
+              class="mt-1 whitespace-nowrap font-bold tabular-nums"
+              :class="[summarySizeClass, cell.color]"
             >
-              {{ maskCurrency(totalIncome) }}
-            </p>
-          </div>
-          <div class="min-w-0 flex-1 text-center">
-            <p class="text-xs text-text-secondary">支出</p>
-            <p
-              class="mt-1 text-lg font-bold text-expense"
-              :class="amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : ''"
-            >
-              {{ maskCurrency(-Math.abs(totalExpense)) }}
-            </p>
-          </div>
-          <div class="min-w-0 flex-1 text-center">
-            <p class="text-xs text-text-secondary">结余</p>
-            <p
-              class="mt-1 text-lg font-bold"
-              :class="[
-                amountsHidden ? 'text-sm leading-7 whitespace-nowrap' : '',
-                amountsHidden || totalBalance >= 0 ? 'text-text' : 'text-expense',
-              ]"
-            >
-              {{ maskCurrency(totalBalance) }}
+              {{ cell.amount }}
             </p>
           </div>
         </div>

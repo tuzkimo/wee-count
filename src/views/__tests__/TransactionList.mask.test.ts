@@ -131,3 +131,77 @@ describe("TransactionList 汇总金额遮蔽", () => {
     expect(balanceAmount.classes()).toContain("text-expense");
   });
 });
+
+describe("TransactionList 汇总金额字号自适应", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    routeParams.value = {};
+    txTotals.income = 3000;
+    txTotals.expense = 1234.56;
+  });
+
+  function mountShown() {
+    usePrefsStore().showAmounts();
+    return mount(TransactionList, { global: { stubs: { RouterLink: true } } });
+  }
+
+  /** 三列金额单元格（沿用既有测试依赖的 DOM 结构：.flex-1.text-center > p.mt-1） */
+  function amountCells(w: ReturnType<typeof mountShown>) {
+    return w.findAll("div.flex-1.text-center p.mt-1");
+  }
+
+  it("三列金额始终不换行，且共用同一个字号", async () => {
+    const w = mountShown();
+    await flushPromises();
+    const cells = amountCells(w);
+    expect(cells).toHaveLength(3);
+    for (const cell of cells) {
+      expect(cell.classes()).toContain("whitespace-nowrap");
+    }
+    const sizes = cells.map((c) => c.classes().find((cls) => cls.startsWith("text-") && cls !== "text-income" && cls !== "text-expense" && cls !== "text-text"));
+    expect(new Set(sizes).size).toBe(1);
+  });
+
+  it("常见金额维持 18px（text-lg）", async () => {
+    const w = mountShown();
+    await flushPromises();
+    for (const cell of amountCells(w)) {
+      expect(cell.classes()).toContain("text-lg");
+    }
+  });
+
+  it("大额金额自动降档，避免撑成两行", async () => {
+    // 六位数金额：18px 下 ≈105px 会换行，降到 16px ≈93px 排得下
+    txTotals.income = 123456.78; // ¥123,456.78
+    const w = mountShown();
+    await flushPromises();
+    const cells = amountCells(w);
+    expect(cells).toHaveLength(3);
+    for (const cell of cells) {
+      expect(cell.classes()).not.toContain("text-lg");
+      expect(cell.classes()).toContain("text-base");
+      expect(cell.classes()).toContain("whitespace-nowrap");
+    }
+    expect(w.text()).toContain("¥123,456.78");
+  });
+
+  it("位数再多继续降档，不会回到换行", async () => {
+    txTotals.income = 99999999.99; // ¥99,999,999.99（八位数）
+    const w = mountShown();
+    await flushPromises();
+    for (const cell of amountCells(w)) {
+      expect(cell.classes()).toContain("text-xs");
+      expect(cell.classes()).toContain("whitespace-nowrap");
+    }
+  });
+
+  it("遮蔽态沿用 text-sm 且不因真实金额大小改变", async () => {
+    txTotals.income = 123456.78;
+    const w = mount(TransactionList, { global: { stubs: { RouterLink: true } } });
+    await flushPromises();
+    for (const cell of amountCells(w)) {
+      expect(cell.classes()).toContain("text-sm");
+      expect(cell.text()).toBe(`¥${AMOUNT_PLACEHOLDER}`);
+    }
+  });
+});
