@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { ref, computed } from "vue";
 import { createPinia, setActivePinia } from "pinia";
-import { toLocalDatetimeString } from "@/utils/datetime";
 import { usePrefsStore } from "@/stores/prefs";
 import LineChart from "@/components/charts/LineChart.vue";
 import DonutChart from "@/components/charts/DonutChart.vue";
@@ -108,13 +107,14 @@ describe("ReportsPage", () => {
     });
     await flushPromises();
     await w.find(".category-list li").trigger("click");
-    const { start, end } = data.value!.range;
     expect(push).toHaveBeenCalledWith({
       path: "/",
       query: {
         categories: "c1",
-        dateFrom: toLocalDatetimeString(start),
-        dateTo: toLocalDatetimeString(end), // 排他区间 [start, end) 精确边界，非 end-1ms
+        // 筛选侧是含首尾整天的 day 粒度：range.end 是排他边界 2026-09-01，
+        // 下钻应传本期最后一天 2026-08-31，而不是 datetime 串
+        dateFrom: "2026-08-01",
+        dateTo: "2026-08-31",
       },
     });
   });

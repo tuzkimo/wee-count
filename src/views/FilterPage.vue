@@ -12,8 +12,8 @@ import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountPickerSheet from "@/components/AccountPickerSheet.vue";
 import MemberAvatar from "@/components/MemberAvatar.vue";
-import DateTimePicker from "@/components/DateTimePicker.vue";
-import { toLocalDatetimeString } from "@/utils/datetime";
+import DateRangePicker from "@/components/DateRangePicker.vue";
+import { formatRangeLabel, type DateRange } from "@/utils/dateRange";
 import type { Account } from "@/types";
 
 const route = useRoute();
@@ -44,11 +44,11 @@ function memberDisplayName(m: TeamMemberRow): string {
 }
 
 const accountPickerVisible = ref(false);
-const datePickerVisible = ref(false);
-const datePickerTarget = ref<"from" | "to">("from");
+const dateRangeVisible = ref(false);
 
-// 默认日期：筛选页打开时默认选当前本地时间
-const nowDatetime = computed(() => toLocalDatetimeString(new Date()));
+// 日期范围已统一为 day 粒度（含首尾整天），store 对不带 "T" 的边界自行取整天
+const dateRange = computed<DateRange>(() => ({ start: dateFrom.value, end: dateTo.value }));
+const dateRangeLabel = computed(() => formatRangeLabel(dateFrom.value, dateTo.value));
 
 onMounted(async () => {
   await ledgerStore.init();
@@ -84,8 +84,9 @@ onMounted(async () => {
     const acc = accountStore.accounts.find((a) => a.id === selectedAccountId.value);
     if (acc) selectedAccountName.value = acc.name;
   }
-  if (route.query.dateFrom) dateFrom.value = route.query.dateFrom as string;
-  if (route.query.dateTo) dateTo.value = route.query.dateTo as string;
+  // 旧链接 / 报表下钻可能残留带时分的串，按新契约取日期部分（day 粒度）
+  if (route.query.dateFrom) dateFrom.value = (route.query.dateFrom as string).split("T")[0];
+  if (route.query.dateTo) dateTo.value = (route.query.dateTo as string).split("T")[0];
   if (route.query.tags) {
     selectedTagIds.value = (route.query.tags as string).split(",").filter(Boolean);
   }
@@ -166,13 +167,10 @@ function reset() {
   selectedUncategorized.value = false;
 }
 
-function onDateTimeConfirm(value: string) {
-  if (datePickerTarget.value === "from") {
-    dateFrom.value = value;
-  } else {
-    dateTo.value = value;
-  }
-  datePickerVisible.value = false;
+function onDateRangeConfirm(range: DateRange) {
+  dateFrom.value = range.start;
+  dateTo.value = range.end;
+  dateRangeVisible.value = false;
 }
 
 function goBack() {
@@ -204,24 +202,19 @@ function goBack() {
         </button>
       </div>
 
-      <!-- 日期时间范围 -->
+      <!-- 日期范围 -->
       <div class="mb-4">
-        <label class="mb-1 block text-xs text-text-secondary">📅 日期时间范围</label>
-        <div class="flex items-center gap-2">
-          <button
-            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary text-left"
-            @click="datePickerTarget = 'from'; datePickerVisible = true"
-          >
-            {{ dateFrom || '开始日期' }}
-          </button>
-          <span class="text-text-secondary">─</span>
-          <button
-            class="flex-1 rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary text-left"
-            @click="datePickerTarget = 'to'; datePickerVisible = true"
-          >
-            {{ dateTo || '结束日期' }}
-          </button>
-        </div>
+        <label class="mb-1 block text-xs text-text-secondary">📅 日期范围</label>
+        <button
+          class="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-surface px-3 py-2.5 text-sm outline-none focus:border-primary"
+          data-test="date-range-trigger"
+          @click="dateRangeVisible = true"
+        >
+          <span :class="dateRangeLabel ? 'text-text' : 'text-text-secondary'">
+            {{ dateRangeLabel || '全部时间' }}
+          </span>
+          <span class="text-text-secondary">▽</span>
+        </button>
       </div>
 
       <!-- 分类（多选） -->
@@ -316,12 +309,12 @@ function goBack() {
       @select-all="onSelectAll"
     />
 
-    <!-- 日期时间选择器 -->
-    <DateTimePicker
-      :visible="datePickerVisible"
-      :model-value="datePickerTarget === 'from' ? (dateFrom || nowDatetime) : (dateTo || nowDatetime)"
-      @confirm="onDateTimeConfirm"
-      @close="datePickerVisible = false"
+    <!-- 日期范围选择器 -->
+    <DateRangePicker
+      :visible="dateRangeVisible"
+      :model-value="dateRange"
+      @confirm="onDateRangeConfirm"
+      @close="dateRangeVisible = false"
     />
   </div>
 </template>

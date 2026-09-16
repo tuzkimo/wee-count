@@ -5,7 +5,7 @@ import { useRouter } from "vue-router";
 import { useReports } from "@/composables/useReports";
 import LineChart from "@/components/charts/LineChart.vue";
 import DonutChart from "@/components/charts/DonutChart.vue";
-import { toLocalDatetimeString } from "@/utils/datetime";
+import { addDays, toDateKey } from "@/utils/dateRange";
 import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
 import { useAmountMask } from "@/composables/useAmountMask";
 
@@ -49,9 +49,11 @@ function onSegmentClick(seg: { id: string | null }): void {
   if (!data.value) return;
   if (seg.id === "other") return; // 合并项不可下钻
   const { start, end } = data.value.range;
+  // 筛选侧已统一为 day 粒度、含首尾整天。range.end 是排他边界（下期首日 00:00），
+  // 回退一天才是本期最后一天；继续传 datetime 串会因 store 对带 "T" 的上界 +1 分钟而越界一天。
   const q: Record<string, string> = {
-    dateFrom: toLocalDatetimeString(start),
-    dateTo: toLocalDatetimeString(end),
+    dateFrom: toDateKey(start),
+    dateTo: addDays(toDateKey(end), -1),
   };
   if (seg.id === null) q.uncategorized = "1";
   else q.categories = seg.id;
