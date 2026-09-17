@@ -3,7 +3,9 @@ import { createPinia } from "pinia";
 import App from "@/App.vue";
 import router from "@/router";
 import "@/assets/main.css";
-import { LOCK_SETTINGS_DEFAULTS, useLockStore } from "@/stores/lock";
+import { useLockStore } from "@/stores/lock";
+import { usePrivacyStore } from "@/stores/privacy";
+import { SCREENSHOT_PROTECTION_DEFAULT } from "@/services/privacySettings";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
 
 const app = createApp(App);
@@ -29,20 +31,32 @@ app.use(createPinia()); // 必须先装 Pinia，useLockStore() 才有活跃实�
  * 另外不能用顶层 await：vite 默认的模块目标不含 top-level await，`npm run build` 会失败。
  */
 async function bootstrap(): Promise<void> {
-  // 截屏防护的取值。门禁失败时保持这里的从严默认值 —— 直接共用
-  // `LOCK_SETTINGS_DEFAULTS.screenshotProtection`，不另抄一份字面量：
-  // 两处各写各的只会靠一句注释相连，改一处另一处就静默漂移（门禁失败的降级路径
-  // 会按一个与 store 默认值不同的值去动系统层）。
-  let screenshotProtection = LOCK_SETTINGS_DEFAULTS.screenshotProtection;
+  // 截屏防护的取值。读不到配置时保持这里的从严默认值 —— 直接共用
+  // `SCREENSHOT_PROTECTION_DEFAULT`，不另抄一份字面量：
+  // 两处各写各的只会靠一句注释相连，改一处另一处就静默漂移（这条路径会按一个
+  // 与真值不同的值去动系统层）。
+  let screenshotProtection = SCREENSHOT_PROTECTION_DEFAULT;
 
   try {
     try {
       const lock = useLockStore();
       await lock.load();
       if (lock.isLockConfigured) lock.lock();
-      screenshotProtection = lock.screenshotProtection;
     } catch (cause) {
       console.error("启动门禁失败，降级为不锁启动", cause);
+    }
+
+    /*
+      隐私设置与门禁**分开一个 try**：它只决定截屏防护，读失败不该把应用锁一起降级，
+      门禁失败也不该顺手把这个值复位。两个 store 共用 settings.json 的同一个 store 实例
+      （见 `services/settingsFile.ts` 的模块级缓存），这里的代价只是一次按键读取。
+    */
+    try {
+      const privacy = usePrivacyStore();
+      await privacy.load();
+      screenshotProtection = privacy.screenshotProtection;
+    } catch (cause) {
+      console.error("读取隐私设置失败，按默认值处理", cause);
     }
 
     // 锁已就位，现在才让 router install：初始导航的守卫因此能读到真实的 isLocked。

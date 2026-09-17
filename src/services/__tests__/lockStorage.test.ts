@@ -137,7 +137,14 @@ describe("lockStorage（浏览器 / 非 Tauri 环境，用 localStorage）", () 
     expect(parseAppLock({ ...valid, type: "gesture" })).toBeNull();
     expect(parseAppLock({ ...valid, hash: "" })).toBeNull();
     expect(parseAppLock({ ...valid, auto_lock_seconds: "60" })).toBeNull();
-    expect(parseAppLock({ ...valid, screenshot_protection: 1 })).toBeNull();
+  });
+
+  it("parseAppLock 忽略结构外的字段（含 1.1.x 遗留的 screenshot_protection）", () => {
+    // 遗留字段的存在与取值都不该把一份合法锁配置判成「未配置」——
+    // 那会让升级后的用户凭空丢掉应用锁。字段本身由 privacySettings 负责迁移。
+    expect(parseAppLock({ ...valid, screenshot_protection: false })).toEqual(valid);
+    expect(parseAppLock({ ...valid, screenshot_protection: 1 })).toEqual(valid);
+    expect(parseAppLock({ ...valid, something_else: "x" })).toEqual(valid);
   });
 
   it("parseAppLock 接受 pattern 类型", () => {

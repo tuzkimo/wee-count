@@ -22,17 +22,15 @@ export const MAX_UNLOCK_ATTEMPTS = 5;
  * ref 的初始值与 `applyConfig(null)` 的复位**共用这一份**：只此一套默认值，
  * 才不会出现「未配置态」与「默认值态」两个各自漂移的状态。
  *
- * 导出是给 `main.ts` 用的（R74）：启动门禁失败时要保持的那个从严默认值必须与这里
- * 是**同一个**常量，否则两处只靠注释相连，改一处另一处静默漂移。
+ * 不含截屏防护：它已迁到 `stores/privacy.ts`，与应用锁彻底无关
+ * （那边不配锁也能读写。见 `services/privacySettings.ts`）。
  */
-export const LOCK_SETTINGS_DEFAULTS: {
+const LOCK_SETTINGS_DEFAULTS: {
   type: LockType;
   autoLockSeconds: number;
-  screenshotProtection: boolean;
 } = {
   type: "pin",
   autoLockSeconds: 60,
-  screenshotProtection: true,
 };
 
 /**
@@ -49,7 +47,6 @@ export const useLockStore = defineStore("lock", () => {
   /** 生物识别本轮不做，恒为 false，且不提供任何写入入口。 */
   const biometricEnabled = ref(false);
   const autoLockSeconds = ref(LOCK_SETTINGS_DEFAULTS.autoLockSeconds);
-  const screenshotProtection = ref(LOCK_SETTINGS_DEFAULTS.screenshotProtection);
   const failedAttempts = ref(0);
 
   /** 当前锁的 bcrypt 哈希，仅内存持有；未配置锁时为 null。 */
@@ -60,14 +57,12 @@ export const useLockStore = defineStore("lock", () => {
   /**
    * 把非口令设置复位为默认值（`LOCK_SETTINGS_DEFAULTS`）。
    *
-   * 未配置态**必须等于**默认值态：否则「在设置里关掉截屏防护 → 关闭应用锁 → 再开启」
-   * 会让新锁带出上一会话遗留的 `screenshot_protection: false`，
-   * 与「默认从严」的定义直接矛盾。
+   * 未配置态**必须等于**默认值态：否则「在设置里把自动锁定时长拉长 → 关闭应用锁 → 再开启」
+   * 会让新锁带出上一会话遗留的旧值，与「默认从严」的定义直接矛盾。
    */
   function applyDefaults(): void {
     lockType.value = LOCK_SETTINGS_DEFAULTS.type;
     autoLockSeconds.value = LOCK_SETTINGS_DEFAULTS.autoLockSeconds;
-    screenshotProtection.value = LOCK_SETTINGS_DEFAULTS.screenshotProtection;
     // 生物识别不在本轮范围，默认值恒为 false，这里只可能写到 false。
     biometricEnabled.value = false;
   }
@@ -88,7 +83,6 @@ export const useLockStore = defineStore("lock", () => {
     // 点了没有任何反应的指纹按钮（`biometric` 事件无人处理）。
     biometricEnabled.value = false;
     autoLockSeconds.value = config.auto_lock_seconds;
-    screenshotProtection.value = config.screenshot_protection;
   }
 
   async function load(): Promise<void> {
@@ -202,7 +196,6 @@ export const useLockStore = defineStore("lock", () => {
       hash: nextHash,
       biometric_enabled: biometricEnabled.value,
       auto_lock_seconds: autoLockSeconds.value,
-      screenshot_protection: screenshotProtection.value,
     };
     await writeAppLock(config);
     applyConfig(config);
@@ -220,7 +213,6 @@ export const useLockStore = defineStore("lock", () => {
       hash: hash.value,
       biometric_enabled: biometricEnabled.value,
       auto_lock_seconds: patch.auto_lock_seconds ?? autoLockSeconds.value,
-      screenshot_protection: patch.screenshot_protection ?? screenshotProtection.value,
     };
     await writeAppLock(config);
     applyConfig(config);
@@ -239,7 +231,6 @@ export const useLockStore = defineStore("lock", () => {
     lockType,
     biometricEnabled,
     autoLockSeconds,
-    screenshotProtection,
     failedAttempts,
     requireAccountPassword,
     load,

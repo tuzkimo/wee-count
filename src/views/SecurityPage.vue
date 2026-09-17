@@ -5,11 +5,13 @@ import { useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
 import SetLockDialog from "@/components/lock/SetLockDialog.vue";
 import { useLockStore } from "@/stores/lock";
+import { usePrivacyStore } from "@/stores/privacy";
 import { AUTO_LOCK_OPTIONS } from "@/utils/autoLock";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
 
 const router = useRouter();
 const lock = useLockStore();
+const privacy = usePrivacyStore();
 
 const dialogOpen = ref(false);
 const dialogMode = ref<"set" | "change">("set");
@@ -30,11 +32,11 @@ const screenshotToggleEl = ref<HTMLInputElement | null>(null);
  * 一次**覆盖**：`readAppLock` 的契约是任何读失败都 fail-open 返回 `null`
  * （冷启动语境下的刻意裁决，R26），于是 `load()` → `applyConfig(null)` 会把本会话里
  * 已经生效的锁**静默降级**成「未配置 + 默认值」——`lock()` 因 `isLockConfigured=false`
- * 直接空转、总开关显示关闭、没有任何提示；紧接着的 `replayScreenshotProtection()`
- * 还会拿复位出来的默认 `true` 把系统级截屏防护重新打开。
+ * 直接空转、总开关显示关闭、没有任何提示。
  *
- * 冷启动那条 fail-open 的理由（别把用户锁在自己明文数据的门外）在这里并不成立：
- * 用户此刻显然已经进来了。所以本页只认会话内的真实状态，系统层重放照旧。
+ * 同一条理由对隐私设置也成立：`readScreenshotProtection` 在任何读不到的情况下都回落
+ * 从严默认 `true`，本页再读一次就会拿这个默认值把用户特意关掉的系统级截屏防护重新打开。
+ * 所以本页只认会话内的真实状态，系统层重放照旧。
  *
  * `replayScreenshotProtection` 自己吞掉失败（见其文档），这里不必也不该 await 它的
  * rejection：`void` 掉即可，不存在未处理的 rejection。
@@ -46,20 +48,19 @@ onMounted(() => {
 /**
  * 把 store 当前的截屏防护值重放到系统层（与 `main.ts` 启动时同一个动作）。
  *
- * R68：`lock.clearLock()` 会把非口令设置复位成默认值（截屏防护回到 `true`），
- * 而系统层不会被 store 自动同步 —— 只改内存值就会留下
- * 「配置说开启、系统其实关着」的缝。冷启动时 `main.ts` 会重放一次纠正它，
- * 但那要等用户重启应用；页面自己改动了这个值，就得自己负责重放。
+ * 配置以**落盘**为真相源，系统层不会自己跟上：用户切换时系统调用失败（R69 会如实提示），
+ * 或本次会话里系统层被别的东西改过，都可能留下「配置说开启、系统其实关着」的缝。
+ * 冷启动时 `main.ts` 会重放一次纠正它，但那要等用户重启应用；进本页就顺手对齐一次。
  *
  * 重放是幂等的：同一个值重复下发没有副作用，所以 `main.ts` 做过一次也不冲突。
  *
  * 失败只留警告、不弹页面提示：这条路径不是用户动作触发的（开页面时的重放），
  * 在界面上凭空冒一条红色错误没有对应用户动作；真正由用户切换而失败的那条路径
- * （`toggleScreenshot` / `clearLock`）会如实报错，不靠这里兜。
+ * （`toggleScreenshot`）会如实报错，不靠这里兜。
  */
 async function replayScreenshotProtection(): Promise<void> {
   try {
-    await applyScreenshotProtection(lock.screenshotProtection);
+    await applyScreenshotProtection(privacy.screenshotProtection);
   } catch (cause) {
     console.warn("截屏防护重放失败", cause);
   }
@@ -100,6 +101,10 @@ function onToggleLock(enabled: boolean): void {
  * 失败即 reject（刻意裁决——不能让 UI 对用户动作给出假确认）。`void` 会把这条
  * rejection 吞掉，于是 store 仍是「已配置、仍生效」，界面上却看不出任何异常。
  * 这里必须 try/catch：失败时保持真实状态（锁仍开启）并给出明确提示。
+ *
+ * 关锁**不再牵动截屏防护**：那个设置有自己的键（`stores/privacy.ts`），
+ * 关掉应用锁不会把它复位成开。此前那步「按复位后的新值重放系统层」随之取消 ——
+ * 值没变，就没有要重放的新值。
  */
 async function clearLock(): Promise<void> {
   saveError.value = "";
@@ -110,20 +115,8 @@ async function clearLock(): Promise<void> {
   } catch {
     saveError.value = "关闭失败，应用锁仍开启，请重试";
     syncCheckbox(lockToggleEl.value, lock.isLockConfigured);
-    // 关锁没成功，配置没有被复位，系统层也就没有要重放的新值。
-    return;
   } finally {
     clearing.value = false;
-  }
-
-  // R68：关锁成功后 store 已复位（截屏防护回到默认 `true`），而系统层还停在用户
-  // 上次把它关掉的状态。必须按**复位后的新值**重放一次系统层，
-  // 否则本次会话里「配置说开启、系统其实关着」，要等下次冷启动才被纠正。
-  try {
-    await applyScreenshotProtection(lock.screenshotProtection);
-  } catch {
-    // 锁确实关掉了，不能说「关闭失败」；但系统层没跟上，也不能装作无事发生。
-    saveError.value = "应用锁已关闭，但截屏防护未能同步，请重试";
   }
 }
 
@@ -186,15 +179,17 @@ async function chooseAutoLock(seconds: number): Promise<void> {
  * 2. `await nextTick()` 再落系统开关 —— change 事件里输入的 checked 已经翻成新值，
  *    若调用方在落盘完成前导航离开，本组件会被整体卸载，未执行的后续语句就永远不执行了；
  *    等状态真正提交到 DOM 之后再做，就不会留下「界面说关了、系统还没关」的窗口。
+ *
+ * 本开关**不要求已配置应用锁**：它写的是自己的键，未配锁时同样落盘。
  */
 async function toggleScreenshot(enabled: boolean): Promise<void> {
   saveError.value = "";
   savingScreenshot.value = true;
   try {
-    await lock.updateSettings({ screenshot_protection: enabled });
+    await privacy.setScreenshotProtection(enabled);
   } catch {
     saveError.value = "设置保存失败，请重试";
-    syncCheckbox(screenshotToggleEl.value, lock.screenshotProtection);
+    syncCheckbox(screenshotToggleEl.value, privacy.screenshotProtection);
     return;
   } finally {
     savingScreenshot.value = false;
@@ -281,13 +276,14 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
       </div>
 
       <!--
-        隐私区（R67）：与「自动锁定」一样只在**已配置锁**时渲染。
-        未配置锁时 `updateSettings` 是无意为之的空操作（见 stores/lock.ts：没有 hash
-        就静默 return，那是有意行为，不要改），可开关却照常渲染 —— 用户点一下
-        DOM 翻到未勾选、store 仍是 true、没有任何提示，页面还真的把系统级防护关掉了，
-        下次冷启动又按默认 true 打开。那就是「UI 在说谎且零反馈」，比不显示这个开关更糟。
+        隐私区：**恒渲染**，不受「是否已配置应用锁」约束。
+        截屏防护和应用锁本来就是两件事（一个拦系统截屏，一个做 UI 门禁），
+        它写在自己的键里，未配锁时同样可读可写。此前它挂在 AppLockConfig 里，
+        而那份结构的 hash 必填、`updateSettings` 无 hash 时静默 return ——
+        于是开关只能跟着藏起来（那是当时唯一不说谎的做法），
+        而默认值又是开启，用户想关就必须先建一把应用锁。
       -->
-      <div v-if="lock.isLockConfigured" class="mt-3">
+      <div class="mt-3">
         <p class="px-4 py-2 text-xs font-medium uppercase text-text-secondary">隐私</p>
         <div class="border-y border-gray-100 bg-surface">
           <label class="flex items-center gap-3 px-4 py-3">
@@ -302,12 +298,15 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
               data-test="screenshot-protection"
               type="checkbox"
               class="h-5 w-5"
-              :checked="lock.screenshotProtection"
+              :checked="privacy.screenshotProtection"
               :disabled="savingScreenshot"
               @change="toggleScreenshot(($event.target as HTMLInputElement).checked)"
             />
           </label>
         </div>
+        <p class="px-4 py-2 text-xs text-text-secondary">
+          与「应用锁」无关：不开应用锁也能单独开关。
+        </p>
       </div>
 
       <!-- 失败提示必须在成功提示的位置上说真话 -->

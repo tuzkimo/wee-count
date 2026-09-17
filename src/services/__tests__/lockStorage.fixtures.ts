@@ -9,12 +9,12 @@ export const KEY = "app_lock";
 /** 真实的 60 字符 bcrypt 哈希：$2b$ + cost 两位 + $ + 53 个 base64 字符。 */
 export const BCRYPT_HASH = "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
 
+/** 截屏防护已迁到独立键（见 privacySettings），不再属于锁配置。 */
 export const valid: AppLockConfig = {
   type: "pin",
   hash: BCRYPT_HASH,
   biometric_enabled: false,
   auto_lock_seconds: 60,
-  screenshot_protection: true,
 };
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown };

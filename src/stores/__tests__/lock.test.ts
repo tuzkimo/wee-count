@@ -146,14 +146,12 @@ describe("lock store", () => {
 
   it("updateSettings 改非口令设置并落盘，不影响口令", async () => {
     const lock = await configuredLock();
-    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    await lock.updateSettings({ auto_lock_seconds: 300 });
     expect(lock.autoLockSeconds).toBe(300);
-    expect(lock.screenshotProtection).toBe(false);
 
     const fresh = useLockStore();
     await fresh.load();
     expect(fresh.autoLockSeconds).toBe(300);
-    expect(fresh.screenshotProtection).toBe(false);
     // 改设置不换口令、不换锁型
     expect(fresh.lockType).toBe("pin");
     expect(await fresh.verifyPin("194726")).toBe(true);
@@ -161,7 +159,7 @@ describe("lock store", () => {
 
   it("updateSettings 未配置锁时是空操作，且忽略 biometric_enabled", async () => {
     const lock = useLockStore();
-    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    await lock.updateSettings({ auto_lock_seconds: 300 });
     // 未配置锁时既不落盘也不改内存态
     expect(localStorage.getItem("app_lock")).toBeNull();
     expect(lock.autoLockSeconds).toBe(60);
@@ -180,18 +178,15 @@ describe("lock store", () => {
     const defaults = {
       type: lock.lockType,
       autoLockSeconds: lock.autoLockSeconds,
-      screenshotProtection: lock.screenshotProtection,
     };
-    expect(defaults).toEqual({ type: "pin", autoLockSeconds: 60, screenshotProtection: true });
+    expect(defaults).toEqual({ type: "pin", autoLockSeconds: 60 });
 
-    // 复现路径：在设置里关掉截屏防护、顺手拉长自动锁定时长，然后关闭应用锁
+    // 复现路径：在设置里把自动锁定时长拉长，然后关闭应用锁
     await lock.setLock("pattern", [1, 2, 3, 5]);
-    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
-    expect(lock.screenshotProtection).toBe(false);
+    await lock.updateSettings({ auto_lock_seconds: 300 });
     await lock.clearLock();
 
     expect(lock.autoLockSeconds).toBe(defaults.autoLockSeconds);
-    expect(lock.screenshotProtection).toBe(defaults.screenshotProtection);
     expect(lock.lockType).toBe(defaults.type);
 
     // 再次开启：新锁必须带默认值，不能是上一会话的设置
@@ -199,11 +194,17 @@ describe("lock store", () => {
     const fresh = useLockStore();
     await fresh.load();
     expect(fresh.autoLockSeconds).toBe(60);
-    expect(fresh.screenshotProtection).toBe(true);
     expect(fresh.lockType).toBe("pin");
   });
 
-  it("load 读取持久化配置与默认值", async () => {
+  it("落盘的锁配置不含截屏防护（它已迁到独立键）", async () => {
+    const lock = await configuredLock();
+    const stored = JSON.parse(localStorage.getItem("app_lock") ?? "{}") as Record<string, unknown>;
+    expect("screenshot_protection" in stored).toBe(false);
+    expect(lock).not.toHaveProperty("screenshotProtection");
+  });
+
+  it("load 读取持久化配置与默认值（并容忍 1.1.x 遗留的 screenshot_protection）", async () => {
     const lock = useLockStore();
     const hash = await hashPassword("194726");
     localStorage.setItem(
@@ -213,13 +214,13 @@ describe("lock store", () => {
         hash,
         biometric_enabled: false,
         auto_lock_seconds: 300,
+        // 1.1.x 的旧字段：结构外，必须被忽略而不是把整份配置判成未配置。
         screenshot_protection: false,
       }),
     );
     await lock.load();
     expect(lock.isLockConfigured).toBe(true);
     expect(lock.autoLockSeconds).toBe(300);
-    expect(lock.screenshotProtection).toBe(false);
   });
 
   it("load 遇到损坏配置时视为未配置锁", async () => {

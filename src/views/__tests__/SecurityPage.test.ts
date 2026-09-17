@@ -17,7 +17,10 @@ vi.mock("vue-router", () => ({ useRouter: () => ({ back: vi.fn(), push: vi.fn() 
 
 import SecurityPage from "@/views/SecurityPage.vue";
 import { useLockStore } from "@/stores/lock";
+import { usePrivacyStore } from "@/stores/privacy";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
+
+const SCREENSHOT_KEY = "screenshot_protection";
 
 /** 非全同、非连续，能过 store 的弱口令校验。 */
 const PIN = "194726";
@@ -90,7 +93,7 @@ describe("SecurityPage", () => {
     expect(useLockStore().autoLockSeconds).toBe(300);
   });
 
-  it("截图防护开关默认开且可关闭并写回配置", async () => {
+  it("截图防护开关默认开且可关闭，并写进自己的键", async () => {
     await useLockStore().setLock("pin", PIN);
     const w = mount(SecurityPage);
     await flushPromises();
@@ -98,7 +101,8 @@ describe("SecurityPage", () => {
     expect((toggle.element as HTMLInputElement).checked).toBe(true);
     await toggle.setValue(false);
     await flushPromises();
-    expect(useLockStore().screenshotProtection).toBe(false);
+    expect(usePrivacyStore().screenshotProtection).toBe(false);
+    expect(JSON.parse(localStorage.getItem(SCREENSHOT_KEY) ?? "null")).toBe(false);
   });
 
   it("不出现「加密」措辞（数据文件是明文，避免安全错觉）", async () => {
@@ -204,7 +208,7 @@ describe("SecurityPage", () => {
     await flushPromises();
 
     expect(w.find('[data-test="security-error"]').text()).toContain("设置保存失败");
-    expect(useLockStore().screenshotProtection).toBe(true);
+    expect(usePrivacyStore().screenshotProtection).toBe(true);
     expect((w.find('[data-test="screenshot-protection"]').element as HTMLInputElement).checked)
       .toBe(true);
     // 落盘都没成功，绝不能真的去关系统层面的截屏防护。
@@ -220,7 +224,7 @@ describe("SecurityPage", () => {
     const calls: string[] = [];
     vi.mocked(applyScreenshotProtection).mockImplementation(async () => {
       // 调用它时，配置必须已经真的落盘（而不是「先关防护、后写失败」）。
-      calls.push(String(useLockStore().screenshotProtection));
+      calls.push(String(usePrivacyStore().screenshotProtection));
     });
 
     await w.find('[data-test="screenshot-protection"]').setValue(false);
@@ -310,59 +314,78 @@ describe("SecurityPage", () => {
     warn.mockRestore();
   });
 
-  it("R67：未配置锁时不渲染「禁止截屏」开关（点了也不会有任何效果）", async () => {
+  /*
+    R67 的原始结论是「未配置锁时不渲染『禁止截屏』开关」——那在当时是对的：
+    该设置存在 AppLockConfig 里，没有 hash 就写不进去，渲染一个可点却写不进去的开关
+    等于让页面撒谎。代价是用户想关掉它（默认开启）必须先建一把应用锁。
+
+    现在这一项解耦成独立设置，于是那条前提消失、结论**反转**：开关恒可用。
+    下面两条钉住反转后的行为，也钉住反转的理由（真的能写进去），
+    而不是把原来的断言删掉了事。
+  */
+  it("R67（已反转）：未配置锁时「禁止截屏」开关照样渲染、可写、且真的落盘", async () => {
     const w = mount(SecurityPage);
     await flushPromises();
 
-    // 未配置锁时 `updateSettings` 是空操作（有意行为）：渲染一个可点却写不进去的
-    // 开关，等于让页面撒谎，还会真的把系统级防护关掉。
-    expect(w.find('[data-test="screenshot-protection"]').exists()).toBe(false);
-    expect(w.text()).not.toContain("禁止截屏");
+    expect(useLockStore().isLockConfigured).toBe(false);
+    const toggle = w.find('[data-test="screenshot-protection"]');
+    expect(toggle.exists()).toBe(true);
 
-    // 正对照：配置锁之后同一个开关确实出现，证明上面不是选择器写错的恒真断言。
-    await useLockStore().setLock("pin", PIN);
-    await w.vm.$nextTick();
-    expect(w.find('[data-test="screenshot-protection"]').exists()).toBe(true);
+    await toggle.setValue(false);
+    await flushPromises();
+
+    // 关键：不是「渲染了但写不进去」，而是真的生效。
+    expect(usePrivacyStore().screenshotProtection).toBe(false);
+    expect(JSON.parse(localStorage.getItem(SCREENSHOT_KEY) ?? "null")).toBe(false);
+    expect(applyScreenshotProtection).toHaveBeenLastCalledWith(false);
   });
 
-  it("R68：关锁后把复位后的截屏防护值重放到系统层", async () => {
+  it("R67（已反转）：默认值仍是开启（从严），用户一步就能关掉", async () => {
+    const w = mount(SecurityPage);
+    await flushPromises();
+
+    expect((w.find('[data-test="screenshot-protection"]').element as HTMLInputElement).checked)
+      .toBe(true);
+    expect(w.find('[data-test="security-error"]').exists()).toBe(false);
+  });
+
+  it("R68（已反转）：关闭应用锁不再改动截屏防护（那是存储耦合的副产物）", async () => {
     const lock = useLockStore();
+    const privacy = usePrivacyStore();
     await lock.setLock("pin", PIN);
-    // 用户此前把截屏防护关掉了：持久化 false，系统层也已经关掉。
-    await lock.updateSettings({ screenshot_protection: false });
-    expect(lock.screenshotProtection).toBe(false);
+    // 用户此前把截屏防护关掉了：独立键里是 false，系统层也已经关掉。
+    await privacy.setScreenshotProtection(false);
 
     const w = mount(SecurityPage);
     await flushPromises();
-    // 开页面时先按当前值重放一次（与 main.ts 启动时同一个动作，幂等）。
-    expect(applyScreenshotProtection).toHaveBeenLastCalledWith(false);
+    vi.mocked(applyScreenshotProtection).mockClear();
 
     await w.find('[data-test="lock-enabled"]').setValue(false);
     await flushPromises();
 
-    // clearLock 把 store 复位成默认 true；系统层必须跟着变成 true，
-    // 否则本次会话里「配置说开启、系统其实关着」，要等下次冷启动才被纠正。
     expect(lock.isLockConfigured).toBe(false);
-    expect(lock.screenshotProtection).toBe(true);
-    expect(applyScreenshotProtection).toHaveBeenLastCalledWith(true);
+    // 显式选择被保留：关锁不是「恢复出厂设置」。
+    expect(privacy.screenshotProtection).toBe(false);
+    expect(JSON.parse(localStorage.getItem(SCREENSHOT_KEY) ?? "null")).toBe(false);
+    // 值没变就没有新值要重放：关锁路径不再下发系统层。
+    expect(applyScreenshotProtection).not.toHaveBeenCalled();
+    expect(w.find('[data-test="security-error"]').exists()).toBe(false);
   });
 
-  it("R68：关锁后重放失败时如实提示，且不说「关闭失败」", async () => {
+  it("R68（已反转）：截屏防护的系统层失败不再牵连关锁路径", async () => {
     await useLockStore().setLock("pin", PIN);
     const w = mount(SecurityPage);
     await flushPromises();
 
+    // 系统层此刻是坏的：挂载时的重放只留日志，不阻断任何东西。
     vi.mocked(applyScreenshotProtection).mockRejectedValue(new Error("FLAG_SECURE 设置失败"));
 
     await w.find('[data-test="lock-enabled"]').setValue(false);
     await flushPromises();
 
-    // 锁确实关掉了：不能谎报「关闭失败」。
+    // 关锁本身成功，且两件事已无关：既不报「关闭失败」，也不报「截屏防护未能同步」。
     expect(useLockStore().isLockConfigured).toBe(false);
-    const err = w.find('[data-test="security-error"]');
-    expect(err.exists()).toBe(true);
-    expect(err.text()).toContain("截屏防护未能同步");
-    expect(err.text()).not.toContain("关闭失败");
+    expect(w.find('[data-test="security-error"]').exists()).toBe(false);
   });
 
   it("R68：开页面时重放失败只留日志，不弹提示也不阻断渲染", async () => {
@@ -394,7 +417,7 @@ describe("SecurityPage", () => {
     await flushPromises();
 
     // 配置如实落盘（不谎称失败），但系统层没跟上必须说出来。
-    expect(useLockStore().screenshotProtection).toBe(false);
+    expect(usePrivacyStore().screenshotProtection).toBe(false);
     expect((w.find('[data-test="screenshot-protection"]').element as HTMLInputElement).checked)
       .toBe(false);
     expect(w.find('[data-test="security-error"]').text()).toContain("截屏防护设置失败，请重试");
@@ -404,14 +427,17 @@ describe("SecurityPage", () => {
 
   it("R71：读盘 fail-open 返回 null 也不把已配置的锁降级，且重放的是真实值", async () => {
     const lock = useLockStore();
+    const privacy = usePrivacyStore();
     await lock.setLock("pin", PIN);
     // 用户此前拉长了自动锁定时长、关掉了截屏防护：这是本会话的真相，也是系统层的真相。
-    await lock.updateSettings({ auto_lock_seconds: 300, screenshot_protection: false });
+    await lock.updateSettings({ auto_lock_seconds: 300 });
+    await privacy.setScreenshotProtection(false);
     vi.mocked(applyScreenshotProtection).mockClear();
 
-    // 让读路径 fail-open：`readAppLock` 对任何读/解析失败都返回 null（刻意的 R26 契约）。
+    // 让读路径 fail-open：`readAppLock` 对任何读/解析失败都返回 null（刻意的 R26 契约），
+    // `readScreenshotProtection` 则在读不到时回落从严默认 true（同理）。
     // 页面若在 onMounted 里再 `load()` 一次，就会以 null 覆盖会话状态 →
-    // 锁降级成「未配置 + 默认值」，紧接着又拿默认 `true` 重放系统层。
+    // 锁降级成「未配置 + 默认值」，紧接着又拿默认 `true` 把截屏防护重新打开。
     localStorage.setItem("app_lock", "garbage");
 
     const w = mount(SecurityPage);
@@ -424,12 +450,12 @@ describe("SecurityPage", () => {
     expect((w.find('[data-test="lock-enabled"]').element as HTMLInputElement).checked).toBe(true);
     expect(w.find('[data-test="change-lock"]').exists()).toBe(true);
 
-    // 设置也没被复位成 LOCK_SETTINGS_DEFAULTS。
+    // 设置也没被复位成默认值。
     expect(lock.autoLockSeconds).toBe(300);
-    expect(lock.screenshotProtection).toBe(false);
+    expect(privacy.screenshotProtection).toBe(false);
     expect((w.find('[data-test="screenshot-protection"]').element as HTMLInputElement).checked)
       .toBe(false);
-    // 系统层重放的是真实的 false，而不是复位出来的默认 true。
+    // 系统层重放的是真实的 false，而不是回落出来的默认 true。
     expect(applyScreenshotProtection).toHaveBeenCalledWith(false);
   });
 });
