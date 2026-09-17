@@ -122,10 +122,14 @@ function handleLogout(): void {
         </div>
       </div>
 
-      <!-- Sync status -->
+      <!--
+        Sync status
+        `w-full` 不能省：button 的 flex 是**收缩到内容宽**的（同文件其余行按钮都带 w-full），
+        少了它这块 bg-surface 只铺到文字末尾，右侧露出页面底色，一整行看着像被截断。
+      -->
       <button
         v-if="auth.isOnline"
-        class="flex items-center gap-2 bg-surface px-4 py-3 border-b border-gray-100"
+        class="flex w-full items-center gap-2 bg-surface px-4 py-3 border-b border-gray-100"
         :disabled="auth.isSyncing"
         @click="handleSync"
       >
