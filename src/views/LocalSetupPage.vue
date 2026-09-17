@@ -39,9 +39,11 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useOnboardingStore } from '@/stores/onboarding'
 
 const router = useRouter()
 const auth = useAuthStore()
+const onboarding = useOnboardingStore()
 
 const nickname = ref('')
 const password = ref('')
@@ -56,6 +58,8 @@ async function handleCreate(): Promise<void> {
   error.value = ''
   try {
     await auth.createLocalAccount(nickname.value.trim(), nickname.value.trim(), password.value)
+    // 账户刚建好：问一次要不要开应用锁（已经配了锁或问过就不问）。用户选完再进首页。
+    await onboarding.promptAppLockIfNeeded()
     router.replace('/')
   } catch {
     error.value = '创建失败，请重试'

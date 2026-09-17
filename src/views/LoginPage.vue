@@ -49,9 +49,11 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useOnboardingStore } from '@/stores/onboarding'
 
 const router = useRouter()
 const auth = useAuthStore()
+const onboarding = useOnboardingStore()
 
 const username = ref('')
 const password = ref('')
@@ -70,6 +72,8 @@ async function handleLogin(): Promise<void> {
       error.value = '用户名或密码错误'
       return
     }
+    // 换新设备登录也走这里：本设备没配锁、也没问过，就提示一次。
+    await onboarding.promptAppLockIfNeeded()
     router.replace('/')
   } catch {
     error.value = '登录失败，请重试'

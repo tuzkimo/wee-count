@@ -69,12 +69,14 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useOnboardingStore } from '@/stores/onboarding'
 import * as api from '@/services/api'
 import { migrateLocalDataToServer, firstFullSync } from '@/services/migration'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const onboarding = useOnboardingStore()
 
 const activeTab = ref<'login' | 'register'>('login')
 const apiUrl = ref((route.query.apiUrl as string) || '')
@@ -117,6 +119,8 @@ async function doAfterBind(resp: api.AuthResponse, password: string): Promise<vo
       auth.currentLocalUser = { ...auth.currentLocalUser, nickname, avatar_url: resp.user.avatar_url || null }
     }
   }
+  // 本地账户此刻才建好（或登录成功）：问一次要不要开应用锁，用户选完再进首页。
+  await onboarding.promptAppLockIfNeeded()
   router.replace('/')
   // 后台执行首次同步
   try { await firstFullSync() } catch (e) {

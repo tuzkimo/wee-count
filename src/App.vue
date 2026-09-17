@@ -5,6 +5,7 @@ import { Home, BarChart3, Wallet, User } from "lucide-vue-next";
 import { useAutoLock } from "@/composables/useAutoLock";
 import { useLockStore } from "@/stores/lock";
 import { sanitizeRedirect } from "@/router/lockGuard";
+import AppLockPrompt from "@/components/lock/AppLockPrompt.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -81,5 +82,12 @@ const showTab = computed(() => !route.meta.hideTab);
         <span>{{ tab.label }}</span>
       </router-link>
     </nav>
+
+    <!--
+      新用户引导（问一次要不要开应用锁）挂在这里，而不是散在三个登录/注册页里：
+      它是全局单例 UI，由 `stores/onboarding.ts` 决定该不该出现。
+      放在 tab 栏之后，保证两层对话框都盖在页面与 tab 栏之上。
+    -->
+    <AppLockPrompt />
   </div>
 </template>
