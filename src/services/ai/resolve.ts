@@ -83,6 +83,11 @@ function matchByName(
   const ids: string[] = [];
   for (const value of values) {
     const needle = value.trim().toLowerCase();
+    // 空串（含"全是空白"的元素）**直接跳过**：若放它进去，`name.includes("")` 对每个名字都为真，
+    // 会把整个池子变成"命中"。注意当前这条路径挡在 validateQuery 之后——dsl.ts 的
+    // `v.some((s) => s.trim() === "")` 已经先拒掉了整元素为空白的数组，所以正常链路到不了这里。
+    // 这里保留判断是**纵深防御**（本模块是导出的纯函数，不该假设调用方一定校验过），
+    // 不是死代码，也**不要**因为"反正有校验"就删掉。
     if (needle === "") continue;
     const exact = pool.filter((it) => it.name.toLowerCase() === needle);
     const hits = exact.length > 0
@@ -126,7 +131,9 @@ function matchOne(
 }
 
 function toAppliedRefs<T extends Named>(ids: string[] | null, pool: T[]): AppliedRef[] {
-  return (ids ?? []).map((id) => ({
+  // 去重：模型可能给出重复的名字（"盒马"、"盒马"），那是两个同 id 的 ref，
+  // 页面上会出现两个一模一样的芯片。SQL 无害（同一个 tag_id 加两次），但 UI 是缺陷。
+  return [...new Set(ids ?? [])].map((id) => ({
     id,
     name: pool.find((it) => it.id === id)?.name ?? id,
   }));
