@@ -249,7 +249,19 @@ function groupJoin(groupBy: AiGroupBy): string {
       return "\n    LEFT JOIN accounts fa ON fa.id = t.from_account_id" +
         "\n    LEFT JOIN accounts ta ON ta.id = t.to_account_id";
     case "tag":
+      // ⚠️ 关联行这一侧必须限活跃标签，否则是**静默错钱**（审查 I-1 / R45，已用真实
+      // node:sqlite 执行级复现）：`transaction_tags` 是唯一会**扇出多行**的 join
+      // （category、account 都是 t 上的标量），若 ON 不限制活跃标签，一笔带 2 个软删
+      // 标签的交易会产出 2 行、每行 gtg 都是 NULL、都被 COALESCE 成「未打标签」→
+      // **该笔金额被计 2 份**；而带「1 个活跃 + 1 个软删」标签的交易会同时落进
+      // 「活跃标签」桶**和**「未打标签」桶。后果是各桶之和 ≠ 总额（回归用例夹具上
+      // 实测 350 ≠ 240），且与流水页语义冲突（stores/transaction.ts 的 fetchAll 把
+      // 软删标签当没打，列表显示「工作日」而 AI 报「未打标签」）——正是本模块要消灭的
+      // 那类不一致。
+      // 有了 IN 过滤后下一跳的 `gtg.is_deleted = 0` 变成冗余，但保留成本为零、
+      // 且能防将来有人只改一处。
       return "\n    LEFT JOIN transaction_tags gtt ON gtt.transaction_id = t.id" +
+        "\n      AND gtt.tag_id IN (SELECT id FROM tags WHERE is_deleted = 0)" +
         "\n    LEFT JOIN tags gtg ON gtg.id = gtt.tag_id AND gtg.is_deleted = 0";
     case "member":
     case "month":
@@ -335,6 +347,10 @@ export function buildItemsSql(
 ): SqlFragment {
   const where = buildWhere(ledgerId, f);
   const limit = clampLimit(q.limit, AI_QUERY_MAX_ITEMS);
+  // 明细只在 date_asc 时反转。value_desc / value_asc 对"平铺的流水列表"没有意义，
+  // 落回默认的时间倒序（明细默认就是最新在前）；但 date_asc 必须生效——
+  // 否则模型问"最早的 3 笔"会**静默**拿到最新的 3 笔，请求与结果相反且无任何提示（审查 M-5）。
+  const dir = q.orderBy === "date_asc" ? "ASC" : "DESC";
   const sql = `
     SELECT
       date(t.occurred_at, '${offsetModifier()}') AS day,
@@ -347,7 +363,7 @@ export function buildItemsSql(
     LEFT JOIN categories c ON c.id = t.category_id AND c.is_deleted = 0
     LEFT JOIN accounts fa ON fa.id = t.from_account_id
     LEFT JOIN accounts ta ON ta.id = t.to_account_id${where.sql}
-    ORDER BY t.occurred_at DESC, t.created_at DESC
+    ORDER BY t.occurred_at ${dir}, t.created_at ${dir}
     LIMIT ${limit}`;
   return { sql, params: where.params };
 }
