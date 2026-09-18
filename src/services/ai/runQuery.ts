@@ -7,6 +7,7 @@ import { getUserDb } from "@/db/userDb";
 import { utcToLocalDateKey } from "@/utils/datetime";
 import {
   validateQuery,
+  AI_QUERY_MAX_LIMIT,
   type AiQuery,
   type AiQueryError,
 } from "@/services/ai/dsl";
@@ -20,6 +21,7 @@ import {
   buildGroupsSql,
   buildItemsSql,
   buildSummarySql,
+  clampLimit,
   shapeGroups,
   shapeItems,
   shapeSummary,
@@ -105,7 +107,9 @@ async function deriveFullRange(
  *
  * 只读：本函数（以及整个 M1）**不产生任何写操作**，`db.execute` 一次都不会被调用。
  * 「AI 只能读 + 生成草稿，绝不直接落库」这条权限边界在 M1 就由结构保证，不靠约定。
- * 对应的断言在 runQuery.test.ts 的成功/失败两类用例里都有。
+ * runQuery.test.ts 里是两层守卫：mock 的 `execute` **一调用即抛**（行为上兜住所有路径），
+ * 外加 4 条成功路径 + 1 条失败分支（覆盖三条失败路径）的显式断言，
+ * 以及"发出去的 SQL 必须以 SELECT 开头"这条语句级断言（只钉方法名挡不住写语句走 select）。
  */
 export async function runQuery(
   ledgerId: string,
@@ -141,9 +145,18 @@ export async function runQuery(
     groups = shapeGroups(rows).map((row) =>
       groupBy === "member" ? { ...row, label: memberLabel(row.label, ctx) } : row,
     );
-    // 分组被 LIMIT 截断时，各桶之和会小于 matched。不标记就是让模型拿一份残缺的
-    // 分布去回答"哪个分类花得最多"。
-    groupsTruncated = summary.matched > groups.length;
+    // 分组被 LIMIT 截断时不能让模型以为拿到的是完整分布。
+    //
+    // ⚠️ **不能用 `summary.matched > groups.length` 判断**（审查 Important I-1，已真库复现）：
+    // tag 分组是本模块里**唯一会扇出**的分组——一笔挂 N 个标签就出现在 N 个桶里，
+    // 所以 `groups.length` 可以**大于** `matched`。审查者实测：8 笔交易 × 15 个活跃标签、
+    // 默认 limit=10 → 真实桶 15 个、只返回 10 个，而旧条件算出 `false`，
+    // **5 个桶被静默丢弃却告诉模型"这份分布是完整的"**（同 SQL 传 limit:50 返回 15 行，
+    // 证明是 LIMIT 造成）。这又是一条"静默答错"，正是本 M1 要消灭的东西。
+    //
+    // 正确的信号是"**返回行数撞到了 LIMIT**"：撞到就说明可能还有。
+    // 宁可保守（恰好等于 limit 时也标 true），也不能漏报——漏报会让模型拿残缺分布下结论。
+    groupsTruncated = groups.length >= clampLimit(q.limit, AI_QUERY_MAX_LIMIT);
   }
 
   let items: AiQueryResult["items"] = null;
@@ -169,6 +182,10 @@ export async function runQuery(
       ...summary,
       groups,
       items,
+      // 明细这条可以继续用 `matched > items.length`：明细一行 = 一笔交易、**不扇出**，
+      // 所以"返回条数少于命中数"确实等价于"撞到了 LIMIT"（两者在 matched >= limit 时等价）。
+      // 分组那边**不成立**——桶数可以大于 matched（tag 扇出），所以必须单独用 LIMIT 命中判断。
+      // 这就是两条判据不能共用一个式子的全部原因，见上面的注释。
       truncated: groupsTruncated || (items !== null && summary.matched > items.length),
     },
   };
