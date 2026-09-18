@@ -25,3 +25,26 @@ describe("isDefaultCurrentMonth", () => {
     expect(isDefaultCurrentMonth(false, undefined, { dateTo: "2026-08-31" })).toBe(false);
   });
 });
+
+describe("isDefaultCurrentMonth 与新增筛选参数", () => {
+  it("只带关键词时不再是默认当月", () => {
+    expect(isDefaultCurrentMonth(false, null, { note: "盒马" })).toBe(false);
+  });
+
+  it("只带金额区间时不再是默认当月", () => {
+    expect(isDefaultCurrentMonth(false, null, { amountMin: "10" })).toBe(false);
+    expect(isDefaultCurrentMonth(false, null, { amountMax: "500" })).toBe(false);
+  });
+
+  it("只带收支类型时不再是默认当月", () => {
+    expect(isDefaultCurrentMonth(false, null, { type: "income" })).toBe(false);
+  });
+
+  it("完全无参数时仍是默认当月", () => {
+    expect(isDefaultCurrentMonth(false, null, {})).toBe(true);
+  });
+
+  it("账户详情模式永远不是默认当月", () => {
+    expect(isDefaultCurrentMonth(true, "acc-1", {})).toBe(false);
+  });
+});

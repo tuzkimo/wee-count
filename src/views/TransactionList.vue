@@ -17,7 +17,7 @@ import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { formatDateRange } from "@/utils/datetime";
 import { isDefaultCurrentMonth } from "@/utils/filter";
 import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, transferFromUid, transferToUid, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate } from "@/utils/transaction";
-import type { Transaction } from "@/types";
+import type { Transaction, TransactionType } from "@/types";
 import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
 import { useAmountMask } from "@/composables/useAmountMask";
 import { pickAmountSizeClass } from "@/utils/amountFit";
@@ -144,6 +144,10 @@ const isDefaultMonth = computed(() => isDefaultCurrentMonth(isAccountMode.value,
   tags: route.query.tags as string | undefined,
   categories: route.query.categories as string | undefined,
   members: route.query.members as string | undefined,
+  note: route.query.note as string | undefined,
+  amountMin: route.query.amountMin as string | undefined,
+  amountMax: route.query.amountMax as string | undefined,
+  type: route.query.type as string | undefined,
 }));
 
 // 当前账户信息
@@ -281,6 +285,16 @@ function buildFetchOpts() {
   const qMembers = route.query.members as string | undefined;
   const qUncategorized = route.query.uncategorized === "1" ? true : undefined;
 
+  const qNote = route.query.note as string | undefined;
+  const qAmountMin = route.query.amountMin as string | undefined;
+  const qAmountMax = route.query.amountMax as string | undefined;
+  const qType = route.query.type as string | undefined;
+  // 非法 type 静默忽略而不是抛错：URL 是用户可改的，一个手改坏的类型不该让整页白屏
+  // 必须显式标注类型：条件表达式窄化出的字面量联合放进对象字面量属性时会被**拓宽**回
+  // string（实测 TS 5.6.3），标注成 TransactionType 才不会被拓宽、也才能对上 fetchAll 的入参
+  const typeOpt: TransactionType | undefined =
+    qType === "expense" || qType === "income" || qType === "transfer" ? qType : undefined;
+
   // 首页模式无任何筛选参数时，默认查当月
   let dateFrom = qDateFrom;
   let dateTo = qDateTo;
@@ -299,6 +313,11 @@ function buildFetchOpts() {
     categoryIds: qCategories ? qCategories.split(",").filter(Boolean) : undefined,
     memberIds: qMembers ? qMembers.split(",").filter(Boolean) : undefined,
     uncategorized: qUncategorized,
+    noteKeyword: qNote || undefined,
+    // 用 Number() 前先判空串：Number("") === 0 会把"没给"变成"下界 0"
+    amountMin: qAmountMin ? Number(qAmountMin) : undefined,
+    amountMax: qAmountMax ? Number(qAmountMax) : undefined,
+    type: typeOpt,
   };
 }
 
@@ -357,6 +376,22 @@ const filterSummary = computed(() => {
     } else {
       parts.push("👥 全部成员");
     }
+  }
+
+  // 收支类型
+  if (q.type === "expense" || q.type === "income" || q.type === "transfer") {
+    const label = q.type === "expense" ? "支出" : q.type === "income" ? "收入" : "转账";
+    parts.push(`🔀 ${label}`);
+  }
+
+  // 备注关键词
+  if (q.note) parts.push(`🔍 ${q.note}`);
+
+  // 金额区间
+  if (q.amountMin || q.amountMax) {
+    const min = q.amountMin ? `¥${q.amountMin}` : "";
+    const max = q.amountMax ? `¥${q.amountMax}` : "";
+    parts.push(`💰 ${min && max ? `${min} ~ ${max}` : min ? `${min} 以上` : `${max} 以下`}`);
   }
 
   // 标签（放最后）

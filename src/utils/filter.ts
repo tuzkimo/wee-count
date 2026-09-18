@@ -8,6 +8,10 @@ export interface DefaultMonthFilter {
   tags?: string;
   categories?: string;
   members?: string;
+  note?: string;
+  amountMin?: string;
+  amountMax?: string;
+  type?: string;
 }
 
 export function isDefaultCurrentMonth(
@@ -16,5 +20,6 @@ export function isDefaultCurrentMonth(
   q: DefaultMonthFilter,
 ): boolean {
   const accId = isAccountMode ? accountId : q.account;
-  return !isAccountMode && !q.dateFrom && !q.dateTo && !q.tags && !q.categories && !q.members && !accId;
+  return !isAccountMode && !q.dateFrom && !q.dateTo && !q.tags && !q.categories
+    && !q.members && !q.note && !q.amountMin && !q.amountMax && !q.type && !accId;
 }
