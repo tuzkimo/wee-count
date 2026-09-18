@@ -174,6 +174,29 @@ describe("resolveFilter 未命中", () => {
     const r = resolveFilter({ tags: ["不存在"] }, many);
     expect(errs(r)[0].candidates).toHaveLength(5);
   });
+
+  it("歧义分支的候选同样被截到 5 个（上面那条只覆盖 not_found 分支）", () => {
+    // 审查发现：上面那条用的是「不存在的名字 → not_found」，走的是 not_found 那处截断；
+    // 而歧义分支的截断**没有任何用例**——把它改成不截断，现有 22 个用例全绿。
+    // account:"卡" 这类多命中是完全可达的，所以两个分支都要各自钉住。
+    const many: LookupContext = {
+      ...ctx,
+      accounts: Array.from({ length: 8 }, (_, i) => ({ id: `a${i}`, name: `银行卡${i}` })),
+    };
+    const r = resolveFilter({ account: "卡" }, many);
+    expect(r.ok).toBe(false);
+    expect(errs(r)[0].kind).toBe("ambiguous");
+    expect(errs(r)[0].candidates).toHaveLength(5);
+  });
+
+  it("名字匹配大小写不敏感（ASCII 名字也要能用）", () => {
+    // 审查发现：实现里有 toLowerCase()，但这个契约**零覆盖**——把 toLowerCase() 删掉，
+    // 现有 22 个用例全绿（夹具里全是中文，大小写无从体现）。模型给的英文名大小写不可控。
+    const ascii: LookupContext = { ...ctx, accounts: [{ id: "a-cmb", name: "CMB Card" }] };
+    expect(resolveFilter({ account: "cmb card" }, ascii).ok).toBe(true);
+    expect(resolveFilter({ account: "CMB CARD" }, ascii).ok).toBe(true);
+    expect(resolveFilter({ account: "Cmb Card" }, ascii).ok).toBe(true);
+  });
 });
 
 describe("resolveFilter 分类按 type 消歧", () => {
@@ -237,5 +260,50 @@ describe("resolveFilter 其他字段", () => {
     const r = resolveFilter({ account: "工行", tags: ["没有这个标签"] }, ctx);
     expect(r.ok).toBe(false);
     expect(errs(r).map((e) => e.field).sort()).toEqual(["accounts", "tags"]);
+  });
+});
+
+describe("resolveFilter 的 applied 回显", () => {
+  it("applied 的每个字段都要正确（它是任务 7 回显与跳转的唯一数据源）", () => {
+    // 审查发现：applied 是任务 7 唯一的回显/跳转数据源，但 22 个用例里只有 3 行碰它，
+    // 下面 5 个变异**全部溜过**：toAppliedRefs 互换 id/name（→ ?tags=盒马 筛出 0 条）、
+    // applied.account.name 直返 id（→ 芯片显示 UUID）、applied.type 恒 null、
+    // applied.merchant 不 trim、amountMin/Max 未落到 applied。
+    // 用**整对象 toEqual** 一次钉住：任何字段被漏写、写错、id/name 互换都会红。
+    const r = resolveFilter(
+      {
+        date: { from: "2026-01-01", to: "2026-03-15" },
+        type: "expense",
+        categories: ["买菜"],
+        account: "招行储蓄卡",
+        tags: ["生鲜"],
+        members: ["老婆"],
+        merchant: "  盒马  ",
+        amount: { min: 50, max: 500 },
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.applied).toEqual({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-03-15",
+      type: "expense",
+      categories: [{ id: "c-food", name: "买菜" }],
+      account: { id: "a-cmb", name: "招行储蓄卡" },
+      tags: [{ id: "t-fresh", name: "生鲜" }],
+      members: [{ id: "u-wife", name: "老婆" }],
+      merchant: "盒马", // trim 过——带空白的原串进了页面查询会筛出 0 条
+      amountMin: 50,
+      amountMax: 500,
+    });
+  });
+
+  it("重复的名字只回显一次，不产生重复芯片", () => {
+    // 审查发现：toAppliedRefs 不去重，["盒马","盒马"] → 两个同 id 的 ref，
+    // 页面上出现两个一模一样的芯片（SQL 无害，UI 是缺陷）。已按去重实现。
+    const r = resolveFilter({ tags: ["生鲜", "生鲜"] }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.applied.tags).toEqual([{ id: "t-fresh", name: "生鲜" }]);
   });
 });

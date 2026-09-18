@@ -4,7 +4,14 @@ import { dayRangeToIso, resolveRange } from "@/services/ai/range";
 describe("dayRangeToIso", () => {
   it("与 transactionStore.fetchAll 的边界公式逐字一致", () => {
     // 复刻 src/stores/transaction.ts:178-197 的算法。fetchAll 不改成调用本函数
-    // （那是无关重构），所以这里用测试把两条路径钉在一起：任何一边改了都会红。
+    // （那是无关重构），所以这里用测试把两条路径的**公式**钉在一起。
+    //
+    // ⚠️ 但要清楚这条用例**只能抓住 range.ts 这一侧**的漂移：断言里的构造方式与实现
+    // 是同一个本地午夜（`new Date(\`${k}T00:00\`)`），而 fetchAll 那一侧是**被复刻进测试**的，
+    // 它自己改了不会让这里变红（审查者实测：把 fetchAll 单独改成 UTC 解析，本条 7/7 全绿，
+    // 而两侧边界实际差 8 小时）。真正把 fetchAll 那一侧钉住的是
+    // `src/stores/__tests__/transaction.test.ts` 里那条"dateTo 不带时刻"的用例——
+    // 它调用**真实的** fetchAll 并与**真实的** dayRangeToIso 比对（见任务 3 的步骤 4b）。
     const from = "2026-01-01";
     const to = "2026-12-31";
 

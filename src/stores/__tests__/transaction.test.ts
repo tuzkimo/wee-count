@@ -31,6 +31,7 @@ vi.mock("@/stores/auth", () => ({
 
 import { enqueueSync } from "@/services/sync";
 import { useTransactionStore } from "@/stores/transaction";
+import { dayRangeToIso } from "@/services/ai/range";
 import type { Transaction } from "@/types";
 
 function makeTx(overrides: Partial<Transaction> = {}): Transaction {
@@ -147,6 +148,24 @@ describe("transactionStore", () => {
 
       expect(sql).toContain("t.occurred_at <");
       expect(params).toEqual(["pl-1", expected.toISOString()]);
+    });
+
+    it("dateTo 不带时刻时上界取次日 00:00，且与 ai/range 的 dayRangeToIso 同值", async () => {
+      // 这条同时钉住两侧：既调**真实的** fetchAll，又调**真实的** dayRangeToIso。
+      // 任一侧漂移（例如 fetchAll 改成 UTC 解析、或 range.ts 少加一天）都会变红——
+      // 这是「AI 回答里的数字与点进流水页看到的必须一致」唯一由测试维持的地方。
+      mockDb.select.mockResolvedValue([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+
+      const sql = mockDb.select.mock.calls[0][0] as string;
+      const params = mockDb.select.mock.calls[0][1] as string[];
+      const range = dayRangeToIso("2026-08-01", "2026-08-31");
+
+      expect(sql).toContain("t.occurred_at >= ?");
+      expect(sql).toContain("t.occurred_at <");
+      expect(params).toEqual(["pl-1", range.startIso, range.endIso]);
     });
   });
 
