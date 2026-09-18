@@ -76,7 +76,10 @@ export type AiQueryErrorCode =
   | "bad_aggregate"
   | "bad_group_by"
   | "bad_order_by"
-  | "bad_limit";
+  | "bad_limit"
+  // 跨字段矛盾（多个字段单独看都合法、组合起来无意义）。见 R44：
+  // {type:"transfer", categories:[...]} 不拦会静默返回 0 行。
+  | "bad_combination";
 
 export interface AiQueryError {
   code: AiQueryErrorCode;
@@ -221,6 +224,18 @@ export function validateQuery(raw: unknown): ValidateResult {
     if (!isStringArray(v) || v.some((s) => s.trim() === "")) {
       fail("bad_string_array", key, `${key} 必须是非空字符串组成的数组`);
     }
+  }
+
+  // 跨字段：转账没有分类，{type:"transfer", categories:[...]} 是自相矛盾的查询（审查 M-1 / R44）。
+  // 不拦它有两个坏结果，第二个是**静默错数字**：
+  //   (a) categories 里的名字在全量池里有多命中时（两个「其他」）→ `resolveFilter` 报
+  //       ambiguous，候选是 ["其他","其他"]——对模型毫无指导意义，用户被反问一个荒谬的问题；
+  //   (b) 名字**唯一命中**时（"买菜"只有一个且是支出分类）→ `resolveFilter` 会**成功**解析出
+  //       支出分类 id，随后它与 `type='transfer'` 同时进 WHERE → **静默返回 0 行**。
+  //       用户问"转账里买菜的"得到"0 元"，而不是"这个查询没有意义"。
+  // 明确告诉模型"转账没有分类"，它才能自己改对。
+  if (raw.type === "transfer" && Array.isArray(raw.categories) && raw.categories.length > 0) {
+    fail("bad_combination", "categories", "type=transfer 时不能指定 categories：转账没有分类");
   }
 
   if (raw.account !== undefined && !isNonEmptyString(raw.account)) {

@@ -131,6 +131,27 @@ describe("validateQuery 非法输入", () => {
       .toEqual([{ code: "bad_date", path: "date.from" }]);
   });
 
+  it("type=transfer 与 categories 同时给 → bad_combination（转账没有分类）", () => {
+    // 不拦它的后果不是"候选重复显示"这么轻（我原先这么判过，是错的）：
+    // categories 里的名字在全量池里**唯一命中**时（"买菜"只有一个且是支出分类），
+    // resolveFilter 会**成功**解析出支出分类 id，随后它与 type='transfer' 同时进 WHERE
+    // → 查询**静默返回 0 行**。用户问"转账里买菜的"得到"0 元"而毫无提示。
+    // 多命中时则是无意义的 ambiguous ["其他","其他"]。明确报错，模型才能自己改对。
+    expect(errs({ aggregate: "sum", type: "transfer", categories: ["买菜"] }))
+      .toEqual([{ code: "bad_combination", path: "categories" }]);
+    // 边界：type 缺省或为 expense/income 时，categories 完全合法
+    expect(validateQuery({ aggregate: "sum", categories: ["买菜"] }).ok).toBe(true);
+    expect(validateQuery({ aggregate: "sum", type: "expense", categories: ["买菜"] }).ok).toBe(true);
+    // 边界：type=transfer 但**没给** categories 时合法（这才是正常的转账查询）
+    expect(validateQuery({ aggregate: "sum", type: "transfer" }).ok).toBe(true);
+    // 边界：给了但是**空数组**同样合法。空数组的契约是「不过滤」而不是「匹配空集」
+    // （同 describe 下「categories 为空数组算『不过滤』」那条），transfer 不该例外。
+    // 这条断言不是摆设：它专门钉住 `length > 0` 而不是 `>= 0`——后者会让「转账查全部」
+    // 这种最常见的转账查询被判成自相矛盾。注意 `Array.isArray` 守卫已经挡掉了
+    // "没给 categories"，所以**只有**空数组这一条路径能区分 `> 0` 与 `>= 0`。
+    expect(validateQuery({ aggregate: "sum", type: "transfer", categories: [] }).ok).toBe(true);
+  });
+
   it("from 格式不对", () => {
     expect(codes({ date: { from: "2026/03/01", to: "2026-04-01" }, aggregate: "sum" }))
       .toEqual(["bad_date"]);
