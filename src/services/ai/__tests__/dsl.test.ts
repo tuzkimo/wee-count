@@ -147,6 +147,33 @@ describe("validateQuery 非法输入", () => {
       .toEqual(["bad_date"]);
   });
 
+  it("日历上不存在的日期被拒（形状对，但不是真实存在的日子）", () => {
+    // DATE_RE 会放行这些，后果分两种，都不能接受：
+    //   2026-02-31 → 被 JS 的 Date 滚到 3/3，「2 月账单」的区间终点静默多出 3 天；
+    //   2026-13-99 / 2026-00-10 → Invalid Date，下游 range.ts 的 toISOString() 直接抛 RangeError。
+    // 变异：把 isDateKey 换回 `DATE_RE.test` → 本条全红。
+    expect(codes({ date: { from: "2026-02-31", to: "2026-03-31" }, aggregate: "sum" }))
+      .toEqual(["bad_date"]);
+    expect(codes({ date: { from: "2026-02-01", to: "2026-02-29" }, aggregate: "sum" }))
+      .toEqual(["bad_date"]); // 2026 不是闰年，2/29 会被滚到 3/1
+    expect(codes({ date: { from: "2026-13-01", to: "2026-12-31" }, aggregate: "sum" }))
+      .toEqual(["bad_date"]);
+    // 顺带钉住"不连坐"：from 已经非法时，不该再补一句"from 晚于 to"把模型引偏
+    expect(errs({ date: { from: "2026-02-31", to: "2026-03-31" }, aggregate: "sum" }))
+      .toEqual([{ code: "bad_date", path: "date.from" }]);
+    // 上面那对**抓不住**「去掉 `fromOk && toOk` 守卫」：`2026-02-31` 在字典序上小于
+    // `2026-03-31`，守卫在不在都不会进顺序分支。这一对的 from 非法且字典序更大，
+    // 守卫一旦被去掉就会多报一条 `bad_date@date`，断言随之变红。
+    expect(errs({ date: { from: "2026-13-01", to: "2026-12-31" }, aggregate: "sum" }))
+      .toEqual([{ code: "bad_date", path: "date.from" }]);
+  });
+
+  it("闰年的 2/29 是合法日期", () => {
+    // 往返校验把闰年判断交给 Date 自己。这条是上一条的护栏：
+    // 若有人图省事写成「月 ≤ 12 且日 ≤ 28」之类的粗略判断，这里会红——那会把正常查询拒掉。
+    expect(codes({ date: { from: "2024-02-29", to: "2024-03-31" }, aggregate: "sum" })).toEqual([]);
+  });
+
   it("from 晚于 to", () => {
     expect(codes({ date: { from: "2026-04-01", to: "2026-03-01" }, aggregate: "sum" }))
       .toEqual(["bad_date"]);

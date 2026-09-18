@@ -1,4 +1,5 @@
-import type { PresetKey } from "@/utils/dateRange";
+import { toDateKey, type PresetKey } from "@/utils/dateRange";
+import { localDateKeyToDate } from "@/utils/datetime";
 
 /**
  * 12 个快捷范围字面量。`satisfies` 保证每个字面量都是合法的 PresetKey（写错 TS 就报错），
@@ -89,6 +90,29 @@ export type ValidateResult =
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * 日期 key 的完整校验：形状 + **日历合法性**。
+ *
+ * `DATE_RE` 只保证 `\d{4}-\d{2}-\d{2}` 这个形状，下面这些全能过：
+ * - `2026-02-31` → JS 的 Date 把它**滚到** 3/3，于是"2 月账单"的区间终点静默多出 3 天；
+ * - `2026-02-29`（2026 不是闰年）→ 同样被滚到 3/1；
+ * - `2026-13-99`、`2026-00-10` → Invalid Date，下游 `range.ts:28` 的 `.toISOString()`
+ *   **直接抛 `RangeError: Invalid time value`**。
+ *
+ * 前两种是"校验说 ok、用户拿到错数字"，第三种是"校验说 ok、然后崩"——
+ * 与内层键白名单要防的是同一类问题：**`ok:true` 必须真的蕴含结果可用**。
+ *
+ * 往返比较一次覆盖全部：把解析出的本地日期再格式化回 key，与原串不等就说明被滚动过。
+ * 闰年交给 Date 自己判断（`2026-02-29` 被滚而拒绝，`2024-02-29` 正常通过），
+ * 不必自己写闰年表。**必须用 `localDateKeyToDate` / `toDateKey` 这一对**——它们与
+ * `range.ts` 用的是同一套本地时区解释，校验器和下游不可能对"什么算合法日期"产生分歧。
+ */
+function isDateKey(v: unknown): v is string {
+  if (typeof v !== "string" || !DATE_RE.test(v)) return false;
+  const d = localDateKeyToDate(v);
+  return !Number.isNaN(d.getTime()) && toDateKey(d) === v;
+}
+
 const FILTER_KEYS = [
   "date", "type", "categories", "account", "tags", "members", "merchant", "amount",
 ] as const;
@@ -166,10 +190,12 @@ export function validateQuery(raw: unknown): ValidateResult {
         // 只给了一边：点明缺的是哪个，比泛化的「二者之一」有用得多
         fail("bad_date", "from" in d ? "date.to" : "date.from", "from 与 to 必须同时给");
       } else if ("from" in d && "to" in d) {
-        const fromOk = typeof d.from === "string" && DATE_RE.test(d.from);
-        const toOk = typeof d.to === "string" && DATE_RE.test(d.to);
-        if (!fromOk) fail("bad_date", "date.from", "from 必须是 YYYY-MM-DD");
-        if (!toOk) fail("bad_date", "date.to", "to 必须是 YYYY-MM-DD");
+        const fromOk = isDateKey(d.from);
+        const toOk = isDateKey(d.to);
+        // 消息里点明"真实存在"：模型写 2026-02-31 时，只说"必须是 YYYY-MM-DD"会害它
+        // 盯着格式反复改，而格式本来就是对的。
+        if (!fromOk) fail("bad_date", "date.from", "from 必须是真实存在的日期（YYYY-MM-DD）");
+        if (!toOk) fail("bad_date", "date.to", "to 必须是真实存在的日期（YYYY-MM-DD）");
         if (fromOk && toOk && (d.from as string) > (d.to as string)) {
           fail("bad_date", "date", "from 不能晚于 to");
         }
