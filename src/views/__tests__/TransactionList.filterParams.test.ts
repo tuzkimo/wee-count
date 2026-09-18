@@ -100,9 +100,65 @@ describe("TransactionList 读取筛选 query", () => {
     expect(lastOpts().amountMin).toBe(0);
   });
 
+  it("amountMin=0 两侧一致：既传成 0，摘要也显示 ¥0 以上", async () => {
+    // 与上一条不同：这条同时钉**摘要**。用真值判断（`Number(x) || undefined` 或
+    // `if (q.amountMin)` 之类）的实现会在这里红两次——opts 丢掉 0、摘要少一段。
+    const w = await mountWith({ amountMin: "0" });
+    expect(lastOpts().amountMin).toBe(0);
+    expect(w.text()).toContain("💰 ¥0 以上");
+  });
+
+  it("非法金额（字符）既不过滤也不进摘要，两侧共用同一解析结果", async () => {
+    // 修前实测：opts.amountMin === NaN（typeof number）→ fetchAll 的 `!== undefined` 守卫放行
+    // → SQLite 把 NaN 绑成 NULL、`amount >= NULL` 恒不成立 → **静默 0 行**，
+    // 而摘要同时显示「💰 ¥abc 以上」。这条用例两侧都钉：列表不能带 NaN、摘要不能声称有金额条件。
+    const w = await mountWith({ amountMin: "abc" });
+    const opts = lastOpts();
+    expect(opts.amountMin).toBeUndefined();
+    // "abc" 仍算「有筛选参数」，所以不叠加默认当月（isDefaultCurrentMonth 的既有语义），
+    // 于是列表是**不限时间**的——摘要必须与之一致，否则又是「列表没过滤、摘要说当月」的反向错配。
+    expect(opts.dateFrom).toBeUndefined();
+    expect(w.text()).toContain("📅 全部时间");
+    expect(w.text()).not.toContain("💰");
+  });
+
+  it("溢出成 Infinity 的金额同样被拒，摘要也不显示", async () => {
+    // 1e999 → Infinity：`amount <= Inf` 匹配**全表**、`>= Inf` 一条不剩，同样静默且无报错。
+    const w = await mountWith({ amountMax: "1e999" });
+    expect(lastOpts().amountMax).toBeUndefined();
+    expect(w.text()).not.toContain("💰");
+  });
+
+  const wiringCases: [string, Record<string, string>][] = [
+    ["amountMin", { amountMin: "10" }],
+    ["amountMax", { amountMax: "500" }],
+    ["type", { type: "expense" }],
+  ];
+
+  it.each(wiringCases)("只带 %s 时不被叠加成默认当月（isDefaultMonth 的接线）", async (_label, query) => {
+    // 这三条钉的是**组件把参数传进了 isDefaultCurrentMonth** 这件事：纯函数单测
+    // （utils/__tests__/filter.test.ts）永远抓不到「组件漏传一个参数」——
+    // 修前实测：把这三行参数分别从 TransactionList.vue 的 isDefaultMonth 实参里删掉，
+    // 全量 834 全绿（只有 note 那行被既有用例钉住）。
+    // 后果是 `?amountMin=100` 或 `?type=income`（不带日期）被静默叠加当月限制。
+    await mountWith(query);
+    const opts = lastOpts();
+    expect(opts.dateFrom).toBeUndefined();
+    expect(opts.dateTo).toBeUndefined();
+  });
+
   it("合法 type 透传", async () => {
     await mountWith({ type: "income", dateFrom: "2026-01-01" });
     expect(lastOpts().type).toBe("income");
+  });
+
+  it("type=transfer 也透传，并在摘要显示「转账」", async () => {
+    // 白名单删掉 "transfer"（只留 expense|income）修前实测全量 834 全绿；
+    // 而 transfer 是用户能选的合法类型（M1 的「转账」芯片会用到），漏掉它等于
+    // 转账芯片跳转后的列表**静默不过滤**。摘要那半边同源：白名单也是一次手写。
+    const w = await mountWith({ type: "transfer", dateFrom: "2026-01-01", dateTo: "2026-12-31" });
+    expect(lastOpts().type).toBe("transfer");
+    expect(w.text()).toContain("🔀 转账");
   });
 
   it("非法 type 被忽略而不是让整页崩掉", async () => {

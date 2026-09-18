@@ -15,9 +15,9 @@ import { fetchTeamMembers } from "@/services/api";
 import AppHeader from "@/components/AppHeader.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { formatDateRange } from "@/utils/datetime";
-import { isDefaultCurrentMonth } from "@/utils/filter";
+import { isDefaultCurrentMonth, parseAmountParam, parseTransactionType } from "@/utils/filter";
 import { getTxIcon, getTxDescription, getTxCategoryName, formatAmount, transferFromUid, transferToUid, isCrossMemberTransfer, transferMemberIds, groupTransactionsByDate } from "@/utils/transaction";
-import type { Transaction, TransactionType } from "@/types";
+import type { Transaction } from "@/types";
 import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
 import { useAmountMask } from "@/composables/useAmountMask";
 import { pickAmountSizeClass } from "@/utils/amountFit";
@@ -289,11 +289,6 @@ function buildFetchOpts() {
   const qAmountMin = route.query.amountMin as string | undefined;
   const qAmountMax = route.query.amountMax as string | undefined;
   const qType = route.query.type as string | undefined;
-  // 非法 type 静默忽略而不是抛错：URL 是用户可改的，一个手改坏的类型不该让整页白屏
-  // 必须显式标注类型：条件表达式窄化出的字面量联合放进对象字面量属性时会被**拓宽**回
-  // string（实测 TS 5.6.3），标注成 TransactionType 才不会被拓宽、也才能对上 fetchAll 的入参
-  const typeOpt: TransactionType | undefined =
-    qType === "expense" || qType === "income" || qType === "transfer" ? qType : undefined;
 
   // 首页模式无任何筛选参数时，默认查当月
   let dateFrom = qDateFrom;
@@ -314,10 +309,13 @@ function buildFetchOpts() {
     memberIds: qMembers ? qMembers.split(",").filter(Boolean) : undefined,
     uncategorized: qUncategorized,
     noteKeyword: qNote || undefined,
-    // 用 Number() 前先判空串：Number("") === 0 会把"没给"变成"下界 0"
-    amountMin: qAmountMin ? Number(qAmountMin) : undefined,
-    amountMax: qAmountMax ? Number(qAmountMax) : undefined,
-    type: typeOpt,
+    // 金额与类型都走 utils/filter 的共用解析：摘要读的是**同一份结果**，
+    // 否则非法值（`?amountMin=abc` → NaN）修完会变成另一种错配——
+    // 列表静默不过滤、摘要却写着「💰 ¥abc 以上」。解析函数里的注释解释了为什么必须是
+    // Number.isFinite 而不是真值判断（真值判断会把合法的 0 当「没给」）。
+    amountMin: parseAmountParam(qAmountMin),
+    amountMax: parseAmountParam(qAmountMax),
+    type: parseTransactionType(qType),
   };
 }
 
@@ -378,19 +376,23 @@ const filterSummary = computed(() => {
     }
   }
 
-  // 收支类型
-  if (q.type === "expense" || q.type === "income" || q.type === "transfer") {
-    const label = q.type === "expense" ? "支出" : q.type === "income" ? "收入" : "转账";
+  // 收支类型：与 buildFetchOpts 共用 parseTransactionType（同一份白名单，含 transfer）
+  const type = parseTransactionType(q.type as string | undefined);
+  if (type) {
+    const label = type === "expense" ? "支出" : type === "income" ? "收入" : "转账";
     parts.push(`🔀 ${label}`);
   }
 
   // 备注关键词
   if (q.note) parts.push(`🔍 ${q.note}`);
 
-  // 金额区间
-  if (q.amountMin || q.amountMax) {
-    const min = q.amountMin ? `¥${q.amountMin}` : "";
-    const max = q.amountMax ? `¥${q.amountMax}` : "";
+  // 金额区间：用**与 buildFetchOpts 同一个解析函数**，否则非法值下会出现
+  // 「列表根本没过滤、摘要却写着 ¥abc 以上」的错配（回显 URL 原文就是这个坑）。
+  const amountMin = parseAmountParam(q.amountMin as string | undefined);
+  const amountMax = parseAmountParam(q.amountMax as string | undefined);
+  if (amountMin !== undefined || amountMax !== undefined) {
+    const min = amountMin !== undefined ? `¥${amountMin}` : "";
+    const max = amountMax !== undefined ? `¥${amountMax}` : "";
     parts.push(`💰 ${min && max ? `${min} ~ ${max}` : min ? `${min} 以上` : `${max} 以下`}`);
   }
 
