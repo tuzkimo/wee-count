@@ -329,3 +329,148 @@ describe("FilterPage 分类分组", () => {
     });
   });
 });
+
+describe("新增筛选条件", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mocks.push.mockReset();
+    mocks.back.mockReset();
+    mocks.query = {};
+  });
+
+  it("从 query 恢复关键词、金额区间与类型", async () => {
+    mocks.query = { note: "盒马", amountMin: "10", amountMax: "500", type: "income" };
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect((wrapper.find('[data-test="note-input"]').element as HTMLInputElement).value).toBe("盒马");
+    expect((wrapper.find('[data-test="amount-min-input"]').element as HTMLInputElement).value).toBe("10");
+    expect((wrapper.find('[data-test="amount-max-input"]').element as HTMLInputElement).value).toBe("500");
+    expect(wrapper.find('[data-test="type-income"]').classes()).toContain("bg-primary");
+    expect(wrapper.find('[data-test="type-expense"]').classes()).not.toContain("bg-primary");
+  });
+
+  it("日期筛选不被新控件的加入破坏：仍能恢复并回写", async () => {
+    // 回归护栏：这一整个任务只是在日期块【之后】插新控件，日期块本身不该被动到
+    mocks.query = { dateFrom: "2026-08-01", dateTo: "2026-08-31" };
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith({
+      path: "/",
+      query: { dateFrom: "2026-08-01", dateTo: "2026-08-31" },
+    });
+  });
+
+  it("应用筛选时把新条件写进 query", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.find('[data-test="note-input"]').setValue("盒马");
+    await wrapper.find('[data-test="amount-min-input"]').setValue("10");
+    await wrapper.find('[data-test="type-expense"]').trigger("click");
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith({
+      path: "/",
+      query: { amountMin: "10", type: "expense", note: "盒马" },
+    });
+  });
+
+  it("往返不丢条件：带着 AI 的四个筛选进筛选栏，再点「应用筛选」后它们仍在", async () => {
+    // 这条钉的是任务 10 实现者提出的**用户可见**风险（R55）：
+    // `apply()` 是**从零重建** query 对象的，只写它认识的那几个参数。
+    // 在补齐控件之前，AI 跳转带的 note/amountMin/amountMax/type 会在用户
+    // 「点筛选栏 → 应用筛选」之后被**静默丢掉**，而且列表随后会退回默认当月
+    // —— 用户看到的是一份完全不同的数据，全程没有任何提示。
+    // 单看"能恢复"和"能写出"两条用例都过不了这个风险（各自只测了一半），
+    // 必须**串起来**测一次：URL → 控件回填 → 不改动直接应用 → 四个参数仍在。
+    mocks.query = { note: "盒马", amountMin: "0", amountMax: "500", type: "expense" };
+    const wrapper = mountPage();
+    await flushPromises();
+
+    // 先确认回填真的发生了（否则下面"参数仍在"可能只是因为 apply 原样透传了 URL）
+    expect((wrapper.find('[data-test="note-input"]').element as HTMLInputElement).value).toBe("盒马");
+    expect((wrapper.find('[data-test="amount-min-input"]').element as HTMLInputElement).value).toBe("0");
+
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith({
+      path: "/",
+      // amountMin 是 "0"：它必须原样回写（0 是有效下界，不能被当成"没给"而丢掉）
+      query: { note: "盒马", amountMin: "0", amountMax: "500", type: "expense" },
+    });
+  });
+
+  it("再点一次同一类型即取消选择", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.find('[data-test="type-expense"]').trigger("click");
+    await wrapper.find('[data-test="type-expense"]').trigger("click");
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith({ path: "/", query: {} });
+  });
+
+  it("关键词首尾空白被裁掉，纯空白不产生参数", async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.find('[data-test="note-input"]').setValue("   ");
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith({ path: "/", query: {} });
+  });
+
+  it("重置清空全部新条件", async () => {
+    mocks.query = { note: "盒马", amountMin: "10", type: "income" };
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await buttonByText(wrapper, "重置").trigger("click");
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith({ path: "/", query: {} });
+  });
+
+  it("重置清空全部四个新条件（含简报漏带的 amountMax）", async () => {
+    // 简报那条重置用例的 URL 只带 note/amountMin/type，amountMax 恒为空串——
+    // 实测「只删 reset 里的 amountMax 清空」时它仍然全绿，抓不住这条。
+    // 这条把四个条件全带上，四个清空行各自删掉都会红。
+    mocks.query = { note: "盒马", amountMin: "10", amountMax: "500", type: "income" };
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await buttonByText(wrapper, "重置").trigger("click");
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith({ path: "/", query: {} });
+  });
+
+  // 以下两条为补覆盖（简报外的追加，见 task-11-report.md）：
+  // R55 记录了「transfer 零覆盖 ⇒ 某一侧漏掉它时静默查成别的」，
+  // 本轮新控件的 type 芯片同样包含「转账」，故按同一判据补上。
+  it("关键词的 trim 落在写出的值上：带空白进来，写出的是裁好的串", async () => {
+    // 只断言"纯空白不产生参数"抓不住「守卫用 trim、写出的值不 trim」这个变体：
+    // 那样 note=" 盒马 " 会原样进 URL，读方 LIKE '% 盒马 %' 静默查空。
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.find('[data-test="note-input"]').setValue("  盒马  ");
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+
+    expect(mocks.push).toHaveBeenCalledWith({ path: "/", query: { note: "盒马" } });
+  });
+
+  it("往返不丢 transfer：只带 type=transfer 进来，应用后仍在", async () => {
+    mocks.query = { type: "transfer" };
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="type-transfer"]').classes()).toContain("bg-primary");
+
+    await buttonByText(wrapper, "应用筛选").trigger("click");
+    expect(mocks.push).toHaveBeenCalledWith({ path: "/", query: { type: "transfer" } });
+  });
+});

@@ -33,6 +33,18 @@ const tagSearch = ref("");
 const selectedCategoryIds = ref<string[]>([]);
 const selectedMemberIds = ref<string[]>([]);
 const selectedUncategorized = ref(false);
+const noteKeyword = ref("");
+/**
+ * 金额区间用字符串保存，转数字交给 TransactionList 读 query 时做。
+ * 这里刻意不用 v-model：`<input type="number">` 上的 v-model 会被 Vue 强制转型
+ * （runtime-dom 的 vModelText：`castToNumber = number || props.type === "number"`），
+ * 于是用户输入的 "0" 变成数字 0，`if (amountMin.value)` 判假而**丢掉下界/上界**。
+ * 改走 :value + @input 读字符串，与 AccountFormFields.vue 的既有写法一致。
+ */
+const amountMin = ref("");
+const amountMax = ref("");
+/** "" 表示不限类型 */
+const selectedType = ref<"" | "expense" | "income" | "transfer">("");
 const teamMembers = ref<TeamMemberRow[]>([]);
 const aliasMap = ref<Record<string, string>>({});
 const isTeamLedger = computed(() => ledgerStore.currentLedger?.type === "team");
@@ -100,6 +112,13 @@ onMounted(async () => {
   if (route.query.uncategorized === "1") {
     selectedUncategorized.value = true;
   }
+  // 认得的参数少一个，用户点「应用筛选」时那个条件就会被静默丢掉（apply 从零重建 query），
+  // 列表随后退回默认当月——四个参数必须与 filterQuery.ts::appliedToQuery 的写出名逐一对应
+  if (route.query.note) noteKeyword.value = route.query.note as string;
+  if (route.query.amountMin) amountMin.value = route.query.amountMin as string;
+  if (route.query.amountMax) amountMax.value = route.query.amountMax as string;
+  const qType = route.query.type as string | undefined;
+  if (qType === "expense" || qType === "income" || qType === "transfer") selectedType.value = qType;
 });
 
 function onAccountSelect(acc: Account) {
@@ -173,6 +192,10 @@ function toggleUncategorized() {
   selectedUncategorized.value = !selectedUncategorized.value;
 }
 
+function toggleType(t: "expense" | "income" | "transfer") {
+  selectedType.value = selectedType.value === t ? "" : t;
+}
+
 function apply() {
   const query: Record<string, string> = {};
   if (selectedAccountId.value) query.account = selectedAccountId.value;
@@ -182,6 +205,13 @@ function apply() {
   if (selectedCategoryIds.value.length > 0) query.categories = selectedCategoryIds.value.join(",");
   if (selectedMemberIds.value.length > 0) query.members = selectedMemberIds.value.join(",");
   if (selectedUncategorized.value) query.uncategorized = "1";
+  if (selectedType.value) query.type = selectedType.value;
+  // trim 后判断、trim 后写出：只 trim 判断不 trim 写出的话 " 盒马 " 会原样进 URL，
+  // 读方 LIKE '% 盒马 %' 静默查空
+  if (noteKeyword.value.trim()) query.note = noteKeyword.value.trim();
+  // 空串才算"没给"：amountMin="0" 是有效下界，用真值判断会把它当 0 丢掉
+  if (amountMin.value) query.amountMin = amountMin.value;
+  if (amountMax.value) query.amountMax = amountMax.value;
   router.push({ path: "/", query });
 }
 
@@ -194,6 +224,10 @@ function reset() {
   selectedCategoryIds.value = [];
   selectedMemberIds.value = [];
   selectedUncategorized.value = false;
+  noteKeyword.value = "";
+  amountMin.value = "";
+  amountMax.value = "";
+  selectedType.value = "";
   tagSearch.value = "";
 }
 
@@ -245,6 +279,67 @@ function goBack() {
           </span>
           <span class="text-text-secondary">▽</span>
         </button>
+      </div>
+
+      <!-- 收支类型 -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">🔀 类型</label>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="opt in ([
+              { key: 'expense', label: '支出' },
+              { key: 'income', label: '入账' },
+              { key: 'transfer', label: '转账' },
+            ] as const)"
+            :key="opt.key"
+            :data-test="`type-${opt.key}`"
+            class="rounded-full px-3 py-1.5 text-xs transition-colors"
+            :class="selectedType === opt.key ? 'bg-primary text-white' : 'bg-gray-100 text-text-secondary'"
+            @click="toggleType(opt.key)"
+          >
+            {{ selectedType === opt.key ? '☑' : '☐' }} {{ opt.label }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 备注 / 标签关键词 -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">🔍 备注关键词</label>
+        <input
+          v-model="noteKeyword"
+          data-test="note-input"
+          type="text"
+          placeholder="如：盒马"
+          class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+        />
+      </div>
+
+      <!-- 金额区间 -->
+      <div class="mb-4">
+        <label class="mb-1 block text-xs text-text-secondary">💰 金额区间</label>
+        <div class="flex items-center gap-2">
+          <input
+            :value="amountMin"
+            data-test="amount-min-input"
+            type="number"
+            inputmode="decimal"
+            min="0"
+            placeholder="最低"
+            class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+            @input="amountMin = ($event.target as HTMLInputElement).value"
+          />
+          <span class="text-xs text-text-secondary">~</span>
+          <input
+            :value="amountMax"
+            data-test="amount-max-input"
+            type="number"
+            inputmode="decimal"
+            min="0"
+            placeholder="最高"
+            class="w-full rounded-lg border border-gray-200 bg-surface px-3 py-2 text-sm text-text outline-none focus:border-primary"
+            @input="amountMax = ($event.target as HTMLInputElement).value"
+          />
+        </div>
       </div>
 
       <!-- 分类（多选，按收入/支出分组） -->
