@@ -99,6 +99,16 @@ describe("validateQuery 非法输入", () => {
   it("from 格式不对", () => {
     expect(codes({ date: { from: "2026/03/01", to: "2026-04-01" }, aggregate: "sum" }))
       .toEqual(["bad_date"]);
+    // 上面这条**抓不住**「删掉 from 的格式校验」：`/`(0x2F) 排在 `-`(0x2D) 之后，from 仍被判为
+    // 「晚于 to」，于是从顺序检查那条分支照样报出 bad_date，断言依旧绿。
+    // 下面这条让 from 在字典序上小于 to：格式校验一旦被删，结果会变成 []（一个错误都没有）。
+    expect(codes({ date: { from: "2026-03-1", to: "2026-04-01" }, aggregate: "sum" }))
+      .toEqual(["bad_date"]);
+  });
+
+  it("to 格式不对", () => {
+    expect(codes({ date: { from: "2026-03-01", to: "2026-4-1" }, aggregate: "sum" }))
+      .toEqual(["bad_date"]);
   });
 
   it("from 晚于 to", () => {
