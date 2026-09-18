@@ -26,6 +26,9 @@ export interface Tag {
   is_deleted: boolean;
 }
 
+/** 标签 + 本地派生的使用次数（引用它的未删除交易数），仅 tagStore.fetchAll 产出，不参与同步 */
+export type TagWithUsage = Tag & { usage_count: number };
+
 export interface Transaction {
   id: string;
   ledger_id: string;

@@ -9,7 +9,7 @@ import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
 import { evaluateExpression } from "@/utils/expression";
 import { toLocalDatetimeString, utcToLocalDatetimeString } from "@/utils/datetime";
-import type { Category, Tag, Transaction, TransactionType } from "@/types";
+import type { Category, TagWithUsage, Transaction, TransactionType } from "@/types";
 
 export function useTransactionForm() {
   const route = useRoute();
@@ -64,7 +64,7 @@ export function useTransactionForm() {
   const selectedTags = computed(() =>
     selectedTagIds.value
       .map((id) => tagStore.tags.find((t) => t.id === id))
-      .filter((t): t is Tag => t != null)
+      .filter((t): t is TagWithUsage => t != null)
   );
 
   // handler
