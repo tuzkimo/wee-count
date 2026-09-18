@@ -15,6 +15,19 @@ export const GROUP_BYS = ["category", "account", "member", "month", "day", "tag"
 export const ORDER_BYS = ["value_desc", "value_asc", "date_desc", "date_asc"] as const;
 export const TX_TYPES = ["expense", "income", "transfer"] as const;
 
+/**
+ * `date` 对象允许的内层键。
+ *
+ * 顶层键有白名单（QUERY_KEYS），**内层同样必须有**。否则 `{date:{presett:"thisYear"}}`
+ * 这种拼错会静默通过校验，下游 `resolveRange` 才发现"既没有 preset 也没有 from/to"，
+ * 报一句泛化的 bad_date——错误离出错点太远，模型看不出是哪个键拼错了。
+ */
+export const DATE_KEYS = ["preset", "from", "to"] as const;
+
+/** `amount` 对象允许的内层键。理由同 DATE_KEYS：
+ * `{amount:{minn:500}}` 若放行，会变成"整个金额过滤被静默丢弃"，用户拿到一个没有任何提示的错数字。 */
+export const AMOUNT_KEYS = ["min", "max"] as const;
+
 export type AiAggregate = (typeof AGGREGATES)[number];
 export type AiGroupBy = (typeof GROUP_BYS)[number];
 export type AiOrderBy = (typeof ORDER_BYS)[number];
@@ -55,6 +68,7 @@ export type AiQueryErrorCode =
   | "bad_date_preset"
   | "bad_type"
   | "bad_string_array"
+  | "bad_account"
   | "bad_merchant"
   | "bad_amount"
   | "missing_aggregate"
@@ -127,20 +141,47 @@ export function validateQuery(raw: unknown): ValidateResult {
     const d = raw.date;
     if (!isPlainObject(d)) {
       fail("bad_date", "date", "date 必须是 {preset} 或 {from,to}");
-    } else if ("preset" in d) {
-      if (!isEnum(PRESET_KEYS, d.preset)) {
-        fail("bad_date_preset", "date.preset", `preset 必须是 ${PRESET_KEYS.join(" / ")} 之一`);
-      }
-    } else if ("from" in d && "to" in d) {
-      const fromOk = typeof d.from === "string" && DATE_RE.test(d.from);
-      const toOk = typeof d.to === "string" && DATE_RE.test(d.to);
-      if (!fromOk) fail("bad_date", "date.from", "from 必须是 YYYY-MM-DD");
-      if (!toOk) fail("bad_date", "date.to", "to 必须是 YYYY-MM-DD");
-      if (fromOk && toOk && (d.from as string) > (d.to as string)) {
-        fail("bad_date", "date", "from 不能晚于 to");
-      }
     } else {
-      fail("bad_date", "date", "date 必须是 {preset} 或 {from,to} 二者之一");
+      // 内层键白名单。理由见 DATE_KEYS 的注释：放行拼错的键 = 静默丢过滤条件 = 错数字
+      let hasUnknownKey = false;
+      for (const key of Object.keys(d)) {
+        if (!(DATE_KEYS as readonly string[]).includes(key)) {
+          hasUnknownKey = true;
+          fail("unknown_key", `date.${key}`, `date 里不认识的字段 ${key}`);
+        }
+      }
+      const hasPreset = "preset" in d;
+      const hasRange = "from" in d || "to" in d;
+      if (hasPreset && hasRange) {
+        // {preset} 与 {from,to} 是 AiDateFilter 联合类型里互斥的两个分支。
+        // 两个都给时若默默采用 preset，返回的对象就不再满足 AiDateFilter——
+        // 「ok:true 蕴含结果符合 AiQuery」这条保证会被击穿，而它正是函数末尾那个
+        // `raw as unknown as AiQuery` 转型唯一的依据。
+        fail("bad_date", "date", "preset 与 from/to 不能同时给");
+      } else if (hasPreset) {
+        if (!isEnum(PRESET_KEYS, d.preset)) {
+          fail("bad_date_preset", "date.preset", `preset 必须是 ${PRESET_KEYS.join(" / ")} 之一`);
+        }
+      } else if (hasRange && !("from" in d && "to" in d)) {
+        // 只给了一边：点明缺的是哪个，比泛化的「二者之一」有用得多
+        fail("bad_date", "from" in d ? "date.to" : "date.from", "from 与 to 必须同时给");
+      } else if ("from" in d && "to" in d) {
+        const fromOk = typeof d.from === "string" && DATE_RE.test(d.from);
+        const toOk = typeof d.to === "string" && DATE_RE.test(d.to);
+        if (!fromOk) fail("bad_date", "date.from", "from 必须是 YYYY-MM-DD");
+        if (!toOk) fail("bad_date", "date.to", "to 必须是 YYYY-MM-DD");
+        if (fromOk && toOk && (d.from as string) > (d.to as string)) {
+          fail("bad_date", "date", "from 不能晚于 to");
+        }
+      } else {
+        // 走到这里说明 preset / from / to 一个都没有。若原因是键名拼错（start、presett…），
+        // 上方已给出精确到键的 unknown_key——再补一句泛化的「必须是 {preset} 或 {from,to}」
+        // 等于把同一个问题报两遍，模型拿到的是噪音而不是线索。所以只在键都认识、
+        // 单纯没给够（`{}`）时才报形状错误。
+        if (!hasUnknownKey) {
+          fail("bad_date", "date", "date 必须是 {preset} 或 {from,to} 二者之一");
+        }
+      }
     }
   }
 
@@ -157,7 +198,10 @@ export function validateQuery(raw: unknown): ValidateResult {
   }
 
   if (raw.account !== undefined && !isNonEmptyString(raw.account)) {
-    fail("bad_string_array", "account", "account 必须是非空字符串");
+    // account 是**标量**（单个账户名，由 resolveFilter 走 matchOne），所以不能复用
+    // bad_string_array——那会告诉模型「这里该给数组」，而 merchant 这种同样为标量的字段
+    // 又有自己的 bad_merchant 码，两边不一致。错误码是模型用来改错的唯一线索，不能含糊。
+    fail("bad_account", "account", "account 必须是非空字符串");
   }
 
   if (raw.merchant !== undefined && !isNonEmptyString(raw.merchant)) {
@@ -169,6 +213,13 @@ export function validateQuery(raw: unknown): ValidateResult {
     if (!isPlainObject(a)) {
       fail("bad_amount", "amount", "amount 必须是 {min?, max?}");
     } else {
+      // 内层键白名单。放行 {minn:500} 的后果最严重：金额过滤被**静默丢弃**，
+      // 模型得不到任何错误线索，用户拿到一个看起来正常、其实没按金额筛选的答案。
+      for (const key of Object.keys(a)) {
+        if (!(AMOUNT_KEYS as readonly string[]).includes(key)) {
+          fail("unknown_key", `amount.${key}`, `amount 里不认识的字段 ${key}`);
+        }
+      }
       const boundOk = (v: unknown): boolean =>
         v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
       if (!boundOk(a.min)) fail("bad_amount", "amount.min", "min 必须是非负有限数字");
