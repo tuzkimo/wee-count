@@ -6,6 +6,7 @@ import type { Transaction, TransactionType } from "@/types";
 import { enqueueSync } from "@/services/sync";
 import { useAuthStore } from "@/stores/auth";
 import { round2 } from "@/utils/transaction";
+import { likePattern, noteOrTagLikeClause } from "@/utils/like";
 
 
 interface TransactionRow {
@@ -162,13 +163,23 @@ export const useTransactionStore = defineStore("transaction", () => {
       categoryIds?: string[];
       memberIds?: string[];
       uncategorized?: boolean;
+      /** 备注或标签名包含该关键词 */
+      noteKeyword?: string;
+      amountMin?: number;
+      amountMax?: number;
+      type?: TransactionType;
     }
   ): Promise<void> {
     _ledgerId = ledgerId;
     const db = getUserDb();
     if (!db) throw new Error('User DB not opened');
     let sql = QUERY;
-    const params: string[] = [ledgerId];
+    const params: (string | number)[] = [ledgerId];
+
+    if (opts?.type) {
+      sql += " AND t.type = ?";
+      params.push(opts.type);
+    }
 
     if (opts?.accountId) {
       sql += " AND (t.from_account_id = ? OR t.to_account_id = ?)";
@@ -218,6 +229,27 @@ export const useTransactionStore = defineStore("transaction", () => {
 
     if (opts?.uncategorized) {
       sql += " AND (t.category_id IS NULL OR NOT EXISTS(SELECT 1 FROM categories c WHERE c.id=t.category_id AND c.is_deleted=0))";
+    }
+
+    if (opts?.noteKeyword) {
+      // 备注或标签名命中。复用 utils/like 的共用片段，与 ai/querySql.ts 的 merchant
+      // **必须逐字一致**——AI 回答里的数字与点进流水页看到的列表要是同一批交易。
+      // 所以这里刻意不手写 SQL：复制粘贴是让两边漂移的最快方式。
+      // 注意 QUERY 外层已有 `tg` 别名，片段内部用 sq_tt / sq_tg 避开遮蔽。
+      const like = likePattern(opts.noteKeyword);
+      sql += ` AND ${noteOrTagLikeClause()}`;
+      params.push(like, like);
+    }
+
+    // 金额恒存正数（正负由 type 承载），所以区间比较的是绝对值
+    if (opts?.amountMin !== undefined) {
+      sql += " AND t.amount >= ?";
+      params.push(opts.amountMin);
+    }
+
+    if (opts?.amountMax !== undefined) {
+      sql += " AND t.amount <= ?";
+      params.push(opts.amountMax);
     }
 
     sql += " GROUP BY t.id ORDER BY t.occurred_at DESC, t.created_at DESC";

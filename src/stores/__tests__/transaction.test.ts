@@ -29,9 +29,21 @@ vi.mock("@/stores/auth", () => ({
   useAuthStore: vi.fn(() => ({ isAuthenticated: true })),
 }));
 
+// 包一层 spy 但保留真实实现：只有「fetchAll 真的调用了共用片段」这一层能被行为性钉住。
+// 纯文本断言（sql 里含片段文本）抓不住「手抄一份逐字相同的 SQL」——那种副本产出的 SQL
+// 字符串与调用共用片段**完全相同**，任何字符串比较都区分不了，只有调用记录能区分。
+// 这正是 ledger R34-3 要求的：不能让 like.ts 的注释变成空头支票。
+vi.mock("@/utils/like", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/like")>();
+  return { ...actual, noteOrTagLikeClause: vi.fn(actual.noteOrTagLikeClause) };
+});
+
 import { enqueueSync } from "@/services/sync";
 import { useTransactionStore } from "@/stores/transaction";
 import { dayRangeToIso } from "@/services/ai/range";
+import { noteOrTagLikeClause } from "@/utils/like";
+import { buildWhere } from "@/services/ai/querySql";
+import type { ResolvedFilter } from "@/services/ai/resolve";
 import type { Transaction } from "@/types";
 
 function makeTx(overrides: Partial<Transaction> = {}): Transaction {
@@ -166,6 +178,80 @@ describe("transactionStore", () => {
       expect(sql).toContain("t.occurred_at >= ?");
       expect(sql).toContain("t.occurred_at <");
       expect(params).toEqual(["pl-1", range.startIso, range.endIso]);
+    });
+
+    it("应按收支类型过滤", async () => {
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { type: "income" });
+
+      expect(mockDb.select).toHaveBeenCalledWith(
+        expect.stringContaining("AND t.type = ?"),
+        ["pl-1", "income"],
+      );
+    });
+
+    it("应按备注关键词过滤，同时匹配标签名并转义 LIKE 元字符", async () => {
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { noteKeyword: "50%" });
+
+      const [sql, params] = mockDb.select.mock.calls[0] as [string, (string | number)[]];
+      expect(sql).toContain("t.note LIKE ? ESCAPE '\\'");
+      // 片段来自 utils/like 的共用实现，子查询别名是 sq_tg（避开 QUERY 外层的 tg）
+      expect(sql).toContain("sq_tg.name LIKE ? ESCAPE '\\'");
+      expect(sql).toContain("sq_tg.is_deleted = 0");
+      // 「复用共用片段」这一条必须靠调用记录钉：上面那几条文本断言只能抓「片段被改写」，
+      // 抓不住「手抄一份逐字相同的 SQL」（实测该变异下三条文本断言全绿，见报告 M1b）。
+      expect(vi.mocked(noteOrTagLikeClause)).toHaveBeenCalledTimes(1);
+      expect(sql).toContain(noteOrTagLikeClause());
+      // 元字符被转义：% 变成 \%
+      expect(params).toEqual(["pl-1", "%50\\%%", "%50\\%%"]);
+    });
+
+    it("应按金额区间过滤，且 0 是有效下界", async () => {
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { amountMin: 0, amountMax: 500 });
+
+      const [sql, params] = mockDb.select.mock.calls[0] as [string, (string | number)[]];
+      expect(sql).toContain("AND t.amount >= ?");
+      expect(sql).toContain("AND t.amount <= ?");
+      expect(params).toEqual(["pl-1", 0, 500]);
+    });
+
+    it("多个新条件可以叠加，参数顺序与 SQL 顺序一致", async () => {
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", {
+        type: "expense",
+        noteKeyword: "盒马",
+        amountMin: 10,
+        accountId: "acc-2",
+      });
+
+      const [sql, params] = mockDb.select.mock.calls[0] as [string, (string | number)[]];
+      expect(params).toEqual(["pl-1", "expense", "acc-2", "acc-2", "%盒马%", "%盒马%", 10]);
+      // 账户条件在关键词之前、金额在最后，与实现里的拼接顺序一致
+      expect(sql.indexOf("t.type = ?")).toBeLessThan(sql.indexOf("t.note LIKE ?"));
+      expect(sql.indexOf("t.note LIKE ?")).toBeLessThan(sql.indexOf("t.amount >= ?"));
+    });
+
+    // 简报外的补充用例：现有用例没有一处钉住 QUERY 里恒定的 `t.is_deleted = 0`，
+    // 去掉它（软删交易会重新出现在流水页）当前全绿 —— 静默错数据且无人拦截。
+    it("QUERY 恒定带 t.is_deleted = 0，软删交易不进列表", async () => {
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { type: "income" });
+
+      const [sql, params] = mockDb.select.mock.calls[0] as [string, (string | number)[]];
+      expect(sql).toContain("WHERE t.ledger_id = ? AND t.is_deleted = 0");
+      expect(params[0]).toBe("pl-1");
     });
   });
 
@@ -498,5 +584,70 @@ describe("remove/batchRemove 推完整墓碑", () => {
     expect(tx.amount).toBe(100); // 完整字段保留，而非被后端零值覆盖
     expect(tx.type).toBe("expense");
     expect(tx.tag_ids).toEqual(["tag-1"]);
+  });
+});
+
+// M1 的核心诉求：AI 侧算数字走 querySql.buildWhere，流水页列表走 fetchAll，
+// 同一个筛选条件在两条链路上必须是同一次筛选。buildWhere 是纯函数（零 DB），
+// 所以这里能把它的 SQL 子句与参数序列与 fetchAll 的实际产物逐条对照——
+// 「AI 说这个月盒马花了 800、点进去看到 5 条」这类不一致会在这里变红。
+describe("fetchAll 与 ai/querySql.buildWhere 的筛选语义逐条一致", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  /** 与下面 fetchAll 的 opts 一一对应的 ResolvedFilter */
+  const filter: ResolvedFilter = {
+    range: null,
+    type: "expense",
+    categoryIds: null,
+    accountId: "acc-2",
+    tagIds: null,
+    memberIds: null,
+    merchant: "盒马",
+    amountMin: 0,
+    amountMax: 500,
+  };
+
+  it("四个条件的子句文本、参数序列与相对顺序都与 buildWhere 一致", async () => {
+    mockDb.select.mockResolvedValue([]);
+
+    const store = useTransactionStore();
+    await store.fetchAll("pl-1", {
+      type: "expense",
+      accountId: "acc-2",
+      noteKeyword: "盒马",
+      amountMin: 0,
+      amountMax: 500,
+    });
+
+    const [sql, params] = mockDb.select.mock.calls[0] as [string, (string | number)[]];
+    const { sql: whereSql, params: whereParams } = buildWhere("pl-1", filter);
+
+    // 1) 子句文本两边逐字一致（含共用 LIKE 片段，也就是 F1 要求两处同源的那一段）
+    const clauses = [
+      "t.type = ?",
+      "(t.from_account_id = ? OR t.to_account_id = ?)",
+      noteOrTagLikeClause(),
+      "t.amount >= ?",
+      "t.amount <= ?",
+    ];
+    for (const clause of clauses) {
+      expect(sql).toContain(clause);
+      expect(whereSql).toContain(clause);
+    }
+
+    // 2) 参数序列逐条一致：ledgerId, type, accountId×2, like×2, 0, 500
+    //    SQLite 对错序/少传参数**不报错**（缺失占位符当 NULL → 静默 0 行），
+    //    所以「参数与子句同序」只能靠断言钉，靠跑不出来的绿是抓不住的。
+    expect(params).toEqual(whereParams);
+    expect(params).toEqual(["pl-1", "expense", "acc-2", "acc-2", "%盒马%", "%盒马%", 0, 500]);
+
+    // 3) 子句相对顺序两边一致（type → account → note → 金额区间）
+    const seq = (s: string) => clauses.map((c) => s.indexOf(c));
+    const ascending = (xs: number[]) => xs.every((v, i) => i === 0 || xs[i - 1] < v);
+    expect(ascending(seq(sql))).toBe(true);
+    expect(ascending(seq(whereSql))).toBe(true);
   });
 });
