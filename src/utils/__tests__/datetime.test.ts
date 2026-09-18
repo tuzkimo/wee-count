@@ -6,6 +6,7 @@ import {
   localDateKeyToDate,
   formatDateLabel,
   formatDateRange,
+  offsetModifier,
 } from "@/utils/datetime";
 
 describe("toLocalDatetimeString", () => {
@@ -87,5 +88,18 @@ describe("formatDateRange", () => {
   it("只有起点/终点时显示 起/至", () => {
     expect(formatDateRange("2026-08-01T00:00", "")).toBe("2026-08-01 起");
     expect(formatDateRange("", "2026-08-15T23:59")).toBe("至 2026-08-15");
+  });
+});
+
+describe("offsetModifier", () => {
+  it("形如 SQLite 能直接吃的修饰符", () => {
+    // 这条是重点：querySql 会把它直接插进 date(t.occurred_at, '<这里>')，
+    // 格式不对 SQLite 不报错、只是静默不偏移——那就会把凌晨的流水算错一天
+    expect(offsetModifier()).toMatch(/^[+-]\d+ minutes$/);
+  });
+
+  it("是本机当前时区偏移的取反（与 Date#getTimezoneOffset 反号）", () => {
+    const expected = -new Date().getTimezoneOffset();
+    expect(offsetModifier()).toBe(`${expected >= 0 ? "+" : ""}${expected} minutes`);
   });
 });

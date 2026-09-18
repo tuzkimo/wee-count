@@ -1,5 +1,11 @@
 import { getUserDb } from "@/db/userDb";
 import { round2 } from "@/utils/transaction";
+import { offsetModifier } from "@/utils/datetime";
+
+// offsetModifier 的唯一实现在 @/utils/datetime（零 import 的纯叶模块）。这里**重新导出**
+// 而不是本地定义：它原先的公开出口就是本模块，reports.test.ts 仍从这里引入，删掉出口会
+// 让既有测试在 import 阶段就倒。保留别名出口的同时，实现只有一份。
+export { offsetModifier };
 
 export type PeriodUnit = "month" | "quarter" | "year" | "twelveMonths";
 export type Granularity = "day" | "month";
@@ -14,11 +20,6 @@ export interface BreakdownSegment {
 }
 export interface BreakdownData { segments: BreakdownSegment[]; list: BreakdownSegment[]; total: number }
 export interface NetAssetSeries { labels: string[]; values: number[] }
-
-export function offsetModifier(): string {
-  const m = -new Date().getTimezoneOffset(); // +480 表示东八区
-  return `${m >= 0 ? "+" : ""}${m} minutes`;
-}
 
 function startOfMonth(d: Date): Date { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function addMonths(d: Date, n: number): Date { return new Date(d.getFullYear(), d.getMonth() + n, 1); }

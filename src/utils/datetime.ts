@@ -63,3 +63,19 @@ export function formatDateRange(from: string, to: string): string {
   if (to) return `至 ${to.split("T")[0]}`;
   return "";
 }
+
+/**
+ * SQLite 的时区修饰符，形如 `+480 minutes`（东八区）/ `-300 minutes`（美东）/ `+0 minutes`。
+ *
+ * 直接插进 `date()` / `strftime()` 的第二个参数用（见 services/ai/querySql.ts 与
+ * services/reports.ts）。`occurred_at` 存的是 UTC，不修饰就会把东八区凌晨的流水
+ * 算到前一天/前一月。
+ *
+ * 放在这里（而不是 reports.ts）是因为它必须被**多个不碰 DB 的模块**共用；
+ * reports.ts 顶部 import 了 `@/db/userDb`，从那里引会把 Tauri 运行时拖进
+ * 任何想按时区分桶的纯模块。
+ */
+export function offsetModifier(): string {
+  const m = -new Date().getTimezoneOffset(); // +480 表示东八区
+  return `${m >= 0 ? "+" : ""}${m} minutes`;
+}

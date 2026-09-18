@@ -3,7 +3,20 @@
 // 一旦引入，任务 8 的冒烟测试会在 import 阶段就倒，"纯函数零 DB"这条约束也会被击穿。
 import { likePattern, noteOrTagLikeClause } from "@/utils/like";
 import { round2 } from "@/utils/transaction";
-import type { AiTxType } from "@/services/ai/dsl";
+// offsetModifier 从 utils/datetime 引，**不从 services/reports** —— reports.ts 里有
+// `import { getUserDb } from "@/db/userDb"`，会经 userDb 把 @tauri-apps/plugin-sql 拖进
+// 本模块的导入链。那样 sqlSmoke.test.ts（不 mock userDb）会在 import 阶段就倒，
+// 而且本模块「纯函数、零 DB」这条架构约束会被打破。
+// utils/datetime.ts 本身零 import，是这条边唯一干净的落点。
+import { offsetModifier } from "@/utils/datetime";
+import {
+  AI_QUERY_DEFAULT_LIMIT,
+  AI_QUERY_MAX_ITEMS,
+  AI_QUERY_MAX_LIMIT,
+  type AiGroupBy,
+  type AiQuery,
+  type AiTxType,
+} from "@/services/ai/dsl";
 import type { ResolvedFilter } from "@/services/ai/resolve";
 
 export interface SqlFragment {
@@ -178,4 +191,185 @@ export function shapeSummary(
     net: type === null ? round2(income.total - expense.total) : null,
     matched: row?.matched ?? 0,
   };
+}
+
+export interface AiGroup {
+  label: string;
+  expense: number;
+  income: number;
+  transfer: number;
+  count: number;
+}
+
+export interface AiQueryItem {
+  date: string;
+  amount: number;
+  type: AiTxType;
+  category: string | null;
+  fromAccount: string | null;
+  toAccount: string | null;
+  note: string | null;
+}
+
+export interface AiQueryResult extends AiSummary {
+  groups: AiGroup[] | null;
+  items: AiQueryItem[] | null;
+  truncated: boolean;
+}
+
+export interface GroupRow {
+  key: string;
+  expense_total: number;
+  income_total: number;
+  transfer_total: number;
+  cnt: number;
+}
+
+export interface ItemRow {
+  day: string;
+  amount: number;
+  type: AiTxType;
+  category_name: string | null;
+  from_account_name: string | null;
+  to_account_name: string | null;
+  note: string | null;
+}
+
+export function clampLimit(limit: number | undefined, max: number): number {
+  const n = limit ?? AI_QUERY_DEFAULT_LIMIT;
+  return Math.min(Math.max(Math.trunc(n), 1), max);
+}
+
+/** 分组维度的 join。member / month / day 不需要 join */
+function groupJoin(groupBy: AiGroupBy): string {
+  switch (groupBy) {
+    case "category":
+      return "\n    LEFT JOIN categories c ON c.id = t.category_id AND c.is_deleted = 0";
+    case "account":
+      return "\n    LEFT JOIN accounts fa ON fa.id = t.from_account_id" +
+        "\n    LEFT JOIN accounts ta ON ta.id = t.to_account_id";
+    case "tag":
+      return "\n    LEFT JOIN transaction_tags gtt ON gtt.transaction_id = t.id" +
+        "\n    LEFT JOIN tags gtg ON gtg.id = gtt.tag_id AND gtg.is_deleted = 0";
+    case "member":
+    case "month":
+    case "day":
+      return "";
+  }
+}
+
+/**
+ * 分组键表达式。
+ *
+ * - 分类/标签用 COALESCE 兜底文案，使"未分类 / 未打标签"成为可见的一桶，
+ *   否则它们会聚成一个 label 为 null 的桶，模型无法解释。
+ * - 月份/天用显式时区偏移修饰符归桶，与 reports.ts 同源：occurred_at 是 UTC，
+ *   直接用 strftime 会把东八区凌晨的流水算到前一天/前一月。
+ * - member 的 key 是 user_id，显示名由调用方（runQuery）替换——本模块是纯函数，
+ *   拿不到成员昵称/别名。
+ */
+function groupKeyExpr(groupBy: AiGroupBy): string {
+  switch (groupBy) {
+    case "category":
+      return "COALESCE(c.name, '未分类')";
+    case "account":
+      return "COALESCE(fa.name, ta.name, '未知账户')";
+    case "tag":
+      return "COALESCE(gtg.name, '未打标签')";
+    case "member":
+      return "t.user_id";
+    case "month":
+      return `strftime('%Y-%m', t.occurred_at, '${offsetModifier()}')`;
+    case "day":
+      return `date(t.occurred_at, '${offsetModifier()}')`;
+  }
+}
+
+/**
+ * 分组聚合。
+ *
+ * 注意 tag 分组下，一笔多标签的交易会同时计入每个标签的桶，各桶之和因此可能大于
+ * 总计。这是标签统计的标准行为（一笔交易确实同时属于这两个标签），不是 bug。
+ */
+export function buildGroupsSql(
+  ledgerId: string,
+  q: AiQuery,
+  f: ResolvedFilter,
+): SqlFragment {
+  const groupBy = q.groupBy;
+  if (!groupBy) throw new Error("buildGroupsSql 需要 groupBy");
+  const where = buildWhere(ledgerId, f);
+  const orderDir = q.orderBy === "value_asc" || q.orderBy === "date_asc" ? "ASC" : "DESC";
+  // value_* 排序按【对外可见的那些桶】求和。type 缺省时对外只有收入与支出，
+  // 把转账也算进排序键会让转账占主导的分组排到最前面，而它的金额在用户看到的
+  // 回答里根本不出现——"为什么第一个分类是这个"会变成一个解释不清的问题。
+  const valueExpr = f.type === "expense"
+    ? "expense_total"
+    : f.type === "income"
+      ? "income_total"
+      : f.type === "transfer"
+        ? "transfer_total"
+        : "(expense_total + income_total)";
+  const orderBy = q.orderBy === "date_desc" || q.orderBy === "date_asc"
+    ? `key ${orderDir}`
+    : `${valueExpr} ${orderDir}`;
+  const limit = clampLimit(q.limit, AI_QUERY_MAX_LIMIT);
+  const sql = `
+    SELECT ${groupKeyExpr(groupBy)} AS key,
+      COALESCE(SUM(CASE WHEN t.type='expense'  THEN t.amount END), 0) AS expense_total,
+      COALESCE(SUM(CASE WHEN t.type='income'   THEN t.amount END), 0) AS income_total,
+      COALESCE(SUM(CASE WHEN t.type='transfer' THEN t.amount END), 0) AS transfer_total,
+      COUNT(*) AS cnt
+    FROM transactions t${groupJoin(groupBy)}${where.sql}
+    GROUP BY key
+    ORDER BY ${orderBy}
+    LIMIT ${limit}`;
+  return { sql, params: where.params };
+}
+
+/** 明细查询。字段刻意精简：这些内容会发给 LLM，不该带上账户余额之类无关信息 */
+export function buildItemsSql(
+  ledgerId: string,
+  q: AiQuery,
+  f: ResolvedFilter,
+): SqlFragment {
+  const where = buildWhere(ledgerId, f);
+  const limit = clampLimit(q.limit, AI_QUERY_MAX_ITEMS);
+  const sql = `
+    SELECT
+      date(t.occurred_at, '${offsetModifier()}') AS day,
+      t.amount, t.type,
+      c.name AS category_name,
+      fa.name AS from_account_name,
+      ta.name AS to_account_name,
+      substr(t.note, 1, 60) AS note
+    FROM transactions t
+    LEFT JOIN categories c ON c.id = t.category_id AND c.is_deleted = 0
+    LEFT JOIN accounts fa ON fa.id = t.from_account_id
+    LEFT JOIN accounts ta ON ta.id = t.to_account_id${where.sql}
+    ORDER BY t.occurred_at DESC, t.created_at DESC
+    LIMIT ${limit}`;
+  return { sql, params: where.params };
+}
+
+export function shapeGroups(rows: GroupRow[]): AiGroup[] {
+  return rows.map((r) => ({
+    label: r.key,
+    expense: round2(r.expense_total),
+    income: round2(r.income_total),
+    transfer: round2(r.transfer_total),
+    count: r.cnt,
+  }));
+}
+
+export function shapeItems(rows: ItemRow[]): AiQueryItem[] {
+  return rows.map((r) => ({
+    date: r.day,
+    amount: round2(r.amount),
+    type: r.type,
+    category: r.category_name,
+    fromAccount: r.from_account_name,
+    toAccount: r.to_account_name,
+    note: r.note,
+  }));
 }
