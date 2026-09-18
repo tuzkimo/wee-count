@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
+import { DatabaseSync } from "node:sqlite";
 
 const mockDb = {
   select: vi.fn(),
@@ -192,6 +193,21 @@ describe("transactionStore", () => {
       );
     });
 
+    it("type=transfer 也走进 SQL（转账是合法类型，不能被守卫漏掉）", async () => {
+      // 修前实测：把 `if (opts?.type)` 改成 `if (opts?.type && opts.type !== "transfer")`
+      // （丢弃 transfer）→ 36/36 全绿。transfer 是用户能选的合法类型，M1 的「转账」芯片
+      // 会产出它；丢弃它等于那一跳静默变成「不按类型过滤」，两侧都不报错（同 R45 家族）。
+      mockDb.select.mockResolvedValueOnce([]);
+
+      const store = useTransactionStore();
+      await store.fetchAll("pl-1", { type: "transfer" });
+
+      expect(mockDb.select).toHaveBeenCalledWith(
+        expect.stringContaining("AND t.type = ?"),
+        ["pl-1", "transfer"],
+      );
+    });
+
     it("应按备注关键词过滤，同时匹配标签名并转义 LIKE 元字符", async () => {
       mockDb.select.mockResolvedValueOnce([]);
 
@@ -243,14 +259,25 @@ describe("transactionStore", () => {
 
     // 简报外的补充用例：现有用例没有一处钉住 QUERY 里恒定的 `t.is_deleted = 0`，
     // 去掉它（软删交易会重新出现在流水页）当前全绿 —— 静默错数据且无人拦截。
-    it("QUERY 恒定带 t.is_deleted = 0，软删交易不进列表", async () => {
+    // ⚠️ 用例名的限定（审查：「软删交易不进列表」超出文本断言的能力）：这条只比对 SQL 文本，
+    // mock db 不执行 SQL，所以「不进列表」是**行为声明**，由下面
+    // `fetchAll 的执行级回归（真实 node:sqlite）` 那条真跑去证明；本条只钉文本形状。
+    it("QUERY 的 WHERE 段恰好是 ledger_id 与 is_deleted 两个恒定条件", async () => {
       mockDb.select.mockResolvedValueOnce([]);
 
       const store = useTransactionStore();
       await store.fetchAll("pl-1", { type: "income" });
 
       const [sql, params] = mockDb.select.mock.calls[0] as [string, (string | number)[]];
-      expect(sql).toContain("WHERE t.ledger_id = ? AND t.is_deleted = 0");
+      // 取出的 WHERE 段做**空白归一化后整段相等**，一次修掉两个毛病：
+      //   过紧：原来 `toContain("WHERE … = 0")` 会因为语义相同的换行而误红（审查 T9-6）；
+      //   过松：原来只要求这段文本作为连续子串存在，在其后追加任何恒定条件（审查 T9-7
+      //         追加 `AND t.amount > -1`）都不报 —— 整段相等就绕不过去了。
+      const whereSegment = sql
+        .slice(sql.indexOf("WHERE"), sql.indexOf("GROUP BY"))
+        .replace(/\s+/g, " ")
+        .trim();
+      expect(whereSegment).toBe("WHERE t.ledger_id = ? AND t.is_deleted = 0 AND t.type = ?");
       expect(params[0]).toBe("pl-1");
     });
   });
@@ -641,6 +668,14 @@ describe("fetchAll 与 ai/querySql.buildWhere 的筛选语义逐条一致", () =
     // 2) 参数序列逐条一致：ledgerId, type, accountId×2, like×2, 0, 500
     //    SQLite 对错序/少传参数**不报错**（缺失占位符当 NULL → 静默 0 行），
     //    所以「参数与子句同序」只能靠断言钉，靠跑不出来的绿是抓不住的。
+    //
+    //    ⚠️ 限定（审查 Minor 6）：这条整数组 `toEqual` **只在当前夹具下成立**，不能推广。
+    //    两侧的**既有**条件块顺序本来就不同（buildWhere：categoryIds → tagIds；
+    //    fetchAll：tagIds → categoryIds，见 querySql.ts:106/111 vs transaction.ts:210/218），
+    //    本夹具的 categoryIds / tagIds 都是 null，恰好没走到那两块，所以整条序列才相等。
+    //    夹具一旦加回分类/标签条件，两侧**都正确**却会在这里假红（审查探针实测：
+    //    fetchAll=[pl-1,expense,t1,c1] vs buildWhere=[pl-1,expense,c1,t1]）。
+    //    要扩夹具的话，请改成「逐子句 + 各自紧邻的参数」配对断言，而不是把顺序改去对齐。
     expect(params).toEqual(whereParams);
     expect(params).toEqual(["pl-1", "expense", "acc-2", "acc-2", "%盒马%", "%盒马%", 0, 500]);
 
@@ -651,3 +686,89 @@ describe("fetchAll 与 ai/querySql.buildWhere 的筛选语义逐条一致", () =
     expect(ascending(seq(whereSql))).toBe(true);
   });
 });
+
+// 执行级回归：`fetchAll` 拼出来的 SQL 交给**真实的 node:sqlite** 跑一遍。
+// 为什么非要真跑（与 sqlSmoke.test.ts 同一条方法论）：上一轮审查用真实 node:sqlite 抓到一个
+// **任何文本断言都抓不住**的数据错误（tag 分组按软删标签重复计钱，SQL 字符串完全正确）。
+// 下面两个恒定子句同属那一族，修前实测「删掉全绿」：
+//   · `GROUP BY t.id`：⚠️ 实测后果**不是**"挂 N 个标签的交易重复 N 行"（这是 ledger R56 与
+//     批 7+9 审查的推测，探针证明它与 SQL 语义不符）。这条 QUERY 带 `GROUP_CONCAT` 聚合而
+//     没有 GROUP BY 时，**整个结果集塌成一行**（真跑：有 GROUP BY 2 行，去掉后 1 行，
+//     标量列取 tx-multi 的值、tag_ids 是 "tag-a,tag-b"）——即流水列表**只剩 1 笔**。
+//     同样是用户直接看到的静默错数据，只是错法不同，所以照样必须真跑。
+//   · `AND tags.is_deleted = 0`：软删标签的名字会重新出现在列表里。
+// 文本断言只能证明「SQL 字符串长得对」，证明不了「行数与标签对不对」——所以这里不抄 SQL，
+// 而是让 mock 的 db.select **把 fetchAll 真正生成的那条 SQL** 交给真库执行。
+describe("fetchAll 的执行级回归（真实 node:sqlite）", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  /** 建库：列与 QUERY 真正读到的那些一一对应 */
+  function makeDb() {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE transactions (
+        id TEXT PRIMARY KEY, ledger_id TEXT NOT NULL, user_id TEXT NOT NULL,
+        amount REAL NOT NULL, type TEXT NOT NULL,
+        from_account_id TEXT, to_account_id TEXT, category_id TEXT,
+        note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT, type TEXT, icon TEXT, owner_id TEXT, sort_order INTEGER);
+      CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, type TEXT, color TEXT, owner_id TEXT);
+      CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT, is_deleted INTEGER DEFAULT 0);
+      CREATE TABLE transaction_tags (transaction_id TEXT, tag_id TEXT);
+    `);
+    const insertTx = db.prepare(
+      `INSERT INTO transactions
+         (id, ledger_id, user_id, amount, type, note, occurred_at, created_at, updated_at, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // tx-multi 挂 2 个活跃标签：这是 GROUP BY t.id 的判别数据（去掉它 → 扇出成 2 行）
+    insertTx.run("tx-multi", "L1", "u1", 100, "expense", "两个标签", "2026-06-09T12:00:00Z", "2026-06-09T12:00:00Z", "2026-06-09T12:00:00Z", 0);
+    // tx-dead 只挂 1 个**已软删**标签：这是 tags.is_deleted = 0 的判别数据
+    insertTx.run("tx-dead", "L1", "u1", 200, "expense", "软删标签", "2026-06-08T12:00:00Z", "2026-06-08T12:00:00Z", "2026-06-08T12:00:00Z", 0);
+    // tx-gone 是软删流水：恒定条件 t.is_deleted = 0 的判别数据
+    insertTx.run("tx-gone", "L1", "u1", 300, "expense", "已删流水", "2026-06-07T12:00:00Z", "2026-06-07T12:00:00Z", "2026-06-07T12:00:00Z", 1);
+    // tx-other 属于别的账本：ledger_id 条件的判别数据
+    insertTx.run("tx-other", "L2", "u1", 400, "expense", "别账本", "2026-06-06T12:00:00Z", "2026-06-06T12:00:00Z", "2026-06-06T12:00:00Z", 0);
+    db.exec(`
+      INSERT INTO tags VALUES ('tag-a', '午餐', 0), ('tag-b', '工作日', 0), ('tag-z', '软删标签名', 1);
+      INSERT INTO transaction_tags VALUES ('tx-multi', 'tag-a'), ('tx-multi', 'tag-b'), ('tx-dead', 'tag-z');
+    `);
+    return db;
+  }
+
+  it("挂多个标签的交易只出现 1 行，软删标签/软删流水/别账本都不进列表", async () => {
+    const db = makeDb();
+    // 把 fetchAll 真正生成的那条 SQL 交给真库执行，而不是在测试里抄一份 SQL
+    // （抄一份的后果是「实现里漏了 GROUP BY、测试里那份没漏」，两边永远不会同时红）。
+    mockDb.select.mockImplementation(async (sql: string, params: (string | number)[]) =>
+      db.prepare(sql).all(...params),
+    );
+
+    const store = useTransactionStore();
+    await store.fetchAll("L1");
+
+    // 行数/去重：去掉 GROUP BY t.id 时整个结果集塌成 1 行（实测 received = ["tx-multi"]），
+    // 这条断言把「列表笔数」钉死——tx-multi 挂 2 个标签也不能变成 2 笔（扇出）或 1 笔（塌陷）。
+    expect(store.transactions.map((t) => t.id)).toEqual(["tx-multi", "tx-dead"]);
+    expect(store.transactions.filter((t) => t.id === "tx-multi")).toHaveLength(1);
+    // 标签本身不能因 GROUP BY 丢失（GROUP_CONCAT 的两个都还在）
+    const multi = store.transactions.find((t) => t.id === "tx-multi");
+    expect([...(multi?.tag_ids ?? [])].sort()).toEqual(["tag-a", "tag-b"]);
+
+    // tags.is_deleted = 0：软删标签（名字很显眼）不得出现在任何一笔交易的标签里
+    expect(store.transactions.flatMap((t) => (t.tags ?? []).map((tag) => tag.name)).sort())
+      .toEqual(["午餐", "工作日"]);
+
+    // t.is_deleted = 0 / t.ledger_id = ?：这两条以前只有文本断言，现在是执行级的
+    expect(store.transactions.some((t) => t.id === "tx-gone")).toBe(false);
+    expect(store.transactions.some((t) => t.id === "tx-other")).toBe(false);
+
+    db.close();
+  });
+});
+

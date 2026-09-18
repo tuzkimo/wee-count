@@ -55,6 +55,13 @@ describe("appliedToQuery", () => {
     expect(appliedToQuery(makeApplied({ type: "income" })).type).toBe("income");
   });
 
+  it("type=transfer 不被丢弃（转账是用户能选的合法类型）", () => {
+    // 修前实测：把 `if (applied.type)` 改成 `!== "transfer"`（丢弃 transfer）→ 36/36 全绿。
+    // transfer 在 M1 会被「转账」芯片产出，丢弃它等于那一跳变成「不按类型过滤」，
+    // 而两侧都不会报错——与 ledger R45 同类的静默错数据。
+    expect(appliedToQuery(makeApplied({ type: "transfer" })).type).toBe("transfer");
+  });
+
   it("带别的条件时不带日期：首页对「有其它筛选」的既有行为就是不限时间", () => {
     const q = appliedToQuery(makeApplied({ merchant: "盒马" }));
     expect(q.note).toBe("盒马");
@@ -62,7 +69,7 @@ describe("appliedToQuery", () => {
     expect(q.dateTo).toBeUndefined();
   });
 
-  it("全部条件齐全时不产生意外的空串参数", () => {
+  it("全部条件齐全时产出完整且无空串参数的对象", () => {
     const q = appliedToQuery(makeApplied({
       dateFrom: "2026-01-01", dateTo: "2026-06-30", type: "expense",
       categories: [{ id: "c1", name: "买菜" }],
@@ -71,7 +78,14 @@ describe("appliedToQuery", () => {
       members: [{ id: "u1", name: "老婆" }],
       merchant: "盒马", amountMin: 10, amountMax: 500,
     }));
-    expect(Object.values(q).every((v) => v !== "")).toBe(true);
+    // 显式断言期望对象，而不是 `Object.values(q).every(v => v !== "")`：
+    // 后者在**空对象上恒真**（修前实测：`return {}` 变异下这条仍绿），
+    // 即它对「参数被整个丢光」零检测力，只能检测「写出了空串」。
+    expect(q).toEqual({
+      dateFrom: "2026-01-01", dateTo: "2026-06-30", type: "expense",
+      account: "a1", categories: "c1", tags: "t1", members: "u1",
+      note: "盒马", amountMin: "10", amountMax: "500",
+    });
   });
 
   it("amountMax 为 0 也要保留（0 是有效上界，不是「没给」）", () => {
@@ -91,7 +105,9 @@ describe("appliedToQuery", () => {
     // 写出 categories="" 会让下游 `qCategories ? split : undefined` 之类的判断
     // 时而真时而假，是"同一筛选、两种解释"的来源。
     const q = appliedToQuery(makeApplied({ dateFrom: "2026-01-01", dateTo: "2026-12-31" }));
-    expect(Object.values(q).every((v) => v !== "")).toBe(true);
+    // 同样改成显式期望对象：`Object.values(q).every(v => v !== "")` 在空对象上恒真，
+    // 而 `toBeUndefined` 三条全是「缺失型」断言，`return {}` 变异下**全都绿**（修前实测）。
+    expect(q).toEqual({ dateFrom: "2026-01-01", dateTo: "2026-12-31" });
     expect(q.categories).toBeUndefined();
     expect(q.tags).toBeUndefined();
     expect(q.members).toBeUndefined();
