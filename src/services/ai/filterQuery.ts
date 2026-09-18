@@ -4,8 +4,9 @@ import type { AppliedFilter } from "@/services/ai/resolve";
  * AppliedFilter → 流水页路由 query。
  *
  * 参数名必须与 `FilterPage.apply()` 写出、`TransactionList.buildFetchOpts()` 读取的
- * 那一套完全一致：account / dateFrom / dateTo / tags / categories / members /
- * note / amountMin / amountMax / type。
+ * 那一套完全一致（下面按**本函数实际写出的顺序**列，集合一致即可，顺序不是契约）：
+ * dateFrom / dateTo / type / account / categories / tags / members /
+ * note / amountMin / amountMax。
  * （`uncategorized` **不在此列**：它没有 `AppliedFilter` 字段、DSL 也没有这个概念，
  * 本函数永远写不出它，它是**读方独有**的参数——写进这张清单会让人误以为这里有对称契约。）
  * 任何一边改名而另两边没跟着改，条件就会被**静默丢掉**——FilterPage 点「应用筛选」时
