@@ -228,7 +228,7 @@ describe("validateQuery 非法输入", () => {
   });
 
   it("categories 为空数组算「不过滤」，不是「匹配空集」", () => {
-    // 契约：空数组 = 不加条件。与下游一致（buildWhere 判 `f.categories?.length`、
+    // 契约：空数组 = 不加条件。与下游一致（buildWhere 判 `f.categoryIds?.length`、
     // fetchAll 判 `categoryIds.length > 0`），所以校验层放行而不是报错。
     expect(codes({ categories: [], aggregate: "sum" })).toEqual([]);
   });
