@@ -288,7 +288,7 @@ function goBack() {
           <button
             v-for="opt in ([
               { key: 'expense', label: '支出' },
-              { key: 'income', label: '入账' },
+              { key: 'income', label: '收入' },
               { key: 'transfer', label: '转账' },
             ] as const)"
             :key="opt.key"
@@ -343,7 +343,7 @@ function goBack() {
       </div>
 
       <!-- 分类（多选，按收入/支出分组） -->
-      <div class="mb-4">
+      <div class="mb-4" data-test="category-section">
         <label class="mb-1 block text-xs text-text-secondary">📂 分类</label>
         <div class="space-y-2">
           <div

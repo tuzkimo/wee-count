@@ -287,7 +287,11 @@ describe("FilterPage 分类分组", () => {
 
     expect(wrapper.find('[data-test="category-group-expense"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="category-group-income"]').exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("收入");
+    // 收入分组的标题也不该出现。这里只扫**分类区**而不是整页：
+    // 整页范围过宽——类型筛选芯片的文案就是「收入」
+    //（与 RecordPage.vue:198、TransactionList.vue:383 的收支类型叫法一致），它必然出现在页面上。
+    // 收窄的是**扫描范围**，不是严格程度：收入分组若被渲染，它的标题仍会落在这个容器里。
+    expect(wrapper.find('[data-test="category-section"]').text()).not.toContain("收入");
   });
 
   it("两侧都没有分类时显示暂无分类", async () => {
