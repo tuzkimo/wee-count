@@ -42,6 +42,13 @@ describe("likePattern", () => {
     expect(likePattern("50%")).toBe("%50\\%%");
     expect(likePattern("a_b")).toBe("%a\\_b%");
   });
+
+  it("空串得到 %%（匹配一切），所以调用方必须自己做 truthiness 判断", () => {
+    // 这不是 bug，但语义必须写明：两个调用点（buildWhere 与 fetchAll）都靠
+    // `if (f.merchant)` / `if (opts.noteKeyword)` 兜底，绝不会传空串进来。
+    // 谁要是去掉那层判断，空关键词会静默变成「匹配全部」。
+    expect(likePattern("")).toBe("%%");
+  });
 });
 
 describe("noteOrTagLikeClause", () => {
@@ -57,12 +64,25 @@ describe("noteOrTagLikeClause", () => {
     expect(clause.match(/\?/g)).toHaveLength(2);
   });
 
-  it("子查询别名不与 fetchAll 的 QUERY 外层别名冲突", () => {
-    // QUERY 外层已经有 `tg`（transaction_tags），内层若也叫 tg 会被遮蔽而不报错，
-    // 一个笔误就静默关联到外层表。取独立名字让笔误变成硬错误。
+  it("不引用裸表名，也不残留会被外层遮蔽的短别名", () => {
+    // fetchAll 的 QUERY 外层已有 `tg`（transaction_tags）与 `tags` 两个名字。
+    // 内层若同名会被 SQLite 静默遮蔽而不报错，一个笔误就变成关联到外层表。
+    // 这里做的是**文本层**的自查（片段必须用 sq_ 前缀）；
+    // 真正「不与外层冲突」的保证来自任务 8 的 sqlSmoke.test.ts——它在真实 SQLite 里
+    // 把片段拼进带 LEFT JOIN 的外层查询执行，冲突会直接变成错误或错数。
     expect(clause).toContain("sq_tt");
     expect(clause).toContain("sq_tg");
     expect(clause).not.toMatch(/\btt\./);
     expect(clause).not.toMatch(/\btg\./);
+    expect(clause).not.toMatch(/\btags\./);
+    expect(clause).not.toMatch(/\btransaction_tags\./);
+  });
+
+  it("整个片段的执行级语义由 sqlSmoke.test.ts 用真实 SQLite 验证", () => {
+    // 片段是 SQL 文本，字符串断言只能证明它「长得像对的」，证明不了「算得对」：
+    // 把 sq_tt.transaction_id 写成 sq_tt.tag_id 是合法 SQL、结果恒空，这里 12 条断言全绿。
+    // 抓这类变异的是任务 8：t8 的备注不含「盒马」、只靠标签命中，
+    // 一旦 transaction_id 写成 tag_id，merchant=盒马 的总额会从 350 掉到 300 而变红。
+    expect(noteOrTagLikeClause()).toContain("sq_tt.transaction_id");
   });
 });

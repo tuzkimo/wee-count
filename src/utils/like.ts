@@ -1,7 +1,10 @@
 /**
  * SQLite LIKE 模式里的转义字符。
  *
- * 单引号在本项目里不需要处理——所有查询都用 `?` 占位符绑定参数，不走字符串拼接。
+ * 值本身**确实是原样拼进 SQL 字面量的**（见 `noteOrTagLikeClause` 里的 `ESCAPE '\'`），
+ * 这是本文件唯一一处不走 `?` 占位符的地方。之所以仍然安全：它是本模块自己定义的常量、
+ * 不来自任何用户输入，取值恒为单个反斜杠。**不要**把它改成可配置项或从外部传入，
+ * 否则那个拼接点立刻变成注入面。
  */
 export const LIKE_ESCAPE_CHAR = "\\";
 
@@ -18,7 +21,11 @@ export function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `${LIKE_ESCAPE_CHAR}${ch}`);
 }
 
-/** 包成 LIKE 的「包含」模式并转义元字符。调用方一律用它，避免有人忘了转义 */
+/** 包成 LIKE 的「包含」模式并转义元字符。调用方一律用它，避免有人忘了转义。
+ *
+ * 注意 `likePattern("")` 得到 `"%%"`（匹配一切）。两个调用点都先用 truthiness 挡住空值
+ * （`if (f.merchant)` / `if (opts.noteKeyword)`），所以空串永远到不了这里；
+ * 去掉那层判断就会静默变成「匹配全部」。 */
 export function likePattern(keyword: string): string {
   return `%${escapeLike(keyword)}%`;
 }
@@ -36,6 +43,11 @@ export function likePattern(keyword: string): string {
  * 取不冲突的名字，让笔误直接变成硬错误。
  *
  * 调用方负责按出现顺序 push 两次参数（同一个 LIKE 模式）。
+ *
+ * 本文件的测试只能做**文本层**断言（片段是 SQL 字符串）。它的**执行级语义**
+ * 由 `src/services/ai/__tests__/sqlSmoke.test.ts` 在真实 SQLite 上验证——
+ * 那边的 `merchant=盒马` 用例会同时走通「命中备注」「命中活跃标签」「忽略已删标签」
+ * 三条路径。改动本片段后务必跑它，字符串断言抓不住「SQL 合法但结果错」的变异。
  */
 export function noteOrTagLikeClause(): string {
   return (
