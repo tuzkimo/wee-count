@@ -85,10 +85,15 @@ describe("buildWhere 各条件", () => {
   });
 
   // 下面三条钉住「空数组 = 不过滤」这条契约（resolveFilter 返回 null、fetchAll 用
-  // `.length > 0`，这一层也必须一致）。
-  // 为什么必须有：空数组 `[]` 在 JS 里是真值，用 `if (f.categoryIds)` 这种真值判断会
-  // 放行，于是拼出 `IN ()`；而 SQLite 对 `IN ()` **不报错，只静默返回 0 行**——调用方
-  // 拿到的是"匹配空集"而不是"没过滤"，是个无声的错误答案。三条断言分开写，是为了让
+  // `.length > 0`，这一层也必须一致）。契约为什么重要：空数组 `[]` 在 JS 里是真值，
+  // 判空一旦退化成真值判断，`placeholders()` 形的条件就会拼出 `IN ()`；而 SQLite 对
+  // `IN ()` **不报错，只静默返回 0 行**——调用方拿到的是"匹配空集"而不是"没过滤"，
+  // 是个无声的错误答案。
+  //
+  // 但**不是三处都一样**：会拼 `IN ()` 的只有走 `placeholders()` 的 `categoryIds` 与
+  // `memberIds`；`tagIds` 那一处是 `for (const tagId of f.tagIds)` 的**循环体**，空数组
+  // 循环零次，`if (f.tagIds)` 与 `if (f.tagIds?.length)` 输出完全相同——真值判断在
+  // `tagIds` 上是**等价变异体**，打不红它（实测过）。三条断言分开写，是为了让
   // 「只漏改其中一处」也能被单独定位。
 
   it("categoryIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
@@ -97,10 +102,16 @@ describe("buildWhere 各条件", () => {
     expect(params).toEqual(["L1"]);
   });
 
-  it("tagIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
-    const { sql, params } = buildWhere("L1", makeFilter({ tagIds: [] }));
-    expect(sql).not.toContain("IN");
-    expect(params).toEqual(["L1"]);
+  it("tagIds 为空数组时不加条件，与 tagIds 为 null 完全等价（空数组 = 不过滤）", () => {
+    // 这一处的标题**不**声称能抓"真值判断拼出 IN ()"：`tagIds` 走的是循环体而不是
+    // `placeholders()`，真值判断在这里是等价变异体（见上方共用注释）。它钉的是契约
+    // 本身，按契约写成「与 null 逐字相同」比「不含 IN」更贴：一旦有人把 `tagIds` 也
+    // 改成 `placeholders()` 形式的 `IN`，空数组就会产出 `IN ()`，sql 与 params 都
+    // 不再与 null 相同，这条断言随即变红。
+    const empty = buildWhere("L1", makeFilter({ tagIds: [] }));
+    const none = buildWhere("L1", makeFilter({ tagIds: null }));
+    expect(empty.sql).toBe(none.sql);
+    expect(empty.params).toEqual(none.params);
   });
 
   it("memberIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
