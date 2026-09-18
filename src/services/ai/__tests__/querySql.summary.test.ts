@@ -31,9 +31,13 @@ describe("buildWhere 恒定约束", () => {
     // 那是过度应用——汇总 SQL 用 CASE WHEN 按类型分桶，收支聚合本来就不会被转账污染，
     // 而 WHERE 里多这一条会让 matched 少算转账，于是 AI 说"共 5 笔"、
     // 用户点进流水页看到 6 条。数字对不上比算错更伤信任。
+    //
+    // ⚠️ 这里**必须断言整串**，不能用 `not.toContain("t.type != 'transfer'")` 那种点名断言：
+    // 审查实测，把变异写成 `t.type <> 'transfer'`（SQL 里与 `!=` 完全等价）时，
+    // 点名断言 **47/47 全绿**——同一件事换个写法就绕过去了。
+    // 断言整串还顺带钉住"没多出任何别的条件"，这正是本用例真正要保证的。
     const { sql, params } = buildWhere("L1", makeFilter());
-    expect(sql).not.toContain("t.type != 'transfer'");
-    expect(sql).not.toContain("t.type =");
+    expect(sql).toBe(" WHERE t.ledger_id = ? AND t.is_deleted = 0");
     expect(params).toEqual(["L1"]);
   });
 
@@ -96,10 +100,16 @@ describe("buildWhere 各条件", () => {
   // `tagIds` 上是**等价变异体**，打不红它（实测过）。三条断言分开写，是为了让
   // 「只漏改其中一处」也能被单独定位。
 
-  it("categoryIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
-    const { sql, params } = buildWhere("L1", makeFilter({ categoryIds: [] }));
-    expect(sql).not.toContain("IN");
-    expect(params).toEqual(["L1"]);
+  it("categoryIds 为空数组时不加条件，与 categoryIds 为 null 完全等价（空数组 = 不过滤）", () => {
+    // 为什么不写 `not.toContain("IN")`（审查 M-1）：那太宽——WHERE 里出现任何 `IN`
+    // 都算违规，将来合法地补一个 `IN (?)` 形的条件（例如把 tagIds 改成列表、
+    // 或补 uncategorized 的 `NOT EXISTS`/`IN`）会被误报，而 `IN ()` 这个真正要防的
+    // 东西反倒不一定被抓到。按契约写成「与 null 逐字相同」更贴：一旦真值判断放行空数组、
+    // 拼出 `t.category_id IN ()`，sql 与 params 都不再与 null 相同，这条必红。
+    const empty = buildWhere("L1", makeFilter({ categoryIds: [] }));
+    const none = buildWhere("L1", makeFilter({ categoryIds: null }));
+    expect(empty.sql).toBe(none.sql);
+    expect(empty.params).toEqual(none.params);
   });
 
   it("tagIds 为空数组时不加条件，与 tagIds 为 null 完全等价（空数组 = 不过滤）", () => {
@@ -114,10 +124,14 @@ describe("buildWhere 各条件", () => {
     expect(empty.params).toEqual(none.params);
   });
 
-  it("memberIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
-    const { sql, params } = buildWhere("L1", makeFilter({ memberIds: [] }));
-    expect(sql).not.toContain("IN");
-    expect(params).toEqual(["L1"]);
+  it("memberIds 为空数组时不加条件，与 memberIds 为 null 完全等价（空数组 = 不过滤）", () => {
+    // 与 categoryIds 那条同一形式、同一理由（审查 M-1）：`not.toContain("IN")` 过宽，
+    // 契约形式「与 null 逐字相同」才精确对准 `IN ()` 这一个要防的错误产物。
+    // 两条分开写，是为了让「只漏改其中一处」也能被单独定位。
+    const empty = buildWhere("L1", makeFilter({ memberIds: [] }));
+    const none = buildWhere("L1", makeFilter({ memberIds: null }));
+    expect(empty.sql).toBe(none.sql);
+    expect(empty.params).toEqual(none.params);
   });
 
   it("merchant 同时匹配备注与标签名，且带 ESCAPE", () => {
@@ -157,7 +171,7 @@ describe("buildWhere 各条件", () => {
     // 查询依然返回结果，但每个条件都绑到了别人的值上——静默错。
     // 这里只用**各条件的稳定前缀**定位（有意不写死区间的开闭、金额段的完整文本），
     // 让它只对「顺序」负责：区间开闭、0 下界、片段来源各自有专门的用例钉住。
-    const { sql } = buildWhere("L1", makeFilter({
+    const { sql, params } = buildWhere("L1", makeFilter({
       type: "expense",
       range: { from: "2026-01-01", to: "2026-01-31", startIso: "S", endIso: "E" },
       accountId: "A1",
@@ -183,6 +197,22 @@ describe("buildWhere 各条件", () => {
     ].map((marker) => sql.indexOf(marker));
     expect(positions.every((i) => i >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+
+    // ⚠️ 上面只钉了 **SQL 里子句的顺序**，那**不足以**证明绑定正确（审查 M-2）：
+    // 把某一次 `params.push` 挪到函数末尾，SQL 字符串一字不变、上面全绿，
+    // 而实际绑定整体错位——SQLite 对此**不报错**（少传的参数当 NULL，静默 0 行）。
+    // 审查者执行级复现：故意错位后 `matched=0` 而非 1，SQL 照样执行成功、无任何提示。
+    // 所以必须**显式断言 params 数组本身**（顺序与值都要）。
+    // 期望值推导：按上面 positions 的顺序数出每个子句有几个 `?`——
+    // 账户条件是 2 个 `?`（同一个 accountId 出现 2 次）；共用片段 noteOrTagLikeClause
+    // 自带 **2** 个占位符（备注 + 标签名），所以同一个 merchant 模式也要出现 2 次。
+    expect(params).toEqual([
+      "L1", "expense", "S", "E",
+      "A1", "A1",
+      "c1", "t1", "u1",
+      "%盒马%", "%盒马%",
+      10, 100,
+    ]);
   });
 });
 
