@@ -192,7 +192,36 @@ describe("runQuery 成功路径", () => {
     expect(mockDb.select).toHaveBeenCalledTimes(1);
   });
 
-  it("分组条数少于 matched 时标记 truncated", async () => {
+  it("分组撞到 LIMIT 时标记 truncated：tag 分组会扇出，桶数可以大于 matched", async () => {
+    // 审查 Important（I-1）的回归用例。**这条替代了原来那条期望为 true 的用例**
+    // （matched=12、1 个桶），原来那条在修正后的语义下是**错的**：1 个桶覆盖全部 12 笔，
+    // 分布是完整的，本该报 false。旧规则 `matched > groups.length` 把"桶比笔数少"
+    // 误当成"被截断"——对不扇出的分组，桶的和恒等于 matched，桶少只说明分布集中。
+    //
+    // 场景：8 笔交易、每笔挂多个标签 → 真实桶 15 个、只返回 10 个（默认 limit=10）。
+    // 注意 matched(8) < groups.length(10)：**桶数大于命中数**，这正是 tag 分组扇出的特征，
+    // 也正是旧规则失效的原因。任何"桶数不会超过命中数"的直觉在这里都是错的。
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 800, expense_count: 8, matched: 8 }])
+      .mockResolvedValueOnce(
+        Array.from({ length: 10 }, (_, i) => ({
+          key: `标签${i}`,
+          expense_total: 80,
+          income_total: 0,
+          transfer_total: 0,
+          cnt: 1,
+        })),
+      );
+    mockDeriveRange();
+    const r = await runQuery("L1", { aggregate: "sum", groupBy: "tag" }, ctx);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.result.truncated).toBe(true);
+  });
+
+  it("桶数少于 matched 但没撞到 LIMIT 时不标记 truncated（分布是完整的）", async () => {
+    // 这条钉住被修正后的语义。12 笔交易、只有 1 个分类桶、limit 还是默认 10：
+    // **1 个桶覆盖了全部 12 笔**，分布是完整的，不该报 truncated。
+    // 旧规则（`matched > groups.length` → 12 > 1 → true）会在这里误报。
     mockDb.select
       .mockResolvedValueOnce([{ ...emptyRow, expense_total: 100, expense_count: 12, matched: 12 }])
       .mockResolvedValueOnce([
@@ -201,7 +230,65 @@ describe("runQuery 成功路径", () => {
     mockDeriveRange();
     const r = await runQuery("L1", { aggregate: "sum", groupBy: "category" }, ctx);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.result.truncated).toBe(true);
+    if (r.ok) expect(r.result.truncated).toBe(false);
+  });
+
+  it("把 orderBy / limit / 账本 / 筛选原样转发给构造函数，且发出去的 SQL 全是 SELECT", async () => {
+    // 审查 M-4 + S-3 的回归。此前 mock 的 select 从不看 SQL/params，只按调用顺序吐预置行，
+    // 所以 `buildItemsSql(ledgerId, { aggregate: "list" }, f)`（丢掉 orderBy/limit 转发）
+    // 这类改动在本文件与 sqlSmoke 上 **31/31 全绿**——审查实测过。
+    // 同一个盲区还让"把汇总换成 DELETE"或"把 ledgerId 换成别的账本"零覆盖（S-3）。
+    // 这条用例把"发出去的到底是什么"钉住：断言 SQL 片段与 params 本身。
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 10, expense_count: 1, matched: 1 }])
+      .mockResolvedValueOnce([])  // 分组
+      .mockResolvedValueOnce([])  // 明细
+      .mockResolvedValueOnce([{ min_at: null, max_at: null }]);  // 派生区间（无 date 时排在最后）
+    const r = await runQuery(
+      "L1",
+      { aggregate: "list", groupBy: "tag", type: "expense", orderBy: "date_asc", limit: 5 },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    // 调用顺序固定：汇总 → 分组 → 明细 → 派生区间
+    expect(mockDb.select).toHaveBeenCalledTimes(4);
+
+    const [summarySql, summaryParams] = mockDb.select.mock.calls[0];
+    // ledgerId 与 f 的转发：任一被换掉，这两条都会红
+    expect(summaryParams).toEqual(["L1", "expense"]);
+    expect(summarySql).toContain("t.ledger_id = ?");
+
+    const [groupsSql, groupsParams] = mockDb.select.mock.calls[1];
+    expect(groupsParams).toEqual(["L1", "expense"]);
+    expect(groupsSql).toContain("GROUP BY key");
+    expect(groupsSql).toContain("LIMIT 5");            // q.limit 转发：丢掉会退回默认 10
+    expect(groupsSql).toContain("ORDER BY key ASC");   // q.orderBy 转发：丢掉会退回 DESC
+
+    const [itemsSql, itemsParams] = mockDb.select.mock.calls[2];
+    expect(itemsParams).toEqual(["L1", "expense"]);
+    expect(itemsSql).toContain("LIMIT 5");                  // 丢掉会退回 AI_QUERY_MAX_ITEMS(20)
+    expect(itemsSql).toContain("ORDER BY t.occurred_at ASC"); // 丢掉会退回 DESC，请求与结果相反
+
+    expect(mockDb.execute).not.toHaveBeenCalled();
+    // 「发出去的语句必须是 SELECT」这条不变式单独一条用例（下一条），
+    // 拆开才能说清是**哪条断言**在杀哪个变异——挤在这里会被上面任何一条先打红，
+    // 那个断言就永远证明不了自己能杀人。
+  });
+
+  it("只读不变式：所有发出去的语句都以 SELECT 开头", async () => {
+    // 审查 S-3：此前只钉了"走 select 而不是 execute"，把汇总换成
+    // `select("DELETE FROM transactions")` 照样 19/19 全绿（审查实测）。
+    // 「AI 只能读 + 只产出草稿」是产品约束，值得在**语句层面**明说：
+    // 只要 select 上出现非查询语句，就是越权，不管它长得像不像一次查询。
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, matched: 0 }])
+      .mockResolvedValueOnce([{ min_at: null, max_at: null }]);
+    const r = await runQuery("L1", { aggregate: "sum" }, ctx);
+    expect(r.ok).toBe(true);
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
+    for (const [sql] of mockDb.select.mock.calls) {
+      expect(String(sql).trimStart().toUpperCase().startsWith("SELECT")).toBe(true);
+    }
   });
 
   it("分组条数不少于 matched 时不标记 truncated", async () => {

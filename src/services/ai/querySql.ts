@@ -1,13 +1,20 @@
 // WHERE 子句与汇总查询的纯构造模块：只产出 `{ sql, params }`，**不执行查询**（执行是
 // runQuery.ts 的事，任务 8）。因此本文件绝不 import `@/db/userDb` 或任何 Tauri 模块——
-// 一旦引入，任务 8 的冒烟测试会在 import 阶段就倒，"纯函数零 DB"这条约束也会被击穿。
+// 这是**架构纯度**约束（规格 §5.1：dsl / range / resolve / querySql / filterQuery
+// 必须能脱离 Tauri 单独使用与测试），一旦引入，本模块就再也不能被非 Tauri 环境
+// （纯 Node 脚本、别的宿主）单独 import 与单测了。
 import { likePattern, noteOrTagLikeClause } from "@/utils/like";
 import { round2 } from "@/utils/transaction";
-// offsetModifier 从 utils/datetime 引，**不从 services/reports** —— reports.ts 里有
-// `import { getUserDb } from "@/db/userDb"`，会经 userDb 把 @tauri-apps/plugin-sql 拖进
-// 本模块的导入链。那样 sqlSmoke.test.ts（不 mock userDb）会在 import 阶段就倒，
-// 而且本模块「纯函数、零 DB」这条架构约束会被打破。
+// offsetModifier 从 utils/datetime 引，**不从 services/reports** —— 理由同样是架构纯度
+// （规格 §5.1），不是"引了就会崩"：reports.ts 里有 `import { getUserDb } from "@/db/userDb"`，
+// 把它拉进本模块的导入链就等于让 querySql 依赖 Tauri 那一层，"纯函数、零 DB"这条约束被击穿。
 // utils/datetime.ts 本身零 import，是这条边唯一干净的落点。
+//
+// ⚠️ 更正（审查 R51）：这里原先写着"一旦引入 userDb，任务 8 的冒烟测试会在 import 阶段就倒"。
+// 那条**已被实测推翻**：sqlSmoke.test.ts 为了拿 FULL_RANGE_SQL 而 import 了
+// `@/services/ai/runQuery`，而 runQuery.ts 本来就 import `@/db/userDb`——Tauri 依赖
+// **早已在这条导入链里**，而 31/31 依然全绿。约束不变（仍然不要引入 userDb），
+// 但理由只能是架构纯度：别让后来者以为"冒烟测试没有 Tauri 依赖"而不小心把耦合加深。
 import { offsetModifier } from "@/utils/datetime";
 import {
   AI_QUERY_DEFAULT_LIMIT,

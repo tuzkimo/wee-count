@@ -1,14 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import {
   buildGroupsSql, buildItemsSql, buildSummarySql, buildWhere, shapeSummary,
   type GroupRow, type ItemRow, type SummaryRow,
 } from "@/services/ai/querySql";
 import type { AiQuery } from "@/services/ai/dsl";
-import type { ResolvedFilter } from "@/services/ai/resolve";
+import type { LookupContext, ResolvedFilter } from "@/services/ai/resolve";
 // 直接引被测实现里的那条 SQL，而不是在测试里抄一份：抄一份的后果是
 // "实现里漏了 is_deleted、测试里那份没漏"，两边永远不会同时红。
-import { FULL_RANGE_SQL } from "@/services/ai/runQuery";
+import { FULL_RANGE_SQL, runQuery } from "@/services/ai/runQuery";
+import { getUserDb } from "@/db/userDb";
+
+// 端到端那一段要用**真的** runQuery（它会调 getUserDb），所以这里把 userDb 换成"真库适配器"。
+// vi.mock 会被 vitest 提升到文件顶部执行，写在这里不影响本文件其余用例——它们不碰 userDb。
+// 注意：把 userDb mock 掉**不会**去掉 Tauri 依赖——runQuery 仍然 import 它，只是不再取真连接。
+vi.mock("@/db/userDb", () => ({ getUserDb: vi.fn() }));
 
 /**
  * 直接 import `node:sqlite`，**不做"拿不到就跳过"的兜底**（这是 R48 的裁决）。
@@ -142,20 +148,37 @@ describe("真实 SQLite 冒烟测试", () => {
     // t1 + t2（备注命中）+ t8（活跃标签「盒马」命中）= 350
     // t9 挂的「盒马已删标签」名字含关键词、但已软删，必须被忽略；
     // 少了 sq_tg.is_deleted = 0 它就会被算进来变成 380 —— 这条断言才有意义。
+    // ⚠️ 归因澄清（审查实测）：本用例承重的是**共用片段里的标签分支与软删过滤**。
+    // 把 merchant 整块删掉会让本文件 3 条用例红（含本条的 350），
+    // 但**不含**下面那条组合筛选的黄金数字——那条由 tagIds 承重，见那里的注释。
     expect(shapeSummary(row, "expense").expense!.total).toBe(350);
     db.close();
   });
 
   it("merchant 里的 % 被当成字面量而不是通配符", () => {
+    // ⚠️ 这条用例原来的写法是**空转**（审查实测：把 escapeLike 改成恒等，本文件 12/12 全绿）。
+    // 原因有二，都必须记住：
+    //   ① 原夹具里**没有任何备注含 "50"**，所以转义与否都返回 0——断言恒真，什么都没验；
+    //   ② 原注释「若未转义则 % 会匹配全部」**与 LIKE 语义相反**：
+    //      未转义的模式是 `%50%%`，它仍然**要求备注里含 "50"**，
+    //      只有模式是**裸 `%`** 时才会匹配全部。把语义写反，看注释的人就抓不住空转。
+    // 判别力要靠**两笔**交易：一笔含字面量 "50%"，一笔只含 "50"。
+    //   转义正确 → 只命中前者；转义失效 → 后者也被 `%50%%` 命中，总数就会多出来。
+    // （转义本身在 like.test.ts 有 6 条直接单测，但**验收文件里这条必须自己能杀人**，
+    //   否则它给的是虚假信心而不是覆盖。审查的变异 D1 就是这条用例的判据。）
     const db = seed();
     db.prepare(
-      `INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, occurred_at, created_at)
-       VALUES ('p1', 'L1', 'u-me', 10, 'expense', 'a-cmb', '2026-03-12T10:00:00.000Z', '2026-03-12T10:00:00.000Z')`,
+      `INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, note, occurred_at, created_at)
+       VALUES ('p1', 'L1', 'u-me', 10, 'expense', 'a-cmb', '折扣50%off', '2026-03-12T10:00:00.000Z', '2026-03-12T10:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO transactions (id, ledger_id, user_id, amount, type, from_account_id, note, occurred_at, created_at)
+       VALUES ('p2', 'L1', 'u-me', 1000, 'expense', 'a-cmb', '满50减10', '2026-03-12T11:00:00.000Z', '2026-03-12T11:00:00.000Z')`,
     ).run();
     const withPct = buildSummarySql("L1", makeFilter({ merchant: "50%" }));
     const r1 = db.prepare(withPct.sql).get(...withPct.params) as unknown as SummaryRow | undefined;
-    // 没有任何备注含字面量 "50%"，若未转义则 % 会匹配全部 → 断言为 0 才说明转义生效
-    expect(shapeSummary(r1, "expense").expense!.total).toBe(0);
+    // 只算含字面量 "50%" 的那笔（p1 = 10）。若转义失效，模式 `%50%%` 会把 p2（1000）也算进来 → 1010
+    expect(shapeSummary(r1, "expense").expense!.total).toBe(10);
     db.close();
   });
 
@@ -211,6 +234,15 @@ describe("真实 SQLite 冒烟测试", () => {
     //   t8 50 元三月、备注「生鲜采购」不含关键词，但**挂 t-hm（名字就叫「盒马」）** → 命中
     //   t9 30 元 → 低于金额下限；t5/t10 出区间；t6 软删；t7 别的账本
     // 所以恰好 1 笔、50 元。**若实测与此不符，先怀疑我的推导，把过程写进报告再改。**
+    //
+    // ⚠️ 承重条件澄清（审查实测，原注释归因有误）：本条黄金数字实际**由 `tagIds` 承重**——
+    // 把 `tagIds` 那块删掉 → 本条立刻红（matched 3≠1）。
+    // 而 `merchant` 与 `amountMin` 在本条**不承重**：删掉 merchant 整块，本条仍绿
+    // （t8 依然被 tagIds 留下，t1/t2 依然被 tagIds 排除，数字不变）；
+    // 删掉 amountMin，本文件 12/12 全绿（它由 `querySql.summary.test.ts` 的 4 条用例守住）。
+    // 这不代表那两个条件没被覆盖，只代表**不该把本条当成它们的守卫**——
+    // 写清承重关系，将来有人删掉某条件时才知道该看哪条测试。
+    // 组合筛选真正多验的是"多个条件叠加时参数不错位"，这一层由上面的 `?` 计数与扫描用例兜住。
     expect(s.matched).toBe(1);
     expect(s.expense!.total).toBe(50);
     db.close();
@@ -344,6 +376,150 @@ describe("真实 SQLite 冒烟测试", () => {
     // deriveFullRange 的 `!row?.min_at` 守卫会失效并产出两个假日期。
     expect(row.min_at).toBeNull();
     expect(row.max_at).toBeNull();
+    db.close();
+  });
+});
+
+/**
+ * 端到端：真的 `runQuery` 接真的 SQLite。
+ *
+ * **为什么必须单独有这一段**（审查建议，采纳）：上面所有用例都是"直接调构造函数 + 真库"，
+ * 而 `runQuery` 自己那条链路——校验 DSL → 解析名字 → 选构造函数 → **把 orderBy/limit 转发进去**
+ * → 整形返回 —— 此前**只有 mock 层覆盖，而 mock 从不检查发出去的 SQL/params**。
+ * 审查实测：把 `buildItemsSql(ledgerId, q, f)` 改成丢掉 `orderBy`/`limit` 的转发，**31/31 全绿**。
+ * 也就是说"构造函数都对、但 runQuery 转错了参数"这个面此前完全没有守卫，
+ * 而这恰恰是 M1 交付给模型的那一层。这里把这条链路真正接上——
+ * **它同时是 M1 真正的验收断言**：AI 最终拿到的数字，就是一个真库上跑出来的数字。
+ *
+ * 下面所有黄金数字都按 `seed()` 夹具**手工逐笔推导**（不是从被测代码反推），推导写在各条注释里。
+ * 若实测与推导不符，先怀疑推导，把过程写进报告再改。
+ */
+describe("端到端：runQuery 接真实 SQLite", () => {
+  /** 把真实内存库包装成 getUserDb 的返回形状（只有 select 会被用到） */
+  function asUserDb(db: DatabaseSync) {
+    return {
+      select: <T,>(sql: string, params: (string | number)[]) =>
+        Promise.resolve(db.prepare(sql).all(...params) as unknown as T),
+    };
+  }
+
+  /** 空池即可：下面的 DSL 只用日期/分组/聚合，不涉及名字解析 */
+  const CTX: LookupContext = { categories: [], accounts: [], tags: [], members: [] };
+  const NOW = new Date(2026, 5, 1);
+
+  function useDb(db: DatabaseSync): void {
+    vi.mocked(getUserDb as () => unknown).mockReturnValue(asUserDb(db));
+  }
+
+  it("汇总 + 分类分组 + 明细三件一起走通，数字与真库一致", async () => {
+    const db = seed();
+    useDb(db);
+
+    const r = await runQuery(
+      "L1",
+      { aggregate: "list", groupBy: "category", date: { from: "2026-03-01", to: "2026-03-31" } },
+      CTX,
+      NOW,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    // 黄金数字（按 seed 夹具手工推导）：
+    //   支出 t1 100 + t2 200 + t8 50 + t9 30 = 380（4 笔，avg 95）
+    //   收入 t3 5000（1 笔）；转账 t4 300（1 笔）→ matched = 4 + 1 + 1 = 6
+    //   不出现在任何桶里的：t5 本地 2/10 出区间、t10 本地 4/1 00:30 出区间、
+    //   t6 is_deleted=1、t7 属于别的账本 L2
+    expect(r.result.expense).toEqual({ total: 380, count: 4, avg: 95 });
+    expect(r.result.income).toEqual({ total: 5000, count: 1, avg: 5000 });
+    expect(r.result.matched).toBe(6);
+    // type 没给 → net 可见，且计入转账之外的收支差：5000 - 380
+    expect(r.result.net).toBe(4620);
+    // 分类分组（**不带 type**，所以收入与转账也各有归属，不是只有支出的两个桶）：
+    //   「买菜」= t1/t2/t8/t9 四笔支出 = 380
+    //   「未分类」= t3（收入 5000，category_id 为 NULL）+ t4（转账 300，同样 NULL）
+    //   排序 = (expense_total + income_total) DESC → 未分类(5000) 排在 买菜(380) 前
+    expect(r.result.groups).toEqual([
+      { label: "未分类", expense: 0, income: 5000, transfer: 300, count: 2 },
+      { label: "买菜", expense: 380, income: 0, transfer: 0, count: 4 },
+    ]);
+    // 明细必须**真的**按时间倒序（这一条正是"runQuery 丢掉了 orderBy 转发"会打红的）：
+    //   t9 本地 3/31 23:30 → 30；t2 3/20 → 200；t8 3/11 → 50；
+    //   t4 3/6 → 300；t3 3/5 → 5000；t1 3/2 → 100
+    expect(r.result.items!.map((it) => it.amount)).toEqual([30, 200, 50, 300, 5000, 100]);
+    // 6 条明细 = matched 6，2 个分组桶远没到 limit → 这份结果确实是完整的
+    expect(r.result.truncated).toBe(false);
+    db.close();
+  });
+
+  it("orderBy=date_asc 与 limit 真的转发进了 SQL，真库给出的就是最早的两笔", async () => {
+    // 这一条专门打"runQuery 转错参数"这个面（审查 M-4 的核心）：
+    // 若 orderBy/limit 的转发丢了，明细会落回默认的 DESC + LIMIT 20 → 断言立刻红。
+    // mock 层那条转发断言看的是 SQL 文本，这一条看的是**真库返回的行**——
+    // 两条一起，才既有"字符串对了"也有"数据对了"。
+    const db = seed();
+    useDb(db);
+
+    const r = await runQuery(
+      "L1",
+      {
+        aggregate: "list", type: "expense", orderBy: "date_asc", limit: 2,
+        date: { from: "2026-03-01", to: "2026-03-31" },
+      },
+      CTX,
+      NOW,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // 三月支出按时间升序：t1(3/2) 100 → t8(3/11) 50 → t2(3/20) 200 → t9(3/31) 30
+    // limit=2 只留最早两笔；若 limit 丢掉则是 4 笔，若 orderBy 丢掉则是 [30, 200]（最新在前）
+    expect(r.result.items!.map((it) => it.amount)).toEqual([100, 50]);
+    expect(r.result.matched).toBe(4);
+    // matched 4 > 明细 2 → 明细这条判据也必须报截断
+    expect(r.result.truncated).toBe(true);
+    db.close();
+  });
+
+  it("tag 分组桶数 > matched 且撞到 LIMIT 时 truncated 必须为 true（I-1 的真库回归）", async () => {
+    // 一笔交易挂 12 个标签。真实桶 14 个：
+    //   12 个新标签（都挂在 t1）+ 「盒马」（t8 挂的活跃标签 t-hm）+「未打标签」
+    //   （t2/t3/t4/t5/t9/t10 都没活跃标签；t9 挂的 t-dead 已软删，被 IN 过滤掉）
+    // matched = 8（L1 未删的全部流水 t1/t2/t3/t4/t5/t8/t9/t10），默认 limit = 10 → 只返回 10 个桶。
+    // 旧规则 `matched > groups.length` 算成 `8 > 10` = false —— **4 个桶被静默丢弃却报"完整"**。
+    // 这个用例的价值在于：它用**真实 SQL 的 LIMIT 行为**证明桶数可以超过命中数，
+    // 而不是靠在 mock 里塞 10 行假数据（mock 里塞多少行都行，证明不了 SQL 真的会返回那么多）。
+    const db = seed();
+    for (let i = 0; i < 12; i++) {
+      db.prepare("INSERT INTO tags VALUES (?, ?, 0)").run(`t-x${i}`, `标签${i}`);
+      db.prepare("INSERT INTO transaction_tags VALUES (?, ?)").run("t1", `t-x${i}`);
+    }
+    useDb(db);
+
+    const r = await runQuery("L1", { aggregate: "sum", groupBy: "tag" }, CTX, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.result.matched).toBe(8);
+    // 扇出的特征：桶数**大于**命中数——任何"桶数不会超过命中数"的直觉在这里都是错的
+    expect(r.result.matched).toBeLessThan(r.result.groups!.length);
+    expect(r.result.groups).toHaveLength(10);  // = 默认 limit，撞上了
+    expect(r.result.truncated).toBe(true);
+    db.close();
+  });
+
+  it("同一个 tag 分组把 limit 提到 50 后拿到全部 14 个桶，且不再报截断", async () => {
+    // 上一条的反向证明：被丢的确实是 LIMIT 造成的，不是数据本身只有 10 个桶。
+    // 同时钉住"truncated 不是恒为 true"——14 < 50，分布完整，必须报 false。
+    const db = seed();
+    for (let i = 0; i < 12; i++) {
+      db.prepare("INSERT INTO tags VALUES (?, ?, 0)").run(`t-x${i}`, `标签${i}`);
+      db.prepare("INSERT INTO transaction_tags VALUES (?, ?)").run("t1", `t-x${i}`);
+    }
+    useDb(db);
+
+    const r = await runQuery("L1", { aggregate: "sum", groupBy: "tag", limit: 50 }, CTX, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.result.groups).toHaveLength(14);
+    expect(r.result.truncated).toBe(false);
     db.close();
   });
 });
