@@ -79,12 +79,16 @@ export function buildWhere(ledgerId: string, f: ResolvedFilter): SqlFragment {
     params.push(f.accountId, f.accountId);
   }
 
-  if (f.categoryIds) {
+  // 下面三处判空一律用 `?.length`，**不能用真值判断 `if (f.categoryIds)`**：
+  // 空数组 `[]` 在 JS 里是真值，真值判断会放行并拼出 `IN ()`，而 SQLite 对 `IN ()`
+  // 不报错、静默返回 0 行——空数组就被当成了"匹配空集"而不是"不过滤"，静默给出
+  // 错误答案。契约（与 resolveFilter / fetchAll 一致）：空数组 = 不过滤。
+  if (f.categoryIds?.length) {
     clauses.push(`t.category_id IN (${placeholders(f.categoryIds.length)})`);
     params.push(...f.categoryIds);
   }
 
-  if (f.tagIds) {
+  if (f.tagIds?.length) {
     // AND 交集：同时拥有所有选中标签。与 fetchAll 的写法一致
     for (const tagId of f.tagIds) {
       clauses.push("t.id IN (SELECT transaction_id FROM transaction_tags WHERE tag_id = ?)");
@@ -92,7 +96,7 @@ export function buildWhere(ledgerId: string, f: ResolvedFilter): SqlFragment {
     }
   }
 
-  if (f.memberIds) {
+  if (f.memberIds?.length) {
     clauses.push(`t.user_id IN (${placeholders(f.memberIds.length)})`);
     params.push(...f.memberIds);
   }

@@ -84,6 +84,31 @@ describe("buildWhere 各条件", () => {
     expect(params).toEqual(["L1", "u1", "u2"]);
   });
 
+  // 下面三条钉住「空数组 = 不过滤」这条契约（resolveFilter 返回 null、fetchAll 用
+  // `.length > 0`，这一层也必须一致）。
+  // 为什么必须有：空数组 `[]` 在 JS 里是真值，用 `if (f.categoryIds)` 这种真值判断会
+  // 放行，于是拼出 `IN ()`；而 SQLite 对 `IN ()` **不报错，只静默返回 0 行**——调用方
+  // 拿到的是"匹配空集"而不是"没过滤"，是个无声的错误答案。三条断言分开写，是为了让
+  // 「只漏改其中一处」也能被单独定位。
+
+  it("categoryIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
+    const { sql, params } = buildWhere("L1", makeFilter({ categoryIds: [] }));
+    expect(sql).not.toContain("IN");
+    expect(params).toEqual(["L1"]);
+  });
+
+  it("tagIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
+    const { sql, params } = buildWhere("L1", makeFilter({ tagIds: [] }));
+    expect(sql).not.toContain("IN");
+    expect(params).toEqual(["L1"]);
+  });
+
+  it("memberIds 为空数组时不加条件（真值判断会拼出 IN ()，SQLite 静默 0 行）", () => {
+    const { sql, params } = buildWhere("L1", makeFilter({ memberIds: [] }));
+    expect(sql).not.toContain("IN");
+    expect(params).toEqual(["L1"]);
+  });
+
   it("merchant 同时匹配备注与标签名，且带 ESCAPE", () => {
     const { sql, params } = buildWhere("L1", makeFilter({ merchant: "盒马" }));
     expect(sql).toContain("t.note LIKE ? ESCAPE '\\'");
