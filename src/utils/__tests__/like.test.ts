@@ -78,11 +78,13 @@ describe("noteOrTagLikeClause", () => {
     expect(clause).not.toMatch(/\btransaction_tags\./);
   });
 
-  it("整个片段的执行级语义由 sqlSmoke.test.ts 用真实 SQLite 验证", () => {
-    // 片段是 SQL 文本，字符串断言只能证明它「长得像对的」，证明不了「算得对」：
-    // 把 sq_tt.transaction_id 写成 sq_tt.tag_id 是合法 SQL、结果恒空，这里 12 条断言全绿。
-    // 抓这类变异的是任务 8：t8 的备注不含「盒马」、只靠标签命中，
-    // 一旦 transaction_id 写成 tag_id，merchant=盒马 的总额会从 350 掉到 300 而变红。
+  it("子查询取的是 transaction_id（写成 tag_id 会让标签命中恒空）", () => {
+    // 这条只钉住这一个**被逐字点名**的变异，别把它当万能的。
+    // 字符串断言覆盖不了「片段拼进外层查询之后算得对不对」这一类问题：
+    // 别名遮蔽、括号优先级、参数顺序与个数、引用了不存在的列——它们要么只在执行时
+    // 才暴露，要么文本上完全看不出。那些由任务 8 的 sqlSmoke.test.ts 在真实 SQLite 上兜住。
+    // 实证：t8 的备注不含「盒马」、只靠标签命中，一旦 transaction_id 写成 tag_id，
+    // merchant=盒马 的总额会从 350 掉到 300（控制者已在真实 SQLite 上实测）。
     expect(noteOrTagLikeClause()).toContain("sq_tt.transaction_id");
   });
 });
