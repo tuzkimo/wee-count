@@ -201,11 +201,15 @@ func TestLoad_AIExplicit(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://x")
 	t.Setenv("JWT_SECRET", "s")
 	setAIEnv(t, map[string]string{
-		"AI_API_KEY":     "sk-test",
-		"AI_BASE_URL":    "https://api.moonshot.cn/v1/", // 末尾斜杠必须被规范化掉
-		"AI_MODEL":       "kimi-k2",
-		"AI_MAX_TOKENS":  "2048",
-		"AI_TIMEOUT":     "15s",
+		"AI_API_KEY": "sk-test",
+		// 双尾部斜杠：TrimRight 删全部、TrimSuffix 只删一个，只有两个斜杠才能区分这两者。
+		"AI_BASE_URL": "https://api.moonshot.cn/v1//",
+		"AI_MODEL":    "kimi-k2",
+		// 前后空白：运维在 .env 里写 `AI_MAX_TOKENS= 2048` / `AI_TIMEOUT= 15s`
+		// （等号后带空格）是真实场景，靠 getEnvInt/getEnvDuration 里的 TrimSpace 兜底。
+		// 去掉 TrimSpace 后 Atoi(" 2048") / ParseDuration(" 15s") 都会报错并回落默认值。
+		"AI_MAX_TOKENS":  " 2048",
+		"AI_TIMEOUT":     " 15s",
 		"AI_RATE_LIMIT":  "5",
 		"AI_DAILY_LIMIT": "50",
 	})
@@ -296,10 +300,12 @@ func TestAIHost(t *testing.T) {
 		{"空串", "", ""},
 		// 「未闭合 IPv6」是这张表里唯一能让 url.Parse 真的返回 err != nil 的输入
 		// （"not a url" 是合法的相对 URL 引用，err 为 nil、Host 为空）。
-		// 它钉住 AIHost 里 `err != nil || u.Host == ""` 的**双重承重**：
-		// 既挡空 Host，也挡 url.Parse 失败时返回的 nil *url.URL。
-		// 只删后半句而保留 err 判断，两版仍等价；但若有人把整个判断"简化"掉，
-		// u.Host 会 nil 解引用 panic——这条用例就是那时唯一会红的哨兵。
+		// 关于 AIHost 里 `err != nil || u.Host == ""` 这个判断，事实是：
+		// `u.Host == ""` 这半句在**输出**上不可观测——它触发时 u.Host 本来就是 ""，
+		// 与走 err 分支的返回完全相同，所以删掉它任何用例都抓不住（不是覆盖不足）。
+		// 真正承重的是 `err != nil`：它同时挡住 url.Parse 失败时返回的 nil *url.URL
+		// 所造成的 nil 解引用；整段判断若被"简化"掉，下面的用例会 panic（唯一哨兵）。
+		// 保留 `u.Host == ""` 只是表达意图：没有 host 就无法展示隐私说明卡（规格 §7.3）。
 		{"url.Parse 真报错（未闭合 IPv6）", "http://[::1", ""},
 	}
 	for _, c := range cases {
