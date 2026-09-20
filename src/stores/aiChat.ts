@@ -14,7 +14,7 @@
 //   被取代的那一轮**可能在被 abort 之前就拿到终稿**（abort 落在 `persistAssistant` 的 await 里），
 //   所以除了 `abort()` 还需要轮次令牌 `runSeq`，否则旧轮的答案会插到新轮后面。
 import { defineStore } from "pinia";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { getCurrentUserId, getTeamMembers, getUserDb } from "@/db/userDb";
 import { useAuthStore } from "@/stores/auth";
 import { useLedgerStore } from "@/stores/ledger";
@@ -37,7 +37,7 @@ import {
   type AgentSession,
   type AgentTurn,
 } from "@/services/ai/agent";
-import { createTransport } from "@/services/ai/transport";
+import { createTransport, fetchAiStatus, type AiStatus } from "@/services/ai/transport";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
 // ⚠️ 草稿形状的**唯一真相**在 `tools.ts` 的草稿工具产出里（Ruling 66 R3）：store 侧只 `import type`
 // 引入（类型擦除 ⇒ 不会把 `@/db/userDb` 拉进本 store 的运行期模块图），绝不重声明第二份 ——
@@ -462,6 +462,37 @@ export const useAiChatStore = defineStore("aiChat", () => {
   }
 
   // -------------------------------------------------------------------------
+  // 能力探测（tab 门控；`host` 还是任务 7 隐私卡的硬门槛）
+  // -------------------------------------------------------------------------
+
+  /**
+   * `/ai/status` 的**一次**探测结果。`null` = 还没探过（**不是**"没启用"）。
+   *
+   * ⚠️ 存整份 `AiStatus` 而不是三个独立 ref：探测是**一次**原子结果，拆成三个字段就多了
+   * "只更新一半"的形态（`enabled: true` 配着上一轮的 `host`）。下面三个 computed 是它的视图
+   * —— `enabled` 给 tab 门控（`App.vue`），`host`/`model` 给任务 7 的隐私卡（§7.3：
+   * **拿不到 `host` 就不得展示隐私卡、也不得允许开启开关**）。
+   */
+  const status = ref<AiStatus | null>(null);
+
+  /** tab 门控的**唯一**依据：拿不到能力（含探测失败）= 不显示 AI 入口（安全的那一侧） */
+  const enabled = computed(() => status.value?.enabled === true);
+  /** 处理数据的服务器；`null` = 不可知（此时不许开开关） */
+  const host = computed(() => status.value?.host ?? null);
+  /** 回答用的模型名 */
+  const model = computed(() => status.value?.model ?? null);
+
+  /**
+   * 探一次 AI 能力。**不轮询**（M2 契约第 4 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶）。
+   * 调用点是**启动**（`App.vue`：tab 存不存在取决于它）与**进入 AI 页**（页面首屏各一次）。
+   *
+   * **永不抛**（`fetchAiStatus` 的契约）：探测失败一律 `enabled=false` + `host/model=null`。
+   */
+  async function refreshStatus(): Promise<void> {
+    status.value = await fetchAiStatus();
+  }
+
+  // -------------------------------------------------------------------------
   // 快照
   // -------------------------------------------------------------------------
 
@@ -539,10 +570,15 @@ export const useAiChatStore = defineStore("aiChat", () => {
     error,
     conversationId,
     pendingDrafts,
+    status,
+    enabled,
+    host,
+    model,
     load,
     send,
     cancel,
     clear,
     dismissDraft,
+    refreshStatus,
   };
 });

@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Home, BarChart3, Wallet, User } from "lucide-vue-next";
+import { Home, BarChart3, Wallet, User, Sparkles } from "lucide-vue-next";
 import { useAutoLock } from "@/composables/useAutoLock";
 import { useLockStore } from "@/stores/lock";
+import { useAiChatStore } from "@/stores/aiChat";
 import { sanitizeRedirect } from "@/router/lockGuard";
 import AppLockPrompt from "@/components/lock/AppLockPrompt.vue";
 
 const route = useRoute();
 const router = useRouter();
 const lock = useLockStore();
+const ai = useAiChatStore();
 
 // 前后台切换自动锁定：挂在根组件上，随应用生命周期只注册一次。
 useAutoLock();
@@ -39,12 +41,28 @@ watch(
   },
 );
 
-const tabs = [
+/**
+ * 启动探一次 AI 能力（M2 契约第 4 条：**不要轮询** —— `/ai/status` 与 `/ai/chat` 共用一个
+ * 每分钟桶）。这次探测是 AI tab 能否出现的**唯一**依据（`enabled` 默认 false）⇒ 不能等用户
+ * 进 AI 页再探：tab 不显示就永远点不进去。
+ */
+onMounted(() => {
+  void ai.refreshStatus();
+});
+
+/**
+ * tab 列表。`/ai` 只在服务端启用了 AI 时才出现（需求：后端没配 AI 时**整个 tab 不显示**，
+ * 而不是"点了再报错"）。位置在「报表」与「账户」之间。
+ */
+const TABS = [
   { path: "/", label: "首页", icon: Home },
   { path: "/reports", label: "报表", icon: BarChart3 },
+  { path: "/ai", label: "AI", icon: Sparkles },
   { path: "/accounts", label: "账户", icon: Wallet },
   { path: "/me", label: "我的", icon: User },
 ];
+
+const tabs = computed(() => TABS.filter((tab) => tab.path !== "/ai" || ai.enabled));
 
 function isActive(tabPath: string): boolean {
   if (tabPath === "/") {

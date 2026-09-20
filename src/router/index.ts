@@ -50,6 +50,13 @@ const router = createRouter({
       name: "reports",
       component: () => import("@/views/ReportsPage.vue"),
     },
+    // AI 聊天：**不带 `hideTab`** —— tab 的显隐由 `App.vue` 按 `aiChat.enabled` 过滤，
+    // 不在路由上再钉一次（两处判据会让"tab 隐藏但路由可直达"变成可能）。
+    {
+      path: "/ai",
+      name: "ai",
+      component: () => import("@/views/AiChatPage.vue"),
+    },
     {
       path: "/me",
       name: "me",

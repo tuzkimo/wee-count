@@ -78,7 +78,7 @@ function resetForNewDraft(): void {
   error.value = "";
 }
 
-// 同实例换草稿（页面没给 `:key`）⇒ 自清。用 `watch` 的默认 deep-ish 行为：
+// 同实例换草稿（页面没给 `:key`）⇒ 自清。`watch(() => props.draft)` 默认按**引用比较**（不 deep）：
 // `props.draft` 是父级直接传下来的**新对象**（payload 反序列化出来的），引用一变就触发。
 watch(() => props.draft, resetForNewDraft);
 
