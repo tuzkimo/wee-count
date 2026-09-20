@@ -453,9 +453,13 @@ export const useAiChatStore = defineStore("aiChat", () => {
   /**
    * 把一条草稿移出"待确认"。**确认与撤销都调它**。
    *
-   * 本 store 不落库：真记账是 UI 走 `transactionStore.add`（既有流程，含 `round2` 与必填校验），
-   * 撤销走 `remove`。在这里写库会让"AI 只能只读 + 新增草稿（经用户确认）"这条权限边界多出一个
-   * 绕开校验的写入口。
+   * 本 store 不落库：真记账是 UI 走 `transactionStore.add`，撤销走 `remove`。在这里写库会让
+   * "AI 只能只读 + 新增草稿（经用户确认）"这条权限边界多出一个绕开校验的写入口。
+   *
+   * ⚠️ 那句"既有流程，含 `round2` 与必填校验"**是错的**（Ruling 41）：`transactionStore.add`
+   * （`transaction.ts:261-311`）**既不做金额变换、也不做任何必填校验**，缺 id 会**静默**写进去。
+   * 两条规则的真实归属：`round2` 由 `tools.ts:778` 生成草稿时做（内联编辑那条路改由
+   * `draftData.parseEditedAmount` 做），必填校验由 `draftData.validateDraft` 在**确认前**做。
    */
   function dismissDraft(draftId: string): void {
     pendingDrafts.value = pendingDrafts.value.filter((d) => d.draftId !== draftId);

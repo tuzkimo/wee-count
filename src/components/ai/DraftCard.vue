@@ -15,6 +15,8 @@
 //
 // 与记账页的一处**刻意**差异：**不**再调 `round2` —— `tools.ts:778` 生成草稿时已经 `round2` 过，
 // `transactionStore.add` 也不做金额变换 ⇒ 这里再 round 一次是**等价冗余**（不是防线）。
+// ⚠️ 内联编辑**改了**这条：编辑区是**用户输入**，进来的是任意字符串 ⇒ `applyDraftEdit` 里
+// 必须 `round2`（§4.4:162 / §10.7 点名复用 `utils/transaction.ts` 的规则），这不是冗余。
 //
 // ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面**只监听它**
 // 做 `dismissDraft`。曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把
@@ -28,14 +30,21 @@
 // ⚠️ **`props.draft` 一变就自清**（`watch`）：卡片每次代表**一条**草稿，而同实例被复用时
 // （页面换 `draft`、不换 `:key`）`savedId` 会指向**上一笔** ⇒ 用户点「撤销」删掉的是**旧账**。
 // 卡内自清 + 6c 按 `draftId` 加 `:key`，两边都做（复审 ③-2）。
-import { ref, watch } from "vue";
-import { Check, Undo2, X } from "lucide-vue-next";
+import { computed, ref, watch } from "vue";
+import { Check, Pencil, Undo2, X } from "lucide-vue-next";
 import { useTransactionStore } from "@/stores/transaction";
 import { useLedgerStore } from "@/stores/ledger";
+import { useAccountStore } from "@/stores/account";
+import { useCategoryStore } from "@/stores/category";
 import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
 import { useAmountMask } from "@/composables/useAmountMask";
-import { buildDraftData, validateDraft } from "@/components/ai/draftData";
+import {
+  applyDraftEdit,
+  buildDraftData,
+  validateDraft,
+  type DraftEditForm,
+} from "@/components/ai/draftData";
 import type { AiDraftFields, AiDraftIds } from "@/stores/aiChat";
 
 const props = defineProps<{
@@ -52,6 +61,8 @@ const emit = defineEmits<{
 
 const transactionStore = useTransactionStore();
 const ledgerStore = useLedgerStore();
+const accountStore = useAccountStore();
+const categoryStore = useCategoryStore();
 const auth = useAuthStore();
 const { maskCurrency } = useAmountMask();
 
@@ -65,11 +76,66 @@ const state = ref<"pending" | "saving" | "saved" | "undoing">("pending");
 const savedId = ref("");
 const error = ref("");
 
+/**
+ * 内联编辑的**本地覆盖**（§4.4:162）。`null` = 用户还没改过 ⇒ 一律读 props。
+ *
+ * 为什么不是"把 props 拷一份进 ref"：那样 `resolved` 单独变化（页面换草稿、`readDrafts` 重产）
+ * 就再也进不来，而"没编辑过的卡必须跟着 props 走"是这张卡本来的行为。
+ * 也不用把编辑写回 store：`pendingDrafts` 是草稿的唯一真相，多一个可变点没有规格依据
+ * （`§4.4` 只要求"卡上能改"）；代价是**实例销毁即丢**（页面按 `draftId` 给了 `:key`，
+ * 同账本内新消息不重建它，`load()`/切账本会）。
+ */
+const editedFields = ref<AiDraftFields | null>(null);
+const editedIds = ref<AiDraftIds | null>(null);
+/** 编辑区开着（只可能出现在 `pending`） */
+const editing = ref(false);
+/** 编辑区当前的表单值（字符串，由 `<input>` / `<select>` 直接 v-model） */
+const form = ref<DraftEditForm>({
+  amount: "",
+  categoryId: null,
+  fromAccountId: null,
+  toAccountId: null,
+  occurredAt: "",
+  note: "",
+});
+
+/** 这张卡**当前**代表的草稿：用户改过就是改后的，否则就是 props（唯一真相仍是 props/store） */
+const fields = computed<AiDraftFields>(() => editedFields.value ?? props.draft);
+const ids = computed<AiDraftIds>(() => editedIds.value ?? props.resolved);
+
 const TYPE_LABEL: Record<AiDraftFields["type"], string> = {
   expense: "支出",
   income: "收入",
   transfer: "转账",
 };
+
+/** 支出/转账要转出账户；收入/转账要转入账户（与 `buildDraftData` 的两个三元同一判据） */
+const needFrom = computed(() => fields.value.type !== "income");
+const needTo = computed(() => fields.value.type !== "expense");
+
+/**
+ * 分类候选：照 `useTransactionForm.filteredCategories:39-41`（只按 `type` 过滤）。
+ * `categoryStore.categories` 自己已经排除软删行，这里不重复判。
+ */
+const categoryOptions = computed(() =>
+  categoryStore.categories.filter((c) => c.type === fields.value.type),
+);
+
+/**
+ * 账户候选：照 `useTransactionForm.availableAccounts:48-54`（排除软删；团队账本只给自己名下的账户）。
+ * ⚠️ 这两行是那条规则的**第二份**写法，改一处必须改另一处；不复用 composable 是因为它
+ * `useRoute()`（记账页的路由形态），草稿卡要能在没有 router 的组件测试里挂起来。
+ */
+const currentUserId = computed(
+  () => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "",
+);
+const accountOptions = computed(() =>
+  accountStore.accounts.filter((a) => {
+    if (a.is_deleted) return false;
+    if (ledgerStore.currentLedger?.type === "team" && a.owner_id !== currentUserId.value) return false;
+    return true;
+  }),
+);
 
 /** 清掉"上一笔"的状态：换草稿时调，别让 `savedId` 指着别人的账 */
 function resetForNewDraft(): void {
@@ -80,7 +146,53 @@ function resetForNewDraft(): void {
 
 // 同一个实例换草稿（**若**页面没给 `:key` —— 今天的生产路径按 `draftId` 给了）⇒ 自清。`watch(() => props.draft)` 默认按**引用比较**（不 deep）：
 // `props.draft` 是父级直接传下来的**新对象**（payload 反序列化出来的），引用一变就触发。
-watch(() => props.draft, resetForNewDraft);
+watch(() => props.draft, () => {
+  resetForNewDraft();
+  // 换草稿连编辑缓冲一起丢：留着就成"这张卡显示 A、确认时写 B"
+  editedFields.value = null;
+  editedIds.value = null;
+  editing.value = false;
+});
+
+/** 打开编辑区：从**当前**草稿播种表单（改过就是改后的值，没改过就是 props） */
+function onStartEdit(): void {
+  error.value = "";
+  form.value = {
+    amount: String(fields.value.amount),
+    categoryId: ids.value.categoryId,
+    fromAccountId: ids.value.fromAccountId,
+    toAccountId: ids.value.toAccountId,
+    occurredAt: fields.value.occurredAt,
+    note: fields.value.note ?? "",
+  };
+  editing.value = true;
+}
+
+function onCancelEdit(): void {
+  editing.value = false;
+  error.value = "";
+}
+
+/** 保存编辑：校验全在 `applyDraftEdit`（纯函数，复用 `utils/transaction.ts` 的规则 + `round2`） */
+function onSaveEdit(): void {
+  const name = (list: { id: string; name: string }[], id: string | null): string | null =>
+    id === null ? null : (list.find((it) => it.id === id)?.name ?? null);
+
+  const result = applyDraftEdit(fields.value, ids.value, form.value, {
+    category: name(categoryOptions.value, form.value.categoryId),
+    fromAccount: name(accountOptions.value, form.value.fromAccountId),
+    toAccount: name(accountOptions.value, form.value.toAccountId),
+  });
+  if (!result.ok) {
+    // 校验没过就**留在编辑区**：收起表单等于把用户刚敲的东西藏起来，而他只看到一句错误
+    error.value = result.error;
+    return;
+  }
+  editedFields.value = result.draft;
+  editedIds.value = result.resolved;
+  editing.value = false;
+  error.value = "";
+}
 
 function onConfirm(): void {
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -88,7 +200,8 @@ function onConfirm(): void {
     error.value = "没有可用的账本";
     return;
   }
-  const invalid = validateDraft(props.draft, props.resolved);
+  // ⚠️ 用 `fields`/`ids`（可能是编辑后的），不是 props —— 内联编辑的意义就在这里
+  const invalid = validateDraft(fields.value, ids.value);
   if (invalid !== "") {
     error.value = invalid;
     return;
@@ -105,7 +218,7 @@ function onConfirm(): void {
     try {
       // ⚠️ 返回值**必须接着**：它就是撤销要用的 id
       const transactionId = await transactionStore.add(
-        buildDraftData(props.draft, props.resolved, ledgerId, userId),
+        buildDraftData(fields.value, ids.value, ledgerId, userId),
       );
       savedId.value = transactionId;
       state.value = "saved";
@@ -158,34 +271,125 @@ function onReject(): void {
   >
     <p class="mb-2 text-xs text-text-secondary">待确认的记账</p>
     <p class="text-sm font-medium text-text">
-      {{ TYPE_LABEL[draft.type] }} {{ maskCurrency(draft.amount) }}
+      {{ TYPE_LABEL[fields.type] }} {{ maskCurrency(fields.amount) }}
     </p>
-    <dl class="mt-1 space-y-0.5 text-xs text-text-secondary">
-      <div v-if="draft.category" class="flex gap-1">
+
+    <!-- 编辑区（§4.4:162）：只列规格点名的五个字段，type / tags 不给改 -->
+    <div v-if="editing" class="mt-1 space-y-1.5 text-xs" data-test="draft-edit-form">
+      <label class="flex items-center gap-2">
+        <span class="w-10 shrink-0 text-text-secondary">金额</span>
+        <input
+          v-model="form.amount"
+          type="text"
+          inputmode="decimal"
+          placeholder="0.00"
+          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
+          data-test="draft-edit-amount"
+        />
+      </label>
+      <label v-if="fields.type !== 'transfer'" class="flex items-center gap-2">
+        <span class="w-10 shrink-0 text-text-secondary">分类</span>
+        <select
+          v-model="form.categoryId"
+          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
+          data-test="draft-edit-category"
+        >
+          <option :value="null">请选择分类</option>
+          <option v-for="c in categoryOptions" :key="c.id" :value="c.id">{{ c.name }}</option>
+        </select>
+      </label>
+      <label v-if="needFrom" class="flex items-center gap-2">
+        <span class="w-10 shrink-0 text-text-secondary">转出</span>
+        <select
+          v-model="form.fromAccountId"
+          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
+          data-test="draft-edit-from"
+        >
+          <option :value="null">请选择账户</option>
+          <option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
+      </label>
+      <label v-if="needTo" class="flex items-center gap-2">
+        <span class="w-10 shrink-0 text-text-secondary">转入</span>
+        <select
+          v-model="form.toAccountId"
+          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
+          data-test="draft-edit-to"
+        >
+          <option :value="null">请选择账户</option>
+          <option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2">
+        <span class="w-10 shrink-0 text-text-secondary">时间</span>
+        <input
+          v-model="form.occurredAt"
+          type="datetime-local"
+          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
+          data-test="draft-edit-occurred-at"
+        />
+      </label>
+      <label class="flex items-center gap-2">
+        <span class="w-10 shrink-0 text-text-secondary">备注</span>
+        <input
+          v-model="form.note"
+          type="text"
+          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
+          data-test="draft-edit-note"
+        />
+      </label>
+    </div>
+
+    <dl v-else class="mt-1 space-y-0.5 text-xs text-text-secondary">
+      <div v-if="fields.category" class="flex gap-1">
         <dt>分类</dt>
-        <dd data-test="draft-category">{{ draft.category }}</dd>
+        <dd data-test="draft-category">{{ fields.category }}</dd>
       </div>
-      <div v-if="draft.fromAccount" class="flex gap-1">
+      <div v-if="fields.fromAccount" class="flex gap-1">
         <dt>转出</dt>
-        <dd data-test="draft-from">{{ draft.fromAccount }}</dd>
+        <dd data-test="draft-from">{{ fields.fromAccount }}</dd>
       </div>
-      <div v-if="draft.toAccount" class="flex gap-1">
+      <div v-if="fields.toAccount" class="flex gap-1">
         <dt>转入</dt>
-        <dd data-test="draft-to">{{ draft.toAccount }}</dd>
+        <dd data-test="draft-to">{{ fields.toAccount }}</dd>
       </div>
       <div class="flex gap-1">
         <dt>日期</dt>
-        <dd data-test="draft-occurred-at">{{ draft.occurredAt }}</dd>
+        <dd data-test="draft-occurred-at">{{ fields.occurredAt }}</dd>
       </div>
-      <div v-if="draft.note" class="flex gap-1">
+      <div v-if="fields.note" class="flex gap-1">
         <dt>备注</dt>
-        <dd data-test="draft-note">{{ draft.note }}</dd>
+        <dd data-test="draft-note">{{ fields.note }}</dd>
       </div>
     </dl>
     <p v-if="error" class="mt-2 text-xs text-red-500" data-test="draft-error">{{ error }}</p>
 
+    <!-- 编辑中：确认/不要 收起，换成 保存/取消（不验收就等于没改） -->
+    <div v-if="editing" class="mt-3 flex gap-2">
+      <button
+        type="button"
+        class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary py-2 text-sm text-white"
+        data-test="draft-edit-save"
+        @click="onSaveEdit"
+      >
+        <Check :size="16" />保存修改
+      </button>
+      <button
+        type="button"
+        class="flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-4 py-2 text-sm text-text-secondary"
+        data-test="draft-edit-cancel"
+        @click="onCancelEdit"
+      >
+        <X :size="16" />取消
+      </button>
+    </div>
+
     <!-- 已记账（含撤销在途）：确认/不要 换成 已记账 ✓ + 撤销（§4.4） -->
-    <div v-if="state === 'saved' || state === 'undoing'" class="mt-3 flex gap-2" data-test="draft-saved">
+    <div
+      v-else-if="state === 'saved' || state === 'undoing'"
+      class="mt-3 flex gap-2"
+      data-test="draft-saved"
+    >
       <p class="flex flex-1 items-center gap-1 text-sm text-text" data-test="draft-saved-text">
         <Check :size="16" class="text-income" />已记账
       </p>
@@ -200,6 +404,15 @@ function onReject(): void {
       </button>
     </div>
     <div v-else class="mt-3 flex gap-2">
+      <button
+        type="button"
+        class="flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-text-secondary disabled:opacity-50"
+        :disabled="state === 'saving'"
+        data-test="draft-edit"
+        @click="onStartEdit"
+      >
+        <Pencil :size="16" />修改
+      </button>
       <button
         type="button"
         class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary py-2 text-sm text-white disabled:opacity-50"
