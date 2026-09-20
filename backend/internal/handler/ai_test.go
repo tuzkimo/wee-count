@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -206,5 +208,41 @@ func TestAIHandler_Status(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "sk-secret") {
 		t.Error("**key 泄漏进了 /ai/status 响应**")
+	}
+}
+
+// aiErrorStatus 的错误码 → HTTP 状态映射（规格 §6.6），7 个码全部过一遍。
+// 直接对包级函数做表驱动、不走 HTTP：这样每个分支都有覆盖，尤其是 ai_quota_exceeded
+// —— 它由限流中间件产出、正常路径到不了 handler，若没有专门分支就会掉进 default
+// 被映成 502 ai_unreachable（"服务不可用"是错的文案，用户该看到"今日次数已用完"）。
+func TestAIErrorStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantCode   string
+		wantStatus int
+	}{
+		{"未配置 key", &service.AIError{Code: service.AICodeDisabled}, service.AICodeDisabled, http.StatusServiceUnavailable},
+		{"不可达", &service.AIError{Code: service.AICodeUnreachable}, service.AICodeUnreachable, http.StatusBadGateway},
+		{"上游鉴权失败", &service.AIError{Code: service.AICodeUpstreamAuth, Upstream: 401}, service.AICodeUpstreamAuth, http.StatusBadGateway},
+		{"上游超时", &service.AIError{Code: service.AICodeUpstreamTimeout}, service.AICodeUpstreamTimeout, http.StatusGatewayTimeout},
+		{"上游其它错误", &service.AIError{Code: service.AICodeUpstreamError, Upstream: 400}, service.AICodeUpstreamError, http.StatusBadGateway},
+		{"分钟级限流", &service.AIError{Code: service.AICodeRateLimited}, service.AICodeRateLimited, http.StatusTooManyRequests},
+		{"日配额用尽", &service.AIError{Code: service.AICodeQuotaExceeded}, service.AICodeQuotaExceeded, http.StatusTooManyRequests},
+		{"未知错误码", &service.AIError{Code: "ai_bogus"}, service.AICodeUnreachable, http.StatusBadGateway},
+		{"非 AIError", errors.New("boom"), service.AICodeUnreachable, http.StatusBadGateway},
+		// 被包装的 *AIError 也必须认出来（errors.As 而非类型断言）：
+		// service 侧一旦改成 fmt.Errorf("...: %w") 包装，这条就会响。
+		{"被包装的 AIError", fmt.Errorf("wrap: %w", &service.AIError{Code: service.AICodeQuotaExceeded}),
+			service.AICodeQuotaExceeded, http.StatusTooManyRequests},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, status := aiErrorStatus(c.err)
+			if code != c.wantCode || status != c.wantStatus {
+				t.Errorf("aiErrorStatus(%v) = (%q, %d), want (%q, %d)",
+					c.err, code, status, c.wantCode, c.wantStatus)
+			}
+		})
 	}
 }

@@ -87,6 +87,11 @@ func aiErrorStatus(err error) (string, int) {
 		return aiErr.Code, http.StatusBadGateway
 	case service.AICodeRateLimited:
 		return aiErr.Code, http.StatusTooManyRequests
+	case service.AICodeQuotaExceeded:
+		// 今天该码由限流中间件产出、正常路径到不了 handler；但没有这个分支时
+		// 它会掉进 default 被映成 502 ai_unreachable（"服务不可用"是错的文案，
+		// 用户该看到的是"今日 AI 次数已用完"）。
+		return aiErr.Code, http.StatusTooManyRequests
 	case service.AICodeUpstreamTimeout:
 		return aiErr.Code, http.StatusGatewayTimeout
 	default:
