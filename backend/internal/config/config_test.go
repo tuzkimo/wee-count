@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -299,8 +300,9 @@ func TestAIHost(t *testing.T) {
 		{"带端口", "http://127.0.0.1:8081/v1", "127.0.0.1:8081"},
 		{"非 URL", "not a url", ""},
 		{"空串", "", ""},
-		// 「未闭合 IPv6」是这张表里唯一能让 url.Parse 真的返回 err != nil 的输入
-		// （"not a url" 是合法的相对 URL 引用，err 为 nil、Host 为空）。
+		// 「未闭合 IPv6」是**本表内唯一**能让 url.Parse 真的返回 err != nil 的输入
+		// （"not a url" 是合法的相对 URL 引用，err 为 nil、Host 为空；本表之外
+		// "://"、"http://a b.com/v1"、"x/%" 等同样会报错，所以"唯一"只对本表成立）。
 		// 关于 AIHost 里 `err != nil || u.Host == ""` 这个判断，事实是：
 		// `u.Host == ""` 这半句在**输出**上不可观测——它触发时 u.Host 本来就是 ""，
 		// 与走 err 分支的返回完全相同，所以删掉它任何用例都抓不住（不是覆盖不足）。
@@ -398,59 +400,124 @@ func TestCompose_AIVarsUseEmptyDefault(t *testing.T) {
 	}
 }
 
-// .env.example 的 AI 段必须齐全，否则运维不知道有这些开关可配。
-// 只在注释里提到变量名不算数——所以这里逐行找 `VAR=` 赋值行，而不是对整份文件做 Contains。
-func TestEnvExample_AISectionPresent(t *testing.T) {
+// envExampleText 读取并归一化 .env.example：去掉 CRLF，让断言与仓库的行尾策略无关。
+func envExampleText(t *testing.T) string {
+	t.Helper()
 	raw, err := os.ReadFile("../../.env.example")
 	if err != nil {
 		t.Fatalf("读取 .env.example 失败: %v", err)
 	}
-	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	return strings.ReplaceAll(string(raw), "\r\n", "\n")
+}
 
-	for _, v := range aiEnvVars {
-		if !envExampleHasAssignment(text, v) {
-			t.Errorf(".env.example 缺少 %s= 赋值行（只在注释里提到不算）", v)
+// envExampleValues 取出 .env.example 里某个变量的**全部**生效赋值行（注释行不算）。
+// 取全部而不是第一条：dotenv 里后写的赋值会覆盖先写的，只看第一条会漏掉
+// "前面留空、末尾又追加一条真值"这种形态。
+// 值会剥掉一层成对引号（dotenv 允许 AI_MODEL="x"），否则会对合法写法假红。
+func envExampleValues(text, name string) []string {
+	var vals []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, name+"=") {
+			continue
 		}
+		v := strings.TrimSpace(strings.TrimPrefix(line, name+"="))
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
+		vals = append(vals, v)
+	}
+	return vals
+}
+
+// requireEnvExample 取某个变量的赋值行，并在"一行都没有"时直接记为失败：
+// 守卫不能因为变量不存在就静默跳过——那就是零次执行的空转。
+func requireEnvExample(t *testing.T, text, name string) []string {
+	t.Helper()
+	vals := envExampleValues(text, name)
+	if len(vals) == 0 {
+		t.Errorf(".env.example 缺少 %s= 赋值行（只在注释里提到不算）", name)
+	}
+	return vals
+}
+
+// .env.example 的 AI 段必须齐全，否则运维不知道有这些开关可配。
+// 只在注释里提到变量名不算数——所以这里逐行找 `VAR=` 赋值行，而不是对整份文件做 Contains。
+func TestEnvExample_AISectionPresent(t *testing.T) {
+	text := envExampleText(t)
+	for _, v := range aiEnvVars {
+		requireEnvExample(t, text, v)
 	}
 }
 
 // AI_API_KEY 必须留空：它是唯一开关，填了样例值会让人以为"必须填"，
 // 更糟的是模板里出现形似密钥的串，会被误当成真 key 提交。
 func TestEnvExample_AIKeyIsEmpty(t *testing.T) {
-	raw, err := os.ReadFile("../../.env.example")
-	if err != nil {
-		t.Fatalf("读取 .env.example 失败: %v", err)
-	}
-	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
-
-	found := false
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "AI_API_KEY=") {
-			continue
-		}
-		found = true
-		if got := strings.TrimSpace(strings.TrimPrefix(line, "AI_API_KEY=")); got != "" {
+	text := envExampleText(t)
+	// 逐条检查（而不是只看第一条）：末尾追加一条真值同样要被抓住。
+	for _, got := range requireEnvExample(t, text, "AI_API_KEY") {
+		if got != "" {
 			t.Errorf("AI_API_KEY 在 .env.example 里必须留空，实际: %q", got)
 		}
 	}
-	// 没有赋值行时上面循环一次都不执行。不钉住这一点，把整段 AI 配置删掉后这条用例
-	// 依然"绿"——只要注释里还留着 AI_API_KEY 这几个字。
-	if !found {
-		t.Error(".env.example 里没有 AI_API_KEY= 赋值行（只在注释里提到不算）")
-	}
 }
 
-// envExampleHasAssignment 报告 .env.example 里是否存在生效的 `VAR=` 赋值行（注释行不算）。
-func envExampleHasAssignment(text, name string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, name+"=") {
-			return true
+// 模板里的默认值必须与 config.go 的 defaultAI* 常量（config.go:34-39）互等。
+// 只钉"变量存在且形式正确"是钉不住"值一致"的：改一处、忘了另一处，
+// 模板（以及照抄它的 SELF-HOSTING 文档）就会**静默说谎**，而没有任何东西会响。
+//
+// 只比 .env.example，因为它能被精确解析。**不解析 SELF-HOSTING.md 的散文/表格**：
+// 断言措辞会在"换了词但事实没变"时假红、"事实变了但用词没变"时假绿，是典型的脆弱守卫；
+// 文档那侧靠人工核对（本轮 6 处改动逐条记了依据行号）。
+//
+// AI_API_KEY 的空值这里也断一次，与 TestEnvExample_AIKeyIsEmpty 重叠是有意的：
+// 两条用例各自能回答"改哪一行让它红"，互不依赖（那条讲安全属性，这条讲"等于代码默认值"）。
+func TestEnvExample_AIDefaultsMatchConfig(t *testing.T) {
+	text := envExampleText(t)
+
+	// 字符串型
+	for _, c := range []struct{ name, want string }{
+		{"AI_API_KEY", ""},
+		{"AI_BASE_URL", defaultAIBaseURL},
+		{"AI_MODEL", defaultAIModel},
+	} {
+		for _, got := range requireEnvExample(t, text, c.name) {
+			if got != c.want {
+				t.Errorf(".env.example 的 %s=%q 与 config.go 的默认值 %q 不一致", c.name, got, c.want)
+			}
 		}
 	}
-	return false
+
+	// 整数型
+	for _, c := range []struct {
+		name string
+		want int
+	}{
+		{"AI_MAX_TOKENS", defaultAIMaxTokens},
+		{"AI_RATE_LIMIT", defaultAIRateLimit},
+		{"AI_DAILY_LIMIT", defaultAIDailyLimit},
+	} {
+		for _, raw := range requireEnvExample(t, text, c.name) {
+			got, err := strconv.Atoi(raw)
+			if err != nil {
+				t.Errorf(".env.example 的 %s=%q 不是整数: %v", c.name, raw, err)
+				continue
+			}
+			if got != c.want {
+				t.Errorf(".env.example 的 %s=%d 与 config.go 的默认值 %d 不一致", c.name, got, c.want)
+			}
+		}
+	}
+
+	// duration 型：不能按字面比（60s 的 Duration.String() 是 "1m0s"），解析后比。
+	for _, raw := range requireEnvExample(t, text, "AI_TIMEOUT") {
+		got, err := time.ParseDuration(raw)
+		if err != nil {
+			t.Errorf(".env.example 的 AI_TIMEOUT=%q 不是合法 duration: %v", raw, err)
+			continue
+		}
+		if got != defaultAITimeout {
+			t.Errorf(".env.example 的 AI_TIMEOUT=%s 与 config.go 的默认值 %s 不一致", got, defaultAITimeout)
+		}
+	}
 }

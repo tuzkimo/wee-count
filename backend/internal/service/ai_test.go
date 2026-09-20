@@ -335,6 +335,33 @@ func TestAIService_Chat_NoChoices(t *testing.T) {
 	assertAICode(t, err, AICodeUpstreamError)
 }
 
+// 规格 §6.4：从上游最多读 1MB（maxUpstreamBodyBytes）。上游异常时完全可能返回巨型 body，
+// 不设限就等于把内存交给对方。这条用例的判别力来自**截断**，不是"大小"本身：
+// 假上游返回一份**合法但 2MB** 的 completion，两种实现的落点分别是——
+// 有 LimitReader：读到 1MB 就断，JSON 中途截断 ⇒ json 解析失败 ⇒ ai_upstream_error（现在绿）；
+// 删掉 LimitReader：整份 2MB 都能解出来 ⇒ 我们返回成功（本条红）。
+// 两条路径的差别是"报错 vs 成功"，不是错误码不同，所以第一断言必须落在 err == nil 上。
+func TestAIService_Chat_UpstreamBodyTooLarge(t *testing.T) {
+	// 2MB 的合法 completion：text 本身就超过 1MB 上限。
+	body := `{"choices":[{"message":{"content":"` + strings.Repeat("x", 2<<20) +
+		`"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	// 先钉住前提：这份响应**确实**超过上限，否则本用例什么都证明不了。
+	if int64(len(body)) <= maxUpstreamBodyBytes {
+		t.Fatalf("前提不成立：假上游响应只有 %d 字节，未超过上限 %d", len(body), maxUpstreamBodyBytes)
+	}
+	srv, _ := newFakeUpstream(t, 200, body)
+	svc := newTestAIService(t, srv.URL, 5*time.Second)
+
+	got, err := svc.Chat(context.Background(), AIChatRequest{
+		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatalf("上游响应 %d 字节（超过上限 %d）时必须报错，实际成功解出 %d 字节文本",
+			len(body), maxUpstreamBodyBytes, len(got.Text))
+	}
+	assertAICode(t, err, AICodeUpstreamError)
+}
+
 // key 为空 = 功能禁用（规格 §6.2）：连一个字节都不该发出去。
 func TestAIService_Chat_DisabledSendsNothing(t *testing.T) {
 	srv, rec := newFakeUpstream(t, 200, `{}`)
