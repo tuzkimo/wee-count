@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -94,7 +97,11 @@ func TestAIService_Chat_TextOnly(t *testing.T) {
 	}
 }
 
-// 归一化：tool_calls 原样穿过，且落在客户端契约的字段名上。
+// 归一化：tool_calls 从**上游嵌套形状**映射到**客户端扁平契约**（规格 §6.1:311-314）。
+// 断言口径与本轮之前完全一致（id/名称/arguments 三项都要对），只是字段路径变了：
+// 上游的 `function.name` → 契约的 `name`。`type` 在契约里不存在，故不再断言它，
+// 取而代之的是下面的 TestAIService_Chat_ResponseJSONIsFlat（那条看真实 JSON 键名，
+// 才是"上游形状有没有漏给客户端"的哨兵）。
 func TestAIService_Chat_ToolCalls(t *testing.T) {
 	srv, _ := newFakeUpstream(t, 200, `{
 		"choices":[{"message":{"role":"assistant","content":"",
@@ -115,13 +122,203 @@ func TestAIService_Chat_ToolCalls(t *testing.T) {
 		t.Fatalf("ToolCalls 长度 = %d, want 1", len(got.ToolCalls))
 	}
 	tc := got.ToolCalls[0]
-	if tc.ID != "call_1" || tc.Type != "function" ||
-		tc.Function.Name != "query_transactions" ||
-		tc.Function.Arguments != `{"aggregate":"sum"}` {
+	if tc.ID != "call_1" ||
+		tc.Name != "query_transactions" ||
+		tc.Arguments != `{"aggregate":"sum"}` {
 		t.Errorf("tool_call 归一化错误: %+v", tc)
 	}
 	if got.FinishReason != "tool_calls" {
 		t.Errorf("FinishReason = %q, want tool_calls", got.FinishReason)
+	}
+}
+
+// ★ 契约哨兵（出向）：断言**真实 JSON 的键名**，不是 Go 结构体字段。
+//
+// 为什么必须有这一条：`AIChatResponse`/`AIToolCall` 曾同时被用在两侧，而当时它的
+// json tag 是上游的嵌套形状 `{id,type,function:{name,arguments}}` ——
+// service 用例断言 `tc.Function.Name`、handler 用例再反序列化回同一个结构体，
+// **两边互相印证、却都与规格 §6.1:322 的扁平契约不符**。没有一条用例看对外 JSON 时，
+// "上游字段名漏给客户端"是不可见的。这条把口径钉在**序列化后的字节**上：
+//   - `name` / `arguments` 必须是 tool_call 的**直接**字段（扁平）；
+//   - **不得出现** `function` 包装层、不得出现上游的 `type`。
+//
+// 判别力来源：断言的是 `maps.Keys` 得到的键集合本身。把 AIToolCall 改回嵌套形状
+// ⇒ 键集合变成 {function,id,type} ⇒ 本条第一句就红（实测见提交说明）。
+func TestAIService_Chat_ResponseJSONIsFlat(t *testing.T) {
+	srv, _ := newFakeUpstream(t, 200, `{
+		"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+			{"id":"call_1","type":"function",
+			 "function":{"name":"query_transactions","arguments":"{\"aggregate\":\"sum\"}"}}]},
+			"finish_reason":"tool_calls"}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+	}`)
+	svc := newTestAIService(t, srv.URL, 5*time.Second)
+
+	got, err := svc.Chat(context.Background(), AIChatRequest{
+		Messages: []AIMessage{{Role: "user", Content: "今年花了多少"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	// 先钉住前提：确实有一个 tool_call 被下发了，否则下面的键名断言会空转。
+	if len(got.ToolCalls) != 1 {
+		t.Fatalf("前提不成立：ToolCalls 长度 = %d, want 1；实际 JSON: %s", len(got.ToolCalls), raw)
+	}
+
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	arr, ok := wire["tool_calls"].([]any)
+	if !ok || len(arr) != 1 {
+		t.Fatalf("tool_calls 不是长度为 1 的数组: %#v（实际 JSON: %s）", wire["tool_calls"], raw)
+	}
+	item, ok := arr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_calls[0] 不是对象: %#v", arr[0])
+	}
+
+	// ★ 核心断言：JSON 的键集合**恰好**是这三个。多一个 `function` 就是上游形状泄漏。
+	want := []string{"arguments", "id", "name"}
+	gotKeys := slices.Sorted(maps.Keys(item))
+	if !slices.Equal(gotKeys, want) {
+		t.Errorf("tool_calls[0] 的 JSON 键 = %v, want %v（规格 §6.1:322 是扁平形状："+
+			"多出 function/type 说明下发的是上游形状）；实际 JSON: %s", gotKeys, want, raw)
+	}
+	if item["name"] != "query_transactions" {
+		t.Errorf("tool_calls[0].name = %#v, want %q（实际 JSON: %s）", item["name"], "query_transactions", raw)
+	}
+	if item["arguments"] != `{"aggregate":"sum"}` {
+		t.Errorf("tool_calls[0].arguments = %#v, want %q（实际 JSON: %s）",
+			item["arguments"], `{"aggregate":"sum"}`, raw)
+	}
+	// 冗余但便宜：`type` 只存在于上游协议里，契约里没有它。
+	if _, exists := item["function"]; exists {
+		t.Errorf("tool_calls[0] 里出现了上游的 function 包装层；实际 JSON: %s", raw)
+	}
+	if _, exists := item["type"]; exists {
+		t.Errorf("tool_calls[0] 里出现了上游的 type 字段；实际 JSON: %s", raw)
+	}
+}
+
+// ★ 契约哨兵（入向）：假上游**捕获原始请求体**，断言发出去的是**上游嵌套形状**。
+//
+// 场景就是工具循环本身：客户端把上一轮收到的 tool_calls **原样回传**（规格 §5.2 第 4b 步），
+// 即线格式里的扁平 `{id, name, arguments}`。后端必须把它转成上游要的
+// `{id, type:"function", function:{name, arguments}}` —— 不转换就等于把扁平形状发给供应商，
+// 供应商解析不出 function.name ⇒ 400（M3 一开工就会撞上）。
+//
+// 判别力来源：断言的是**上游收到的原始字节**解析出来的结构。
+// 把入向转换去掉（`Messages: req.Messages` 原样透传）⇒ `type` 与 `function` 双双缺失 ⇒ 红。
+func TestAIService_Chat_RequestToolCallsAreNested(t *testing.T) {
+	srv, rec := newFakeUpstream(t, 200,
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	svc := newTestAIService(t, srv.URL, 5*time.Second)
+
+	// 客户端回传的 assistant 消息 + 工具结果：这就是第二轮的输入形状。
+	_, err := svc.Chat(context.Background(), AIChatRequest{
+		Messages: []AIMessage{
+			{Role: "user", Content: "今年花了多少"},
+			{Role: "assistant", ToolCalls: []AIToolCall{{
+				ID:        "call_1",
+				Name:      "query_transactions",
+				Arguments: `{"aggregate":"sum"}`,
+			}}},
+			{Role: "tool", ToolCallID: "call_1", Content: `{"sum":1234}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	calls, _, _, body := rec.snapshot()
+	if calls != 1 {
+		t.Fatalf("前提不成立：上游应被调用 1 次，实际 %d（body=%s）", calls, body)
+	}
+
+	var sent struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string          `json:"id"`
+				Type     string          `json:"type"`
+				Function json.RawMessage `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatalf("上游请求体不是合法 JSON: %v；实际: %s", err, body)
+	}
+	if len(sent.Messages) != 3 {
+		t.Fatalf("上游应收到 3 条 messages，实际 %d；实际: %s", len(sent.Messages), body)
+	}
+	assistant := sent.Messages[1]
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("上游收到的 assistant.tool_calls 长度 = %d, want 1；实际: %s",
+			len(assistant.ToolCalls), body)
+	}
+	tc := assistant.ToolCalls[0]
+
+	// ★ 核心断言：上游形状是嵌套的，且带 `type:"function"`。
+	if tc.Type != "function" {
+		t.Errorf("上游 tool_calls[0].type = %q, want %q（上游协议要求这个字段）；实际: %s",
+			tc.Type, "function", body)
+	}
+	if len(tc.Function) == 0 {
+		t.Fatalf("上游 tool_calls[0] 缺少 function 包装层（function.name 会解析不出来 ⇒ 上游 400）；实际: %s", body)
+	}
+	var fn struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	if err := json.Unmarshal(tc.Function, &fn); err != nil {
+		t.Fatalf("function 不是合法 JSON: %v；实际: %s", err, tc.Function)
+	}
+	if fn.Name != "query_transactions" {
+		t.Errorf("上游 function.name = %q, want %q；实际: %s", fn.Name, "query_transactions", body)
+	}
+	if fn.Arguments != `{"aggregate":"sum"}` {
+		t.Errorf("上游 function.arguments = %q, want %q；实际: %s",
+			fn.Arguments, `{"aggregate":"sum"}`, body)
+	}
+	if tc.ID != "call_1" {
+		t.Errorf("上游 tool_calls[0].id = %q, want call_1；实际: %s", tc.ID, body)
+	}
+	// 第三条消息是工具结果：tool_call_id 也必须在两个方向都保持同一字段名。
+	if sent.Messages[2].Role != "tool" || sent.Messages[2].ToolCallID != "call_1" {
+		t.Errorf("上游收到的工具结果消息错误: %+v", sent.Messages[2])
+	}
+	// 反向冗余断言：**扁平形状绝不能出现在上游请求体里**。直接扒出那条 assistant 消息的
+	// 键集合来比——若入向转换被去掉，这里会看到 {arguments,id,name} 而没有 function/type。
+	var wireSent struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &wireSent); err != nil {
+		t.Fatalf("上游请求体不是合法 JSON: %v；实际: %s", err, body)
+	}
+	gotMsgKeys := slices.Sorted(maps.Keys(wireSent.Messages[1]))
+	if wantMsgKeys := []string{"role", "tool_calls"}; !slices.Equal(gotMsgKeys, wantMsgKeys) {
+		t.Errorf("上游 assistant 消息的 JSON 键 = %v, want %v；实际: %s", gotMsgKeys, wantMsgKeys, body)
+	}
+	tcObj, ok := wireSent.Messages[1]["tool_calls"].([]any)
+	if !ok || len(tcObj) != 1 {
+		t.Fatalf("上游 tool_calls 不是长度为 1 的数组: %#v；实际: %s", wireSent.Messages[1]["tool_calls"], body)
+	}
+	tcMap, ok := tcObj[0].(map[string]any)
+	if !ok {
+		t.Fatalf("上游 tool_calls[0] 不是对象: %#v", tcObj[0])
+	}
+	gotTCKeys := slices.Sorted(maps.Keys(tcMap))
+	if wantTCKeys := []string{"function", "id", "type"}; !slices.Equal(gotTCKeys, wantTCKeys) {
+		t.Errorf("上游 tool_calls[0] 的 JSON 键 = %v, want %v（出现 name/arguments 说明扁平形状被原样透传）；实际: %s",
+			gotTCKeys, wantTCKeys, body)
 	}
 }
 

@@ -51,7 +51,23 @@ func (e *AIError) Error() string {
 
 func (e *AIError) Unwrap() error { return e.Err }
 
-// AIMessage 是客户端 ↔ 后端的消息形状（规格 §6.1）。
+// ============================================================================
+// 两侧形状必须分开：**线格式（客户端 ↔ 后端）扁平，上游格式（后端 → 上游）嵌套**。
+//
+// 为什么不能合并成一个类型（这是曾经的 bug，别再合回去）：
+// 客户端契约是 spec §6.1:311-314 —— 两个方向的 tool_calls 都是**扁平**的
+// `{id, name, arguments}`，客户端把上一轮收到的 tool_calls **原样回传**；
+// 上游（OpenAI 兼容）要的是**嵌套**的 `{id, type:"function", function:{name, arguments}}`。
+// 一个类型同时服务两侧时，"这里是哪一种形状"在类型系统里不可见 ——
+// 形状就会顺着结构体的 json tag 静默漏给客户端（上游字段名泄漏到对外契约）。
+// 所以这里是两个类型，转换只发生在两个地方：
+//   出（上游 → 客户端）：normalizeUpstream()；
+//   入（客户端 → 上游）：toUpstreamMessages()。
+// ============================================================================
+
+// AIMessage 是客户端 ↔ 后端的消息形状（规格 §6.1）。**只在线上用**，
+// 既不出现在发给上游的请求体里（那边是 upstreamMessage），也不从上游响应反序列化
+// （那边是 upstreamChatResponse.message）。因此它的 json tag 就是对外契约，改它即改契约。
 // Content 是字符串而非多模态数组：v1 是文字进文字出（规格 §9 M2/M3）。
 // M4 做截图时这里要改成 json.RawMessage——届时只改这一个类型。
 type AIMessage struct {
@@ -61,15 +77,33 @@ type AIMessage struct {
 	ToolCalls  []AIToolCall `json:"tool_calls,omitempty"`
 }
 
-type AIFunctionCall struct {
+// AIToolCall 是客户端契约里的工具调用形状（规格 §6.1:311/322）：**扁平**。
+// 字段名就是客户端看到的字段名——`name`/`arguments` 直接挂在 tool_call 上，
+// **没有** `type`、**没有** `function` 包装层。客户端不认识上游形状（§6.1:314）。
+type AIToolCall struct {
+	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
-type AIToolCall struct {
-	ID       string         `json:"id"`
-	Type     string         `json:"type"`
-	Function AIFunctionCall `json:"function"`
+// upstreamMessage / upstreamToolCall 是**发给上游**的 OpenAI 兼容形状：嵌套。
+// 它们与 AIMessage/AIToolCall 是刻意的两份定义（见上面的说明）：
+// 上游协议里 tool_call 必须带 `"type":"function"` 且 name/arguments 嵌在 `function` 下，
+// 少任何一层供应商都会 400。反过来，客户端契约里多任何一层同样是错的。
+type upstreamMessage struct {
+	Role       string             `json:"role"`
+	Content    string             `json:"content,omitempty"`
+	ToolCallID string             `json:"tool_call_id,omitempty"`
+	ToolCalls  []upstreamToolCall `json:"tool_calls,omitempty"`
+}
+
+type upstreamToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // AIChatRequest 是客户端 → 后端的请求体（规格 §6.1）。
@@ -103,20 +137,59 @@ type AIStatus struct {
 }
 
 // upstreamChatRequest 是发给上游的 OpenAI 兼容请求体。只包含归一化后的字段，
-// 客户端的多余字段不会被转发。
+// 客户端的多余字段不会被转发。Messages 是 upstreamMessage（嵌套 tool_calls）。
 type upstreamChatRequest struct {
-	Model     string          `json:"model"`
-	Messages  []AIMessage     `json:"messages"`
-	Tools     json.RawMessage `json:"tools,omitempty"`
-	MaxTokens int             `json:"max_tokens"`
+	Model     string            `json:"model"`
+	Messages  []upstreamMessage `json:"messages"`
+	Tools     json.RawMessage   `json:"tools,omitempty"`
+	MaxTokens int               `json:"max_tokens"`
 }
 
+// upstreamChatResponse 只用上游响应的 choices[0].message 做归一化的原料，
+// 所以这里的 message 是**上游形状**的结构体（与请求侧的 upstreamMessage 不同：
+// 响应不需要回传 tool_call 的 `type`，normalizeUpstream 也不看它）。
 type upstreamChatResponse struct {
 	Choices []struct {
-		Message      AIMessage `json:"message"`
-		FinishReason string    `json:"finish_reason"`
+		Message      upstreamResponseMessage `json:"message"`
+		FinishReason string                  `json:"finish_reason"`
 	} `json:"choices"`
 	Usage AIUsage `json:"usage"`
+}
+
+// upstreamResponseMessage 是上游响应里 message 的形状。tool_calls 是**嵌套**的，
+// 与请求侧上游形状一致——所以这里复用 upstreamToolCall，转换在 normalizeUpstream。
+type upstreamResponseMessage struct {
+	Content   string             `json:"content"`
+	ToolCalls []upstreamToolCall `json:"tool_calls"`
+}
+
+// toUpstreamMessages 把客户端契约（扁平）转成上游请求体（嵌套）。
+// 客户端会把上一轮收到的 tool_calls 原样回传（规格 §5.2 第 4b 步），
+// 所以这条路径是工具循环的**必经之路**：不转换就等于把扁平形状发给上游
+// （供应商解析不出 function.name ⇒ 400），而客户端契约又要求它保持扁平。
+// 客户端没有 tool_calls 时 ToolCalls 保持 nil，`omitempty` 保证该键不出现——
+// 给上游发一个空的 tool_calls 数组在部分供应商上会被当成非法请求。
+func toUpstreamMessages(in []AIMessage) []upstreamMessage {
+	out := make([]upstreamMessage, len(in))
+	for i, m := range in {
+		out[i] = upstreamMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) == 0 {
+			continue
+		}
+		out[i].ToolCalls = make([]upstreamToolCall, len(m.ToolCalls))
+		for j, tc := range m.ToolCalls {
+			out[i].ToolCalls[j].ID = tc.ID
+			// 上游协议里这个字段恒为 "function"；客户端契约里没有它，故在此补上。
+			out[i].ToolCalls[j].Type = "function"
+			out[i].ToolCalls[j].Function.Name = tc.Name
+			out[i].ToolCalls[j].Function.Arguments = tc.Arguments
+		}
+	}
+	return out
 }
 
 // AIService 是 OpenAI 兼容协议的适配层（规格 §6.1）。
@@ -157,8 +230,9 @@ func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatRespons
 	}
 
 	payload, err := json.Marshal(upstreamChatRequest{
-		Model:     s.model,
-		Messages:  req.Messages,
+		Model: s.model,
+		// 入向转换：客户端契约（扁平）→ 上游请求体（嵌套）。
+		Messages:  toUpstreamMessages(req.Messages),
 		Tools:     req.Tools,
 		MaxTokens: s.maxTokens,
 	})
@@ -206,6 +280,8 @@ func (s *AIService) Chat(ctx context.Context, req AIChatRequest) (*AIChatRespons
 }
 
 // normalizeUpstream 把上游 choices[0].message 映射成客户端契约（规格 §6.1）。
+// **出向转换**就在这里：上游嵌套的 `function:{name,arguments}` 被摊平成
+// `{id, name, arguments}`，上游的 `type:"function"` 被丢掉——客户端契约里没有它。
 func normalizeUpstream(raw []byte) (*AIChatResponse, error) {
 	var up upstreamChatResponse
 	if err := json.Unmarshal(raw, &up); err != nil {
@@ -217,9 +293,13 @@ func normalizeUpstream(raw []byte) (*AIChatResponse, error) {
 	msg := up.Choices[0].Message
 	// tool_calls 必须是 [] 而不是 null：客户端会直接遍历它，
 	// null 与 [] 在 JS 里行为不同——"形状静默不同"是这类适配层最典型的坑。
-	toolCalls := msg.ToolCalls
-	if toolCalls == nil {
-		toolCalls = []AIToolCall{}
+	toolCalls := make([]AIToolCall, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		toolCalls = append(toolCalls, AIToolCall{
+			ID:        tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: tc.Function.Arguments,
+		})
 	}
 	return &AIChatResponse{
 		Text:         msg.Content,
