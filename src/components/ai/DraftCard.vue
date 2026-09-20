@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // 草稿卡（规格 §4.5 / §4.4:164 / §8.C:524 / §10.7）：AI 生成的"待确认"记账。
 //
-// 三态：**待确认 → 记账中 → 已记账 ✓（可撤销）**。撤销用的 id **只来自
-// `transactionStore.add` 的返回值**（`transaction.ts:261-311` 返回新交易 id）——
-// 绝不用"最后一笔"这类猜法（§4.4 要的是"手滑确认的廉价安全网"，猜错等于删掉用户的另一笔账）。
+// 状态机（`state`）：**pending → saving → saved**（+ 撤销在途 `undoing`，视图**仍是**已记账）。
+// 撤销用的 id **只来自 `transactionStore.add` 的返回值**（`transaction.ts:261-311` 返回新交易 id）
+// —— 绝不用"最后一笔"这类猜法（§4.4 要的是"手滑确认的廉价安全网"，猜错等于删掉用户的另一笔账）。
 //
 // **本层零写入**：组件只调**既有**记账入口 `transactionStore.add` / `transactionStore.remove`，
 // 一次 `getUserDb()` 都不碰、一次 `db.execute` 都不发 —— 「AI 只能只读 + 新增草稿（经用户确认）」
@@ -16,11 +16,19 @@
 // 与记账页的一处**刻意**差异：**不**再调 `round2` —— `tools.ts:778` 生成草稿时已经 `round2` 过，
 // `transactionStore.add` 也不做金额变换 ⇒ 这里再 round 一次是**等价冗余**（不是防线）。
 //
-// ⚠️ 这里**没有** `if (saving) return` 这类事件层守卫：`onConfirm` 的唯一入口是模板里
-// `:disabled="saving"` 的那颗按钮，禁用态在真实浏览器的**事件派发层**就挡住了点击（jsdom/happy-dom
-// 同样按 `:disabled` 拒绝派发）⇒ 脚本里的守卫既走不到、也没有任何变异能红它。
+// ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面**只监听它**
+// 做 `dismissDraft`。曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把
+// `dismissDraft` 调两次（复审指出的两条会打架的契约）⇒ 已合并成一个。
+//
+// ⚠️ **没有事件层守卫**（`if (saving) return` 之类）：`onConfirm` / `onReject` 的唯一入口是模板里
+// `:disabled` 的那两颗按钮，禁用态在真实浏览器的**事件派发层**就挡住点击（happy-dom 同样按
+// `:disabled` 拒绝派发，探针实测过）⇒ 脚本里的守卫既走不到、也没有任何变异能红它。
 // 按 Ruling 35（等价防御不许留）删掉；"双击只记一笔"由 `:disabled` 承担，并有一条用例钉它。
-import { ref } from "vue";
+//
+// ⚠️ **`props.draft` 一变就自清**（`watch`）：卡片每次代表**一条**草稿，而同实例被复用时
+// （页面换 `draft`、不换 `:key`）`savedId` 会指向**上一笔** ⇒ 用户点「撤销」删掉的是**旧账**。
+// 卡内自清 + 6c 按 `draftId` 加 `:key`，两边都做（复审 ③-2）。
+import { ref, watch } from "vue";
 import { Check, Undo2, X } from "lucide-vue-next";
 import { useTransactionStore } from "@/stores/transaction";
 import { useLedgerStore } from "@/stores/ledger";
@@ -35,12 +43,9 @@ const props = defineProps<{
   resolved: AiDraftIds;
 }>();
 
-// `confirm` 带新交易 id：页面要拿它去 `dismissDraft`（§4.4 的"确认后收起这张卡"）。
-// `saved` 是同一件事的**成功信号**（确认流水走完后才发），页面只监听它做收起 —— 两个事件都带 id，
-// 免得页面为了拿 id 去猜"最后一笔"。
+/** 对外契约 `confirm` 带新交易 id（撤销另有 `undo`，拒绝是 `reject`） */
 const emit = defineEmits<{
   confirm: [transactionId: string];
-  saved: [transactionId: string];
   undo: [transactionId: string];
   reject: [];
 }>();
@@ -50,7 +55,12 @@ const ledgerStore = useLedgerStore();
 const auth = useAuthStore();
 const { maskCurrency } = useAmountMask();
 
-const state = ref<"pending" | "saving" | "saved">("pending");
+/**
+ * `saving` / `undoing` 分开：两者都"有事在途"，但**视图不同**
+ * —— 加账在途仍是待确认视图（两颗按钮禁用），撤销在途必须**留在已记账视图**。
+ * 曾共用一个 `"saving"`：点下「撤销」的同一帧卡片会翻回"待确认"，remove 落地才翻回来（复审 ③-1）。
+ */
+const state = ref<"pending" | "saving" | "saved" | "undoing">("pending");
 /** 已记账那笔的 id（`add` 的返回值）。撤销只用它。 */
 const savedId = ref("");
 const error = ref("");
@@ -60,6 +70,17 @@ const TYPE_LABEL: Record<AiDraftFields["type"], string> = {
   income: "收入",
   transfer: "转账",
 };
+
+/** 清掉"上一笔"的状态：换草稿时调，别让 `savedId` 指着别人的账 */
+function resetForNewDraft(): void {
+  state.value = "pending";
+  savedId.value = "";
+  error.value = "";
+}
+
+// 同实例换草稿（页面没给 `:key`）⇒ 自清。用 `watch` 的默认 deep-ish 行为：
+// `props.draft` 是父级直接传下来的**新对象**（payload 反序列化出来的），引用一变就触发。
+watch(() => props.draft, resetForNewDraft);
 
 function onConfirm(): void {
   const ledgerId = ledgerStore.currentLedger?.id;
@@ -88,13 +109,13 @@ function onConfirm(): void {
       );
       savedId.value = transactionId;
       state.value = "saved";
+      // 对外只发这一个（带 id）
       emit("confirm", transactionId);
-      emit("saved", transactionId);
     } catch (e) {
       // 记不上账必须让用户看见（静默 = 用户以为记上了）
       console.warn("[ai/draft] 记账失败：", e);
       error.value = "记账失败，请稍后再试";
-      // 回到可确认态：用户还能重试（卡在"记账中"会永远转下去）
+      // 回到**可确认态**（按钮可用）：卡在"记账中"就永远不能重试
       state.value = "pending";
     }
   })();
@@ -102,15 +123,18 @@ function onConfirm(): void {
 
 /** 撤销刚才那笔（§4.4：确认后仍可反悔）。id 用 `onConfirm` 拿到的那个，不重算、不猜。 */
 function onUndo(): void {
-  if (savedId.value === "") return;
+  // ⚠️ 这里**没有**空 id 守卫：`savedId` 只可能被 `onConfirm` 写入，而撤销按钮只在
+  // `state === "saved"` 时渲染，两者是一体的（`resetForNewDraft` 会把它们一起清掉）。
+  // 原 `if (savedId.value === "") return;` 变异实测全绿 = 走不到的等价防御，按 Ruling 35 删。
   const removeId = savedId.value;
   error.value = "";
-  state.value = "saving";
+  // 留在**已记账视图**里撤销（`undoing` 而不是 `saving`）
+  state.value = "undoing";
   void (async () => {
     try {
       await transactionStore.remove(removeId);
-      savedId.value = "";
-      state.value = "pending";
+      // 撤销成功 ⇒ 这张卡回到"待确认"，用户可以重新确认（commit/rollback 的语义）
+      resetForNewDraft();
       emit("undo", removeId);
     } catch (e) {
       console.warn("[ai/draft] 撤销失败：", e);
@@ -127,7 +151,11 @@ function onReject(): void {
 </script>
 
 <template>
-  <div class="rounded-xl border border-gray-100 bg-surface p-3" data-test="draft-card">
+  <div
+    class="rounded-xl border border-gray-100 bg-surface p-3"
+    :data-draft-state="state"
+    data-test="draft-card"
+  >
     <p class="mb-2 text-xs text-text-secondary">待确认的记账</p>
     <p class="text-sm font-medium text-text">
       {{ TYPE_LABEL[draft.type] }} {{ maskCurrency(draft.amount) }}
@@ -156,14 +184,15 @@ function onReject(): void {
     </dl>
     <p v-if="error" class="mt-2 text-xs text-red-500" data-test="draft-error">{{ error }}</p>
 
-    <!-- 已记账：确认/不要 换成 已记账 ✓ + 撤销（§4.4） -->
-    <div v-if="state === 'saved'" class="mt-3 flex gap-2" data-test="draft-saved">
+    <!-- 已记账（含撤销在途）：确认/不要 换成 已记账 ✓ + 撤销（§4.4） -->
+    <div v-if="state === 'saved' || state === 'undoing'" class="mt-3 flex gap-2" data-test="draft-saved">
       <p class="flex flex-1 items-center gap-1 text-sm text-text" data-test="draft-saved-text">
         <Check :size="16" class="text-income" />已记账
       </p>
       <button
         type="button"
-        class="flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-4 py-2 text-sm text-text-secondary"
+        class="flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-4 py-2 text-sm text-text-secondary disabled:opacity-50"
+        :disabled="state === 'undoing'"
         data-test="draft-undo"
         @click="onUndo"
       >

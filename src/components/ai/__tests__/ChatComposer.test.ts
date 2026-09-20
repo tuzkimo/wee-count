@@ -43,17 +43,16 @@ describe("ChatComposer", () => {
   });
 
   it("sending 时两个入口都真的发不出去（事件层，不只看禁用属性）", async () => {
-    // ⚠️ 这条用例是**唯一**守着「生成中不许再发」的地方，因为它守的是模板的 `:disabled`
-    // —— 那是这条规则**唯一**的防线（脚本里没有 `if (sending) return`，Ruling 35：等价防御不留）。
-    // 判别力实测（探针，跑完已移走）：`sending=true` 时对输入框 `trigger("keydown.enter")`
-    // ⇒ `emitted("send") === undefined`（禁用元素在**事件派发层**就不触发处理器，
-    // happy-dom 如此、真实浏览器亦如此）；`composer-send` 在 sending 时**根本不渲染**。
-    // 反面对照在下面：把 `:disabled` 去掉（或让发送按钮照常渲染），这条必须红。
+    // ⚠️ 这条用例守的是**回车入口的唯一防线**：`<input>` 的 `:disabled="sending"`。
+    // 判别力全靠下一行**必须走 `setValue`** —— 它会真派发 `input` 事件把 `text` 写成非空。
+    // 曾经这里写的是 `(input.element).value = "..."`（只改 DOM、绕过 v-model）：`text` 仍是 `""`，
+    // `onSend` 被**更早的** `if (value === "") return` 挡住 ⇒ 删掉 `:disabled` 这条用例照绿 = 零判别力
+    // （复审 m15 定位到具体一行；改回 `setValue` 后 m15b 实测 2 红）。
     const w = mountComposer(true);
     const input = w.get('[data-test="composer-input"]');
-    // 绕过 UI 直接改 DOM 值，把"能不能发出去"这件事逼到事件层来判
-    (input.element as HTMLInputElement).value = "还要再问一句";
+    await input.setValue("还要再问一句");
     await input.trigger("keydown.enter");
+    // 发送按钮在 sending 时**不渲染**（v-if），所以这里没有第二颗可点的按钮
     await w.get('[data-test="composer-cancel"]').trigger("click");
 
     expect(w.emitted("send")).toBeUndefined();

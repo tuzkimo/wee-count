@@ -5,12 +5,16 @@
 // 于是「空串不发」这条规则只在一处 —— 这里（store 里也有一道 `trim() === ""` 守卫，
 // 但那是纵深防御：输入栏是唯一能产生空串的地方，两条都留着，各自的测试分开钉）。
 //
-// ⚠️ `sending` 时输入框**禁用**，且**唯一的防线就是模板的 `:disabled`**（Ruling 35）：
-// §5.2 说"生成中又发一条"会掐掉在途那一轮，那是给外部调用留的语义；而这个组件里 `onSend` 的两个
-// 入口（发送按钮、输入框的回车）在 `sending` 时分别是"不渲染"与"`disabled`"—— 禁用/不存在的元素
-// 在浏览器的**事件派发层**就不会触发处理器（happy-dom 同样如此）。脚本里再来一个
-// `if (sending) return` 是**走不到的等价防御**（变异实测它删掉后 6/6 全绿）⇒ 已删。
-// 「双击/重复点击只发一条」由 `:disabled` 承担，并有一条用例真打事件层钉它。
+// ⚠️ `sending` 时**两个入口各有各的防线，而且都不是脚本守卫**（复审把"唯一防线"按下述入口拆开了）：
+//  1. **回车**：`@keydown.enter` 挂在那个 `:disabled="sending"` 的 `<input>` 上 ——
+//     禁用元素在浏览器的**事件派发层**就不派发（happy-dom 同样；探针实测 `sending=true` 时
+//     先 `setValue` 再 `trigger("keydown.enter")`，`emitted("send")` 仍是 `undefined`）⇒ 到不了 `onSend`。
+//  2. **发送按钮**：`v-if="sending"` ⇒ sending 时它**根本不渲染**（换成了取消按钮）。
+//     它**没有** `:disabled="sending"` —— 那在 `v-else` 分支里**恒为假**（渲染时 `sending` 必为 false），
+//     是一条死的等价防御，按 Ruling 35 删掉（复审 m22 实测：留着它删掉它都全绿）。
+// ⇒ 脚本里的 `if (sending) return` 也是同类走不到的防御（复审 m8 实测全绿），已删。
+// 没有第三条用户可达入口：无 `<form>` / 无 `@submit` / script setup 无 `expose`
+// （`vm.onSend()` 只有 dev/test 的代理能直调，不是生产入口）。
 import { ref } from "vue";
 import { Send, Square } from "lucide-vue-next";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
@@ -67,8 +71,7 @@ function onCancel(): void {
       <button
         v-else
         type="button"
-        class="flex items-center gap-1 rounded-lg bg-primary px-3 py-2 text-sm text-white disabled:opacity-50"
-        :disabled="sending"
+        class="flex items-center gap-1 rounded-lg bg-primary px-3 py-2 text-sm text-white"
         data-test="composer-send"
         @click="onSend"
       >
