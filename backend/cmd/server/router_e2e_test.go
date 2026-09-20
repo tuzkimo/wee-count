@@ -210,3 +210,127 @@ func TestRouterE2E_AIChatDisabledWhenKeyMissing(t *testing.T) {
 		t.Errorf("禁用态不得发起上游请求，实际 %d 次", len(got))
 	}
 }
+
+// ============================================================================
+// 下面两条把链路再往前接一环：**环境变量 → config.Load() → newRouter → /ai/chat**。
+// 这补的是终审实验 B1 实测出来的那个洞：把 config.go:59 的 AI_API_KEY 默认值改坏，
+// 上面那两条用例（以及新文件里前两条）**全绿**——因为它们吃的都是手写的 Config 字面量，
+// 从不经过 Load()。*必须两条臂*：只补"有 key → 200"那一臂，默认值被改坏照样观测不到，
+// 因为改坏的是**默认值**，而只有"显式把环境变量设成空"的臂才会让非空默认值生效。
+// ============================================================================
+
+// e2eCfgFromEnv 是"从环境变量到路由"的公共前半段：t.Setenv 注入环境变量后走
+// **生产的 config.Load()** 拿 cfg，再走**生产的 newRouter** 装配。
+//
+// 为什么必须显式设满（而不是依赖开发者本机/进程环境）：测试不能依赖任何未跟踪的本地
+// 状态。AI_API_KEY 的显式取值由调用方给——**空的也必须显式写成空**，否则本机
+// backend/.env 或 shell 里残留的 key 会漏进来，让"禁用态"那条假绿。
+func e2eCfgFromEnv(t *testing.T, upstreamURL string, aiEnv map[string]string) (*config.Config, http.Handler) {
+	t.Helper()
+	env := map[string]string{
+		"DATABASE_URL": "postgres://e2e",
+		"REDIS_URL":    "redis://e2e",
+		"JWT_SECRET":   testJWTSecret,
+		"AI_BASE_URL":  upstreamURL,
+	}
+	for k, v := range aiEnv {
+		env[k] = v
+	}
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	return cfg, newRouter(cfg, handlers{ai: handler.NewAIHandler(service.NewAIService(cfg))})
+}
+
+func postChatViaRouter(t *testing.T, h http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/ai/chat", bytes.NewBufferString(
+		`{"messages":[{"role":"user","content":"今年花了多少"}]}`))
+	req.Header.Set("Authorization", "Bearer "+mintAccessToken(t, "user-a"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestRouterE2E_LoadThenChatEnabled 臂 1：环境变量里 key **非空** → Load() → newRouter
+// → /ai/chat 必须 **200**。证明"环境变量 → Load → 装配 → 成功响应"整条链是通的。
+func TestRouterE2E_LoadThenChatEnabled(t *testing.T) {
+	upstream := newFakeAIUpstream(t)
+	cfg, r := e2eCfgFromEnv(t, upstream.URL, map[string]string{
+		"AI_API_KEY": "sk-from-env",
+		"AI_MODEL":   "deepseek-chat",
+	})
+	// 先钉住前提：cfg 确实是 Load() 的产物、key 确实透传下来了。
+	// 没有这一句，200 也可能来自别处，本用例就不再是"环境变量→配置"的哨兵。
+	if cfg.AIAPIKey != "sk-from-env" {
+		t.Fatalf("前提不成立：Load() 出来的 key = %q, want sk-from-env", cfg.AIAPIKey)
+	}
+
+	rec := postChatViaRouter(t, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("环境变量配了 key 时 /ai/chat: got %d, want 200；响应体: %s", rec.Code, rec.Body.String())
+	}
+
+	var wire map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v；响应体: %s", err, rec.Body.String())
+	}
+	if wire["finish_reason"] != "tool_calls" {
+		t.Errorf("finish_reason = %#v, want tool_calls", wire["finish_reason"])
+	}
+	arr, ok := wire["tool_calls"].([]any)
+	if !ok || len(arr) != 1 {
+		t.Fatalf("tool_calls 不是长度为 1 的数组: %#v；响应体: %s", wire["tool_calls"], rec.Body.String())
+	}
+	tc, ok := arr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_calls[0] 不是对象: %#v", arr[0])
+	}
+	gotKeys := slices.Sorted(maps.Keys(tc))
+	if wantKeys := []string{"arguments", "id", "name"}; !slices.Equal(gotKeys, wantKeys) {
+		t.Errorf("下发给客户端的 tool_calls[0] JSON 键 = %v, want %v（规格 §6.1:322 扁平形状）；响应体: %s",
+			gotKeys, wantKeys, rec.Body.String())
+	}
+	// 上游确实被调用，且 baseURL 来自环境变量（不是 cfg 结构体里另手写的）。
+	if got := upstream.bodies(); len(got) != 1 {
+		t.Errorf("假上游应被调用 1 次，实际 %d", len(got))
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
+// TestRouterE2E_LoadThenChatDisabled 臂 2：**显式** `AI_API_KEY=""` → Load() → newRouter
+// → /ai/chat 必须 **503 `ai_disabled`**。
+//
+// ★ 这一条才是终审 B1 变异（把 config.go:59 的默认值硬编码成非空 key）的**杀手**：
+// 环境变量被显式设成空 ⇒ `getEnv("AI_API_KEY", default)` 走到 default 分支，
+// default 一旦不再是空串，一个"没配 key"的部署就会以为自己配了 key、去外联真实上游。
+// 臂 1 对这个变异无反应（env 优先，非空值把默认值完全挡住），所以必须两条臂都在。
+func TestRouterE2E_LoadThenChatDisabled(t *testing.T) {
+	upstream := newFakeAIUpstream(t)
+	cfg, r := e2eCfgFromEnv(t, upstream.URL, map[string]string{
+		"AI_API_KEY": "", // ← 显式设空（见 e2eCfgFromEnv 的说明）
+	})
+	// 前提：默认值必须是空 —— 这句就是"没配 key ⇒ 禁用"这一层的断言。
+	if cfg.AIAPIKey != "" {
+		t.Fatalf("前提不成立：未配 AI_API_KEY 时 Load() 出来的 key = %q，want 空串"+
+			"（config.go:59 的默认值被改成了非空？）", cfg.AIAPIKey)
+	}
+
+	rec := postChatViaRouter(t, r)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("未配 key 时 /ai/chat: got %d, want 503；响应体: %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("ai_disabled")) {
+		t.Errorf("响应体应含 ai_disabled；实际: %s", rec.Body.String())
+	}
+	if got := upstream.bodies(); len(got) != 0 {
+		t.Errorf("禁用态不得发起上游请求，实际 %d 次", len(got))
+	}
+}
