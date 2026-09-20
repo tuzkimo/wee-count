@@ -215,9 +215,13 @@ func TestRouter_AIStatusDoesNotConsumeDailyQuota(t *testing.T) {
 // **分钟级限流器只有一份**：/ai/chat 与 /ai/status 共用同一个"每用户每分钟"桶。
 // 因果：第 3 个请求必须落在**同一个**桶里才会被拒——两次 status 已把 limit=2 的桶用满，
 // 紧接着的 chat 因此必须被分钟级拒掉（429 ai_rate_limited）。
-// 若两个组各注册一次 LimitBy，chat 会落进它自己那个**空**桶 → 被放行到 handler → 503
-// ⇒ 这条断言正是用来区分"一个桶"与"两个桶"的：两个桶会让 /ai/* 每分钟总量静默翻倍，
-// 属安全/成本性质，且没有别的用例会响。
+//
+// 本条拦的是"**放宽**"，措辞收窄到这一点：给某个端点**新增**中间件永远不可能放宽
+// 已受约束的量——另加一个**不同实例**的桶只会更严（链里仍然有那个共享实例，实测全绿），
+// 把**同一个实例**嵌套两次更是收紧到额度减半（每请求记 2 次，实测红）。
+// 所以放宽只有一种实现方式：让某条 /ai/* 的链**失去共享实例**，即把两个端点改成
+// **兄弟**组各持一份桶——那正是本用例要拦的情况（chat 会落进它自己的空桶、
+// 被放行到 handler → 503，而不是 429）。
 func TestRouter_AIMinuteLimitIsSharedAcrossEndpoints(t *testing.T) {
 	r := newTestRouter(t, 2, 100) // 分钟级 2、日配额 100，让日配额不干扰
 	tokenA := mintAccessToken(t, "user-a")
