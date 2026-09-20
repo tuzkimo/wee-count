@@ -101,19 +101,35 @@ describe("fetchWithTimeout 的外部 signal（AI 取消生成靠它）", () => {
     expect((err as Error).message).toBe("aborted");
   });
 
-  it("已经 abort 过的 signal ⇒ 一个请求都不发（addEventListener 不会再派发已发生的事件）", async () => {
-    const fetchMock = hangingFetch();
-    vi.stubGlobal("fetch", fetchMock);
-    const api = await import("@/services/api");
-    api.setBaseUrl("http://x");
+  it("已经 abort 过的 signal ⇒ fetch 收到的是**已 abort** 的 signal，请求当场结束", async () => {
+    vi.useFakeTimers();
+    try {
+      // 旧实现只靠 `addEventListener`：signal 已经 abort 过就**不会再派发事件** ⇒ 这个
+      // controller 永远不会 abort ⇒ 请求照发、一直挂着，靠 api.ts 自己的 15s 兜底收尾。
+      // 判别力**必须**是 abort() 之后那条**同步**断言：只写 `await expect(...).rejects`
+      // 的版本在"删掉 already-aborted 分支"的变异下**整份 49 条全绿**（实测该用例
+      // 15004ms，那 15s 就是兜底超时，不是 vitest 的 20s 上限）。
+      const fetchMock = hangingFetch();
+      vi.stubGlobal("fetch", fetchMock);
+      const api = await import("@/services/api");
+      api.setBaseUrl("http://x");
 
-    const controller = new AbortController();
-    controller.abort();
-    await expect(
-      api.fetchWithTimeout("http://x/api", { signal: controller.signal }, 15000),
-    ).rejects.toThrow("aborted");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect((fetchMock.mock.calls[0]![1].signal as AbortSignal).aborted).toBe(true);
+      const controller = new AbortController();
+      controller.abort();
+
+      const p = api.fetchWithTimeout("http://x/api", { signal: controller.signal }, 15000);
+      const rejection = p.then(() => "resolved", (e: unknown) => e);
+
+      // 同步：分支存在与否的唯一判据
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect((fetchMock.mock.calls[0]![1].signal as AbortSignal).aborted).toBe(true);
+
+      const err = await rejection;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe("aborted");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

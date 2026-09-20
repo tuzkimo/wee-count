@@ -35,14 +35,36 @@ export function hasBaseUrl(): boolean {
 // 超时 controller（不直接 reject，保持"只有 controller 能结束这个请求"这一条不变，
 // 返回/抛出的形状与超时路径完全一致）。所有既有调用方都不传 signal ⇒ 行为不变
 // （`apiTimeout.test.ts` 的三条回归钉着这一点）。
+//
+// `timeoutFired` / `reason`：把**抛出原因**标在 error 上（`"timeout"` / `"aborted"`），让
+// `apiFetch` 的 catch 分得开"15s 兜底超时"和"网络层错误"。上游 AI 的 15s 超时必须报
+// 「分析超时」而不是「网络似乎不太顺」（规格 §5.3），而 catch 里拿到的只有一个不透明的
+// reject 值。判据是**我们自己的兜底有没有开火**（`timeoutFired`）—— 裸 fetch 自己抛的错
+// （断网 / DNS）时它仍是 false ⇒ 不打标签 ⇒ 老的值。实测：不这么分，既有的
+// `apiFetch 网络异常`、`status:0 ⇒ network`、`apiFetch reject` 三条会全红（它们用的是
+// "裸 fetch 抛 Error"的 mock，那种情况既不是超时也不是取消）。
+//
+// ⚠️ 也**不能**改用 `signal.aborted` 在别处猜：实测（假 timer 推进 15s、mock 在 abort
+// 事件里同步 reject）走到分类时那个 controller 的 `aborted` 还是 `false` ⇒ 真实超时会被
+// 判成 network。原因在产生它的那一层标出来才是最可靠的。
+/** `fetchWithTimeout` 抛出的错误上挂的**原因标签**（见该函数的 catch） */
+interface ReasonedError extends Error {
+  reason?: string
+}
+
 export async function fetchWithTimeout(
   input: string,
   init: RequestInit = {},
   timeoutMs = 15000
 ): Promise<Response> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let timeoutFired = false
+  const timer = setTimeout(() => {
+    timeoutFired = true
+    controller.abort()
+  }, timeoutMs)
   const external = init.signal ?? null
+  const externalWasAborted = external !== null && external.aborted
   const onAbort = (): void => controller.abort()
   if (external !== null) {
     // 已经 abort 过的不再派发事件 ⇒ 必须显式接一次，否则请求照样发出去
@@ -51,6 +73,13 @@ export async function fetchWithTimeout(
   }
   try {
     return await fetch(input, { ...init, signal: controller.signal })
+  } catch (err) {
+    // 只标 `Error`（原生 fetch 抛的两种都是 Error 的子类）；别的值原样抛，不改成 Error
+    if (timeoutFired && err instanceof Error) {
+      const reason = externalWasAborted ? "aborted" : "timeout"
+      ;(err as ReasonedError).reason = reason
+    }
+    throw err
   } finally {
     clearTimeout(timer)
     external?.removeEventListener("abort", onAbort)
@@ -105,6 +134,27 @@ async function refreshAccessToken(): Promise<boolean> {
   }
 }
 
+/**
+ * `fetchWithTimeout` 抛出来的原因 → `apiFetch` 的 `status:0` 错误串。
+ *
+ * 三个原因必须分开（AI 那条路要用，见 `transport.ts` 的 `classifyZero`）：
+ * - `"timeout"`：本层的 15s 兜底把请求掐了 ⇒ 用户该看到「分析超时」
+ * - `"aborted"`：外部 signal 主动取消（AI 的"取消生成"）⇒ 用户自己停的
+ * - `"network error"`：其余（断网 / DNS / TLS / 代理）⇒ 老的值，**不许变**（既有调用方依赖）
+ *
+ * ⚠️ 判据只有 `fetchWithTimeout` 挂的那个 `reason` 标签，**不看 `err.name`**：
+ * `AbortError` 这个名字也可能来自"裸 fetch 自己抛的 AbortError"（无 signal），那种情况
+ * 既不是我们的兜底超时、也不是外部取消 ⇒ 老的值。实测：按 `name` 判会让既有的
+ * `apiFetch 网络异常`、`status:0 ⇒ network`、`apiFetch reject` 三条全红。
+ */
+export function networkErrorReason(err: unknown): string {
+  if (err instanceof Error) {
+    const reason = (err as ReasonedError).reason
+    if (typeof reason === "string") return reason
+  }
+  return "network error"
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {}
@@ -122,8 +172,8 @@ export async function apiFetch<T = unknown>(
   let res: Response
   try {
     res = await fetchWithTimeout(url, { ...options, headers })
-  } catch {
-    return { ok: false, status: 0, error: "network error" }
+  } catch (err) {
+    return { ok: false, status: 0, error: networkErrorReason(err) }
   }
 
   // 401 -> try refresh
@@ -133,8 +183,8 @@ export async function apiFetch<T = unknown>(
       headers["Authorization"] = `Bearer ${accessToken}`
       try {
         res = await fetchWithTimeout(url, { ...options, headers })
-      } catch {
-        return { ok: false, status: 0, error: "network error" }
+      } catch (err) {
+        return { ok: false, status: 0, error: networkErrorReason(err) }
       }
     }
   }

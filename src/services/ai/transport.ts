@@ -7,8 +7,12 @@
 //    （任务 5）要靠这个值把失败渲染成消息流里的一条 assistant 消息，一个冒出来的异常
 //    会变成未捕获的 promise rejection。
 // 2. **判别顺序是"先 status、再看 body 里的 `ai_` 前缀"**（M2 契约第 2 条）：M2 的
-//    401 / 400 / 413 响应体是 `text/plain` 直述消息、**不含错误码**（`SELF-HOSTING.md`
-//    的"故障对照"注③）。只看 body 里有没有码，会把这三类全判成"未知失败"。
+//    401 / 400 / 413 响应体里是**没有 `ai_` 前缀的直述消息**（`invalid or expired token` /
+//    `invalid request body` / `request body too large`，见 `backend/internal/middleware/auth.go:33`
+//    与 `handler/helpers.go:15-17`）。只看 body 里有没有码，会把这三类全判成"未知失败"。
+//    ⚠️ 真判据是**前缀**，不是"body 不是 JSON"：401 走 `http.Error`，Content-Type 是
+//    `text/plain` 但**内容是 JSON 文本** ⇒ `apiFetch` 的 `.json()` **能**解析出 `error`；
+//    400/413 走 `writeError`，就是 `application/json`。
 // 3. **`tool_calls` 是扁平形状 `{id, name, arguments}`**：客户端**两个方向**都只用这一种，
 //    永远不写上游的嵌套 `{function:{name,arguments}}`（M2 契约第 1 条）。响应里出现嵌套
 //    形状 = 服务端适配层坏了 ⇒ `invalid_response`，绝不"顺手兼容一下"：兼容等于让坏掉的
@@ -58,15 +62,21 @@ export interface ChatReply {
 }
 
 /**
- * 九类失败（规格 §5.3 / §6.6 的客户端半边）。每一种都有独立测试。
+ * 失败分类（规格 §5.3 / §6.6 的客户端半边）。每一种都有独立测试。
  *
  * `rate_limited` 带 `scope`：**分钟级与日配额是两回事**（M2 契约第 4 条）—— 分钟级
  * 429 的文案是"稍后再试"，日配额 429 的文案是"今天用完了，明天再来"，混成一条会让用户
  * 在额度已经耗尽时一直重试。
+ *
+ * `cancelled` 是**用户主动停**（"取消生成"，规格 §5.2），与 `timeout`（真实超时）必须是
+ * 两类：以前两者**标签是反的** —— 真实超时被 `apiFetch` 压成 `status:0` 判成 `network`，
+ * 而用户点取消被判成 `timeout` ⇒ 用户看到"分析超时了，请重试"（他没超时，是他自己停的）。
+ * §5.3 里取消那一行是"丢弃结果"，所以任务 5 靠这一类比 `timeout` 决定**不渲染错误气泡**。
  */
 export type TransportFailure =
   | { kind: "network" }
   | { kind: "timeout" }
+  | { kind: "cancelled" }
   | { kind: "unauthorized" }
   | { kind: "disabled" }
   | { kind: "rate_limited"; scope: "minute" | "day" }
@@ -100,6 +110,10 @@ export function describeFailure(failure: TransportFailure): string {
       return "网络似乎不太顺，等会儿再试试。";
     case "timeout":
       return "AI 分析超时了，请重试。";
+    case "cancelled":
+      // §5.3 里"取消"不在错误矩阵上（§5.2：掐掉在途请求、**丢弃结果**）⇒ 任务 5 不该
+      // 渲染这句话。这条只是为了 switch 穷尽 + 万一被渲染也给人话而不是 undefined。
+      return "这次提问已取消。";
     case "unauthorized":
       return "登录状态已过期，请重新登录后再试。";
     case "disabled":
@@ -131,6 +145,16 @@ export function describeFailure(failure: TransportFailure): string {
  * （`request body too large` / `invalid request body` / 五条鉴权消息 / `unauthorized`）。
  * 第三类**不得当码查表**（查不到），判据就一条：**看有没有 `ai_` 前缀**。
  *
+ * ⚠️ 这张表**不是分类的入口**（分类永远由 status 决定，见 `classifyHttp`）。它的唯一用处是
+ * **行为不变量 + 排障线索**：钉住"这些码分别是什么意思"，并在 200 里混进码时把它当契约违反。
+ *
+ * 三个**幽灵码**（照 M2 源码核过，任务 4 修复轮）：
+ * `ai_unauthorized` / `ai_bad_request` / `ai_body_too_large` 在 M2 **根本不存在** ——
+ * `backend/internal/service/ai.go:23-31` 只定义了 7 个码（`ai_disabled` / `ai_unreachable` /
+ * `ai_upstream_auth` / `ai_upstream_timeout` / `ai_upstream_error` / `ai_rate_limited` /
+ * `ai_quota_exceeded`）；401/400/413 那三档的真实 `error` 是**无前缀的直述消息**。
+ * 它们留在这里是**向前兼容**：万一适配层以后开始发，status 仍然说了算，不会被带偏。
+ *
  * 注意 `ai_upstream_auth`（502，key 无效）**不在**九类里，它归 `upstream`
  * （code 原样保留供排障）；把没列进来的 `ai_` 码当作"未知失败"会让排障时丢掉唯一的线索。
  */
@@ -153,9 +177,10 @@ function classifyCode(code: string): TransportFailure | null {
     case "ai_upstream_error":
     case "ai_upstream_auth":
     case "ai_unreachable":
-    case "ai_invalid_response":
       return { kind: "upstream", code };
     default:
+      // `ai_invalid_response` 从来不在这里出现：**M2 没有这个码**（上表三个幽灵码同源，
+      // 它连 M2 的 7 个码都不在）。502 那三个真码上面已经全覆盖。
       return null;
   }
 }
@@ -167,50 +192,98 @@ function failureFromCode(code: string | undefined): TransportFailure | null {
 }
 
 /**
+ * 从**成功响应体**里取 `error` 字段（只可能是 `ai_` 码 ⇒ 契约违反）。
+ *
+ * ⚠️ 不能读 `res.error`：那是 `apiFetch` 在 `!res.ok` 时的**错误槽**，200 的 body 在
+ * `res.data` 里（`api.ts:142-148`）—— 写成 `res.error` 就是恒 `undefined` 的死代码。
+ */
+function strayCodeInData(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  const err = data.error;
+  return typeof err === "string" && err.startsWith("ai_") ? err : undefined;
+}
+
+/**
  * HTTP 状态 + `error` → 失败分类。**status 先、code 后**（本文件的第 2 条纪律）。
  *
- * `status === 0` 是 `apiFetch` 的"没走到 HTTP"（网络错 / 超时 / 被取消）哨兵
- * （`api.ts:111`），单独处理：那不是任何一个 HTTP 状态。
+ * ⚠️ 这里**只**由 status 决定分类，`code` 只用于 429 的"分钟级 / 日配额"细分。以前 503
+ * （`failureFromCode(code) ?? …`）会让 **code 决定** 分类 —— 503 + `ai_upstream_error`
+ * 判成 `upstream`，正好违反这条纪律。现在六个状态码各自**硬绑**一个分类。
+ *
+ * `status === 0` **不在这里**：那是 `apiFetch` 的"没走到 HTTP"哨兵，一个数字抵三种原因
+ * （网络错 / 15s 兜底超时 / 用户取消），靠 `error` 串才分得开（见 `classifyZero`）。
+ *
+ * **实测**（任务 4 修复轮，用 `m2ErrorRes` 喂真形状走真 `apiFetch`）：
+ * ```
+ * 400 → {"ok":false,"status":400,"error":"invalid request body"}
+ * 401 → {"ok":false,"status":401,"error":"invalid or expired token"}   ← Content-Type 是 text/plain
+ * 413 → {"ok":false,"status":413,"error":"request body too large"}
+ * ```
+ * 三档的 `error` 都是**后端原文**（**不是** `statusText`、**不是** `undefined`）：401 的
+ * Content-Type 虽是 `text/plain`，**内容却是 JSON 文本** ⇒ `res.json()` 解析得出来。
+ * 所以"只看 body 会判错"的真正原因是**没有 `ai_` 前缀**，不是"body 不是 JSON"（旧的
+ * 注释把两者说反了 ✗）。
  */
 function classifyHttp(status: number, code: string | undefined): TransportFailure {
   switch (status) {
-    case 0:
-      // `apiFetch` 的"没走到 HTTP"哨兵（网络错 / 被取消 / 超时）。**取消的细分在 chat()
-      // 里用 signal 自己做**：到了这一层已经分不出"用户停"和"网络断"。
-      return { kind: "network" };
     case 401:
-      // 这一条就是"先看 status"的价值所在：M2 的 401 体是 text/plain 直述消息、
-      // 没有码（`{"error":"invalid or expired token"}` 但 Content-Type 不是 JSON ⇒
-      // apiFetch 的 `.json()` 拿到 `{}`）⇒ 靠 code 判会落到"未知失败"。
+      // 这一条就是"先看 status"的价值所在：M2 的 401 体是 `http.Error` 写的 text/plain
+      // JSON 文本，内容 `{"error":"invalid or expired token"}` —— **没有 `ai_` 前缀**
+      // （`backend/internal/middleware/auth.go:33`）⇒ 靠 code 判会落到"未知失败"。
+      // （这段直述消息不会出现在给用户的文案里，`describeFailure` 只回一句人话 ✓）
       return { kind: "unauthorized" };
     case 400:
+      // M2 这里是 `writeError` → application/json，内容是 `invalid request body`（不是码）
       return { kind: "bad_request" };
     case 413:
-      // M2 这一档的 error 是直述消息 "request body too large"（不是码）
+      // 同上，`request body too large`（不是码）
       return { kind: "too_large" };
     case 429: {
+      // 唯一允许 code 参与细分的分支：分类仍是 `rate_limited`（status 定的），
+      // code 只决定"分钟级"还是"日配额"。
       const byCode = failureFromCode(code);
       if (byCode !== null && byCode.kind === "rate_limited") return byCode;
       // 没有码（经代理改写 / 中间件版本不同）时按**分钟级**算：说"歇一分钟再试"比
       // 误判成"今天用完了"轻 —— 后者会让用户在额度尚在时放弃使用。
       return { kind: "rate_limited", scope: "minute" };
     }
-    case 502: {
-      // 502 的 code 有四种：ai_upstream_error / ai_upstream_auth / ai_unreachable /
-      // ai_invalid_response —— 全都归 `upstream` 并**原样保留 code**（排障时这是唯一的线索）。
-      const byCode = failureFromCode(code);
-      return byCode !== null && byCode.kind === "upstream" ? byCode : { kind: "upstream", code: "" };
-    }
+    case 502:
+      // M2 的 502 只有**三个**码（`handler/ai.go:86-87` 与 `:97-98` 的 default）：
+      // ai_upstream_auth / ai_upstream_error / ai_unreachable（**不是四个** ——
+      // `ai_invalid_response` 在 M2 不存在）。三个都归 `upstream`，code **原样保留**
+      // 供排障；这里**不看** code 是什么，只透传 —— 所以 502 + `ai_disabled` 也是
+      // `{kind:"upstream", code:"ai_disabled"}`，码不丢（以前那个 `kind === "upstream"`
+      // 守卫会把码吞成 `""` ✗，与"原样保留 code"的注释正好相反）。
+      return { kind: "upstream", code: code ?? "" };
     case 503:
-      // 这个状态码今天只有 `ai_disabled` 一种来源；其他 503 走兜底（同一句话给用户）
-      return failureFromCode(code) ?? { kind: "upstream", code: "" };
+      // 这个状态码今天只有 `ai_disabled` 一种来源（`handler/ai.go:84-85`）。body 里
+      // 混进别的码也**不改分类** —— 同一句话给用户（上游坏了不等于 AI 没启用）。
+      return { kind: "disabled" };
     case 504:
       return { kind: "timeout" };
     default:
-      // 404（服务端版本旧、没有 /ai 路由）/ 500 / 502 以外的任何码：都归 unknown upstream，
-      // 不新造分类 —— 上层只需要一句话。
+      // 404（服务端版本旧、没有 /ai 路由）/ 500 / 其他任何码：都归 unknown upstream，
+      // 不新造分类，也**不**把 code 带出来（未知状态下的码没有可解释性）。
       return { kind: "upstream", code: "" };
   }
+}
+
+/**
+ * `apiFetch` 的 `status:0` 哨兵 → 失败分类。一个数字抵三种原因，靠 `apiFetch` 带上来的
+ * `error`（`api.ts` 的 `networkErrorReason`）分：
+ * - `"timeout"`：`fetchWithTimeout` 的 15s 兜底掐的（没人主动取消）⇒ `timeout` ✓
+ * - `"aborted"`：外部 signal 取消 ⇒ `cancelled` ✓
+ * - `"network error"`：fetch 自己抛的（断网 / DNS / TLS / 代理）⇒ `network` ✓
+ *
+ * ⚠️ 用户主动取消**正常到不了**这里：`chat()` 在 status 判定之前就用 `signal.aborted`
+ * 拦掉了。这一档留 `aborted` 分支是兜底（例如取消恰好与兜底超时同时发生）。
+ * ⚠️ `status:0` 的 `code` 可能是 `undefined`（`apiFetch` 两个 catch 都带 error 串，
+ * 但别处调用可能不认这三档）⇒ 一律当网络层失败。
+ */
+function classifyZero(code: string | undefined): TransportFailure {
+  if (code === "timeout") return { kind: "timeout" };
+  if (code === "aborted") return { kind: "cancelled" };
+  return { kind: "network" };
 }
 
 // ---------------------------------------------------------------------------
@@ -311,9 +384,9 @@ export function createTransport(): Transport {
   return {
     async chat(messages, tools, signal): Promise<ChatOutcome> {
       // 已经取消的调用**一个请求都不发**。不是为了省流量，而是因为 `apiFetch` 在这一形态
-      // 下会把"被取消"和"网络断"都归成 `status:0`（`api.ts:111` 的 catch 不看 abort 原因）
+      // 下会把"被取消"和"网络断"都归成 `status:0`（`api.ts:126` 的 catch 不看 abort 原因）
       // ⇒ 用户主动停会被报成"网络似乎不太顺"，反过来怪网络。
-      if (signal.aborted) return { ok: false, failure: { kind: "timeout" } };
+      if (signal.aborted) return { ok: false, failure: { kind: "cancelled" } };
 
       let res: Awaited<ReturnType<typeof apiFetch>>;
       try {
@@ -322,21 +395,35 @@ export function createTransport(): Transport {
           body: JSON.stringify({ messages, tools }),
           signal,
         });
-      } catch {
-        // apiFetch 契约上不抛；万一将来它抛了（例如 getBaseUrl 未配置），也不能冒到编排循环
-        return { ok: false, failure: { kind: signal.aborted ? "timeout" : "network" } };
+      } catch (err) {
+        // apiFetch 契约上不抛；万一将来它抛了（例如 getBaseUrl 未配置），也不能冒到编排循环。
+        // **必须打日志**：这是唯一能看到抛出原因的地方（仓内惯例是 console.warn）。
+        const failure: TransportFailure = signal.aborted ? { kind: "cancelled" } : { kind: "network" };
+        logFailure("chat", failure, err instanceof Error ? err.message : String(err));
+        return { ok: false, failure };
       }
 
-      // 在途被取消：同上，`status:0` 里分不出"用户停"和"网络断"，用 signal 自己判。
-      // （放在 status 判定**之前**：否则 0 会被判成 network。）
-      if (signal.aborted) return { ok: false, failure: { kind: "timeout" } };
+      // 在途取消：同上，`status:0` 里分不出"用户停"和"网络断"，用 signal 自己判。
+      // （放在 status 判定**之前**：否则 0 会被判成 network，503 会被判成 disabled。）
+      if (signal.aborted) return { ok: false, failure: { kind: "cancelled" } };
 
       // 先看 status：失败分支里 code 只用来**细分**，分类永远由 status 决定。
       const code = typeof res.error === "string" ? res.error : undefined;
       if (!res.ok) {
-        const failure = classifyHttp(res.status, code);
+        // `status:0` 单独一档：它一个数字抵三种原因（网络错 / 15s 兜底超时 / 取消）。
+        // 不分开的话真实超时会被报成"网络似乎不太顺"（规格 §5.3 要的是"分析超时"）。
+        const failure = res.status === 0 ? classifyZero(code) : classifyHttp(res.status, code);
         logFailure("chat", failure, code);
         return { ok: false, failure };
+      }
+
+      // 200 里混进 `ai_` 错误码 = 服务端把失败包成了成功（契约违反）⇒ `invalid_response`。
+      // 不判的话用户会看到一个**空气泡**且没有任何错误提示（静默成功），比报错更糟。
+      // 判据用 `ai_` 前缀（与判别顺序那条纪律同一个判据）：没有前缀的散字段不是 M2 的错误码。
+      const stray = strayCodeInData(res.data);
+      if (stray !== undefined) {
+        logFailure("chat", { kind: "invalid_response" }, stray);
+        return { ok: false, failure: { kind: "invalid_response" } };
       }
 
       const reply = readReply(res.data);
@@ -381,7 +468,10 @@ export async function fetchAiStatus(): Promise<AiStatus> {
 
   if (!res.ok) {
     const code = typeof res.error === "string" ? res.error : undefined;
-    const failure = classifyHttp(res.status, code);
+    // `status:0` 与 chat 同法分开（这条没有外部 signal ⇒ 只可能 network / 兜底超时）。
+    // 不分的话以前会掉进 `classifyHttp` 的 default（`upstream`）—— 报"AI 服务暂时不可用"
+    // 而不是"网络不太好"，是错的文案，只是被用例的期望值一起写错了。
+    const failure = res.status === 0 ? classifyZero(code) : classifyHttp(res.status, code);
     logFailure("status", failure, code);
     return { enabled: false, model: null, host: null, failure };
   }
