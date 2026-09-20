@@ -206,6 +206,9 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
     for (const id of [CAT_ID, ACC_ID, TAG_ID, OWNER_ID, LEDGER_ID]) {
       expect(JSON.stringify(args.snapshot)).not.toContain(id);
     }
+    // 成员表（真 id）走**另一路**注入：快照里绝不能有 id，解析表里则必须**有真 id** ——
+    // 只给名字的形态下模型说得出"我"、链路却查不了（旧实现编过 `member-0` ⇒ 恒 0 行）。
+    expect(args.members).toEqual([{ id: "local-1", name: "我" }]);
 
     expect(store.messages.map((m) => [m.role, m.content])).toEqual([
       ["user", "这个月花了多少"],
@@ -270,6 +273,13 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
     expect(snapshot.kind).toBe("team");
     // 只有名字：成员 id 会拼出 `lookup.members` 的 id，但快照这一侧一个 id 都不给模型
     expect(snapshot.members).toEqual([{ name: "老婆" }, { name: "我" }]);
+    // 同一份成员表的**另一半**：解析表拿到的是 team_members 里的真 user_id（`u-wife`）+
+    // 自己那笔的 `server_user_id || 本地 id`（这里没有 server id ⇒ "local-1"）。
+    // 两处必须同时成立：快照给名字、解析表给 id，否则成员筛选就是"响亮失败"或错答案。
+    expect(runMock().mock.calls[0]![0].members).toEqual([
+      { id: "u-wife", name: "老婆" },
+      { id: "local-1", name: "我" },
+    ]);
   });
 });
 

@@ -446,6 +446,25 @@ function toPromptItem(it: AiQueryItem): Record<string, unknown> {
   };
 }
 
+/**
+ * 成员身份表不可用时的**响亮失败**（§5.3 的失败矩阵：`{ok:false}` ⇒ 回喂模型一次 ⇒ 人话）。
+ *
+ * `LookupContext.members` 是"成员名 → `transactions.user_id`"的**唯一**桥梁，而真 id
+ * 只有调用方能给：成员显示名要走 `useMemberInfo`（别名 > 昵称 > username 的唯一实现，
+ * 是 Vue 侧的东西），工具层不依赖 Vue、不自己查 `team_members` —— 这条边界由
+ * `tools.test.ts` 的「成员名只来自传入参数」钉着。
+ *
+ * ⇒ 空表意味着"这次对话没有成员身份信息"，此时**任何依赖成员的查询都必须拒绝**：
+ *   - 成员筛选：`resolveFilter` 会在空池上判 `not_found`，把"没有身份信息"说成
+ *     "这个账本还没有成员"（§M1 约束 7 明确要求区分这两件事）；
+ *   - member 分组：`runQuery` 的兜底是 `user_id.slice(0, 8)`，再被 `toPromptGroups`
+ *     换成「未知成员」⇒ 几个桶全叫「未知成员」，同样是**静默**答错。
+ * 两种都比"查不了"更坏：用户会据此以为"小明没花过钱"。
+ */
+const MEMBERS_UNAVAILABLE_ERROR =
+  "members_unavailable: 这次对话没拿到成员身份表（只有成员名字，没有对应的用户 id），所以按成员筛选 / 分组的结果不可信。" +
+  "请直接告诉用户这次按成员查不了，建议到流水页用成员筛选；不要报 0，也不要猜成员";
+
 async function runQueryTool(
   raw: Record<string, unknown>,
   ctx: ToolContext,
@@ -455,6 +474,14 @@ async function runQueryTool(
   const validated = validateQuery(raw);
   if (!validated.ok) return { ok: false, error: describeInvalidQuery(validated.errors) };
   const query: AiQuery = validated.query;
+
+  // 依赖成员的查询必须先确认"这次真有成员身份表"（见 MEMBERS_UNAVAILABLE_ERROR）。
+  // 放在 `runQuery` **之前**：它连一次库都不该碰 —— 用一个空表去查，得到的是"0 行"这个
+  // 看起来合理的结果，而不是"查不了"。
+  const needsMembers = (query.members?.length ?? 0) > 0 || query.groupBy === "member";
+  if (needsMembers && ctx.lookup.members.length === 0) {
+    return { ok: false, error: MEMBERS_UNAVAILABLE_ERROR };
+  }
 
   const outcome = await runQuery(ctx.ledgerId, query, ctx.lookup, ctx.now);
   if (!outcome.ok) return { ok: false, error: describeFailure(outcome.failure) };
@@ -865,6 +892,12 @@ export async function buildLookupContext(
     categories,
     accounts,
     tags,
-    members: members.map((m) => ({ id: m.userId, name: m.name })),
+    // ⚠️ 只收**真 id** 的成员行：id 一旦是 `undefined`（形状对不上：例如调用方给的是
+    // `{id, name}` 而不是 `{userId, name}`），它就会以"解析成功"的姿态进 `resolveFilter`，
+    // 最后变成 SQL 里的 `t.user_id IN (NULL)` ⇒ 对真流水**恒 0 行**，又是一次静默答错。
+    // 丢掉这些行之后，成员表要么是真实身份、要么为空 —— 为空时由 `runQueryTool` 响亮失败。
+    members: members
+      .filter((m) => typeof m.userId === "string" && m.userId !== "")
+      .map((m) => ({ id: m.userId, name: m.name })),
   };
 }

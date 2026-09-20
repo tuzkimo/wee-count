@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // 只 mock 唯一碰 DB 的那一层（照 runQuery.test.ts 的写法）。
 // 本文件跑的是**真的** runQuery（不是 mock 掉它）：任务 3 的交付物是"把 M1 的结果压成
@@ -547,8 +547,79 @@ describe("F6 groups 逐字段白名单：未解析的成员 id 片段绝不进 c
   });
 });
 
-describe("F7 分组也有 refs 键（旗舰问题「哪个分类花得最多」必须能写合法引用）", () => {
-  it("每个分组给出 q1.g{i}.total / label / count，且与 content.groups 逐项对应", async () => {
+// ---------------------------------------------------------------------------
+// 成员身份表不可用：依赖成员的查询必须**响亮失败**，不许给"看起来合理"的错答案
+//
+// 两个形态的判别力（都在加守卫前实测过）：
+//  - `groupBy: "member"`：放行的话 `runQuery` 的兜底是 `user_id.slice(0,8)`，再被
+//    `toPromptGroups` 换成「未知成员」⇒ 几个桶**全叫**「未知成员」，`{ok:true}` 静默答错。
+//  - `members: [...]`：放行的话在空池上判 `not_found` ⇒ 文字变成"这个账本还没有成员"，
+//    把"这次没拿到身份表"说成一条关于**账本**的事实（§M1 约束 7 明确要求区分两者）。
+// 反空转：给了真成员表（LOOKUP）时必须照常成功 —— 否则守卫就成了"成员功能整体下线"。
+// ---------------------------------------------------------------------------
+
+describe("成员身份表为空：依赖成员的查询一律响亮失败（禁止静默错答案）", () => {
+  const NO_MEMBERS: LookupContext = { ...LOOKUP, members: [] };
+
+  // ⚠️ 本组的用例**故意**排了不会被消费的 `mockResolvedValueOnce`（守卫就该让查询根本不发生），
+  // 而 `vi.clearAllMocks()` 只清统计、不清队列 ⇒ 不在这里清干净，未消费的行会漏给后面的用例
+  // （实测：漏进 F7 / ⑦ / ⑧ 三条用例，报的却是"金额对不上"这种无关失败）。
+  afterEach(() => {
+    mockDb.select.mockReset();
+  });
+
+  it("groupBy=member 且表为空 ⇒ {ok:false}，且一次库都不查（不许把 8 位 id 片段当分组名）", async () => {
+    // 喂两份行数据：守卫若失效，这两行会被当成两个分组、label 兜底成 id 片段
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 200, expense_count: 2, matched: 2 }])
+      .mockResolvedValueOnce([groupRow(MEMBER_STRANGER), groupRow(MEMBER_WIFE)]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", groupBy: "member", date: { preset: "thisYear" } },
+      ctx({ lookup: NO_MEMBERS }),
+    );
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.error).toContain("成员");
+    // 守卫必须在 `runQuery` **之前**：拿空表去查只会得到"0 行"这个看起来合理的结果
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(modelText(out)).not.toContain("deadbeef");
+    expect(modelText(out)).not.toContain("未知成员");
+  });
+
+  it("members 筛选且表为空 ⇒ 失败原因必须是「没拿到成员表」，不是「这个账本还没有成员」", async () => {
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", members: ["老婆"] },
+      ctx({ lookup: NO_MEMBERS }),
+    );
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    // 空池会让 `resolveFilter` 判 not_found 并回一句"这个账本还没有成员"——拿"这次没有
+    // 身份表"去陈述账本的事实，正是约束 7 不许的形态。
+    expect(out.error).not.toContain("还没有成员");
+    expect(out.error).toContain("成员");
+    expect(out.error).toContain("流水页");
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it("反空转：表非空时成员筛选照常可用，且发出去的参数就是**真 id**（守卫没把功能关掉）", async () => {
+    mockDb.select.mockResolvedValueOnce([{ ...emptyRow, expense_total: 128.5, expense_count: 1, matched: 1 }]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", type: "expense", members: ["老婆"], date: { preset: "thisYear" } },
+      ctx(),
+    );
+    expect(out.ok).toBe(true);
+    // 解析表的契约终点：真 id 必须进 `t.user_id IN (...)` 的参数（`querySql.ts:119-121`）
+    const [sql, params] = mockDb.select.mock.calls[0]!;
+    expect(sql).toContain("t.user_id IN");
+    expect(params).toContain(MEMBER_WIFE);
+    expect(params.join(",")).not.toContain("member-");
+  });
+});
+
+describe("F7 分组也有 refs 键（旗舰问题「哪个分类花得最多」必须能写合法引用）", () => {  it("每个分组给出 q1.g{i}.total / label / count，且与 content.groups 逐项对应", async () => {
     mockDb.select
       .mockResolvedValueOnce([{ ...emptyRow, expense_total: 300, expense_count: 3, matched: 3 }])
       .mockResolvedValueOnce([
@@ -946,6 +1017,23 @@ describe("⑧ buildLookupContext", () => {
     expect(lookup.members).toEqual([]);
     // 三次查询全是"本账本的名字表"，没有第四次（没有偷偷查成员表）
     expect(mockDb.select).toHaveBeenCalledTimes(3);
+  });
+
+  it("形状对不上的成员行（userId 空 / 缺失）不进解析表", async () => {
+    // 判别力：把 `filter` 去掉 ⇒ 本用例红。它拦的是"id 根本不是 id"这半条：
+    // 一个 `id: undefined` 的成员行**能解析出名字**，却会让 SQL 变成 `t.user_id IN (NULL)`
+    // ⇒ 对真流水恒 0 行（正是本任务要消灭的那类静默错答案）。
+    mockDb.select
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const broken = [
+      { userId: "", name: "小明" },
+      { userId: undefined as unknown as string, name: "老婆" },
+      { userId: MEMBER_WIFE, name: "老婆" },
+    ];
+    const lookup = await buildLookupContext(LEDGER_ID, broken);
+    expect(lookup.members).toEqual([{ id: MEMBER_WIFE, name: "老婆" }]);
   });
 });
 

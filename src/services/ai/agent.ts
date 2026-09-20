@@ -20,6 +20,10 @@
 //     而工具解析需要 id ⇒ 两者形状不同，不能互相派生。
 //   - `lookup` 可注入：不传时由本层调 `buildLookupContext`。它**只在 DB 为 null 时**回空表，
 //     真库异常会**抛**（Ruling 21 刻意如此）⇒ 必须由这里按 §5.3 收下，别让它冒到 store。
+//   - **成员表本层永远补不出来**：`snapshot.members` 只有名字（§7.1 不给 id），而
+//     `buildLookupContext` 的第二个参数正是"名字 → 解析表 id"的映射 ⇒ 本层**没有**真 id 可传，
+//     只能传空（见 `runAgent` 里那段注释）。真 id 由调用方经 `members` 注入（生产是 store，
+//     它从本地 `team_members` / `member_aliases` 读），拿不到就由工具层**响亮失败**。
 import {
   buildSystemPrompt,
   fillRefs,
@@ -40,7 +44,7 @@ import {
   type TransportFailure,
 } from "@/services/ai/transport";
 import type { AiMessagePayload } from "@/services/ai/session";
-import type { LookupContext } from "@/services/ai/resolve";
+import type { LookupContext, LookupMember } from "@/services/ai/resolve";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -118,8 +122,18 @@ export interface RunAgentArgs {
   userText: string;
   ledgerId: string;
   snapshot: LedgerSnapshot;
-  /** 不传时由本层调 `buildLookupContext`（它的真库异常按 §5.3 收下） */
+  /**
+   * 整张查找表都注入时用这个：本层**不碰 DB**（单测与将来的调用方都能完全接管）。
+   * 不传时由本层调 `buildLookupContext`（它的真库异常按 §5.3 收下）。
+   */
   lookup?: LookupContext;
+  /**
+   * 成员表（**真 id 只能来自本地库**）。只在 `lookup` 不传时用于组装默认查找表。
+   *
+   * 不传 = 本层没有成员身份信息（`buildLookupContext` 的成员表为空）⇒ 依赖成员的查询
+   * 会在工具层**响亮失败**，绝不伪造 id 去查（伪造的表现是"小明这个月花了 0 元"这种静默错答案）。
+   */
+  members?: LookupMember[];
   deps: AgentDeps;
   signal: AbortSignal;
 }
@@ -130,6 +144,17 @@ export interface RunAgentArgs {
 
 /** 回给模型的工具结果文本上限：模型只需要"错在哪"，不需要整份 JSON 塞满上下文 */
 const MAX_TOOL_NOTE_CHARS = 2000;
+
+/**
+ * `RunAgentArgs.members`（`{id, name}`）→ `buildLookupContext` 的入参形状（`{userId, name}`）。
+ *
+ * ⚠️ 这两者**必须逐字段显式转**：直接传 `{id, name}` 进去，`m.userId` 会是 `undefined`，
+ * 于是解析表里躺着一个 `id: undefined` 的成员 —— 名字能解析、SQL 却拿它去比 `user_id`
+ * （真库里就是 NULL 比较）⇒ 又是一次"静默 0 行"。类型门会先报 TS2345，这行转换是它的落地。
+ */
+function memberRows(members: LookupMember[]): { userId: string; name: string }[] {
+  return members.map((m) => ({ userId: m.id, name: m.name }));
+}
 
 function truncateForModel(text: string): string {
   return text.length > MAX_TOOL_NOTE_CHARS ? `${text.slice(0, MAX_TOOL_NOTE_CHARS)}…（已截断）` : text;
@@ -374,15 +399,21 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
   //    （`prompt.ts:68` 的 `s.categories.map`）。修复前 try 从循环才开始 ⇒ 那个 TypeError
   //    原样冒到调用方，而 docstring 却写着"永不抛"，且没有一条用例能红。
   try {
-    // 名字查找表：不注入就走真实的 buildLookupContext（它的抛 ⇒ §5.3 的通用失败消息）
+    // 名字查找表：不注入就走真实的 buildLookupContext（它的抛 ⇒ §5.3 的通用失败消息）。
+    //
+    // ⚠️ 成员表**只传 `args.members`，绝不凭空造 id**：这里的 `userId` 会被
+    //    `buildLookupContext` 原样当成解析表的 `id`（`tools.ts` 的 `members:` 那一行），再经 `resolveFilter`
+    //    进 SQL 的 `t.user_id IN (...)`（`querySql.ts:119-121`）。曾经这里传的是
+    //    `member-${i}`（用**序号**冒充 id）⇒ 成员筛选恒 0 行、成员分组全叫「未知成员」，
+    //    而且是**静默**答错（用户问"小明这个月花了多少"得到"0 元"）。
+    //    `snapshot` 刻意只有名字（§7.1），真 id 只能来自本地库（`team_members` /
+    //    `member_aliases`，且显示名要走 `useMemberInfo` —— 那是 Vue 侧的唯一实现，
+    //    本层不依赖 Vue，也不许猜）⇒ 拿不到就交空表，让依赖成员的查询在工具层响亮失败。
     let lookup: LookupContext;
     try {
       lookup =
         args.lookup ??
-        (await buildLookupContext(
-          args.ledgerId,
-          args.snapshot.members.map((m, i) => ({ userId: `member-${i}`, name: m.name })),
-        ));
+        (await buildLookupContext(args.ledgerId, memberRows(args.members ?? [])));
     } catch (e) {
       console.warn("[ai/agent] buildLookupContext 失败：", e);
       return { ...emptyTurn(), text: DB_FAILURE_TEXT };

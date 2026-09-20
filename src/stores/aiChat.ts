@@ -284,11 +284,16 @@ export const useAiChatStore = defineStore("aiChat", () => {
         fail(DB_FAILURE_TEXT);
         return;
       }
-      const snapshot = await buildSnapshot();
+      const members = await memberTable();
+      const snapshot = await buildSnapshot(members.map((m) => ({ name: m.name })));
       const turn = await runAgent({
         userText,
         ledgerId,
         snapshot,
+        // 成员表（**真 id**）与快照分两路：快照只给名字（§7.1 绝不发 id），而成员解析要用
+        // `transactions.user_id` 那个真值 —— 只给名字的形态下模型说得出"小明"、链路却查不了
+        // （旧实现拿序号编了个 `member-0`，于是成员筛选恒 0 行、静默回一个"0 元"）。
+        members,
         deps: { transport: createTransport(), session: AGENT_SESSION },
         signal: controller.signal,
       });
@@ -395,8 +400,11 @@ export const useAiChatStore = defineStore("aiChat", () => {
    *
    * 只读既有 store 的**内存**：拉取名表是页面的责任（照 `FilterPage`/`RecordPage` 的做法，
    * 那些页面自己 `fetchAll`）—— 本 store 不在这里补读，免得同一份数据有两处加载时机。
+   *
+   * `members` 只收名字：调用方从 `memberTable()` 里 `map((m) => ({ name: m.name }))` 剥掉 id
+   * （同一个成员表还喂给 `runAgent` 的解析表，见 `send`）。
    */
-  async function buildSnapshot(): Promise<LedgerSnapshot> {
+  async function buildSnapshot(members: { name: string }[]): Promise<LedgerSnapshot> {
     const ledger = ledgerStore.currentLedger;
     return {
       kind: ledger !== null && ledger.type === "team" ? "team" : "personal",
@@ -407,30 +415,37 @@ export const useAiChatStore = defineStore("aiChat", () => {
         type: ACCOUNT_TYPE_LABELS[a.type],
       })),
       tags: useTagStore().tags.map((t) => t.name),
-      members: await memberNames(),
+      members,
     };
   }
 
   /**
-   * 成员**名字**（快照里不给 id）。名字走 `useMemberInfo`（别名 > 昵称 > username 的唯一实现），
-   * 团队账本的名单来自 `team_members` 缓存；缓存还没拉到时只剩"我" —— 不编名字。
+   * 成员表：**真 id + 显示名**。快照与解析表都从这里出（一次读取，两份用途）。
+   *
+   * 名字走 `useMemberInfo`（别名 > 昵称 > username 的**唯一**实现，团队名单来自本地
+   * `team_members` 缓存）；id 是 `transactions.user_id` 的真值 —— 自己那笔用
+   * `server_user_id || 本地 id`，与 `useTransactionForm` 记账时写入的表达式**同一个**
+   * （两处取值不一致，成员筛选就会查不到自己的流水）。
    */
-  async function memberNames(): Promise<{ name: string }[]> {
+  async function memberTable(): Promise<{ id: string; name: string }[]> {
     const info = useMemberInfo();
-    const names: string[] = [];
-    const add = (name: string): void => {
-      if (name !== "" && !names.includes(name)) names.push(name);
+    const table: { id: string; name: string }[] = [];
+    const add = (id: string, name: string): void => {
+      if (id === "" || name === "") return;
+      // 同 id / 同名都只留第一份：重名的两个候选会让模型的反问变成"你是指老婆还是老婆"
+      if (table.some((m) => m.id === id || m.name === name)) return;
+      table.push({ id, name });
     };
 
     const ledger = ledgerStore.currentLedger;
     if (ledger !== null && ledger.team_id !== null) {
       for (const row of await getTeamMembers(ledger.team_id)) {
-        add((await info.getMember(row.user_id)).displayName);
+        add(row.user_id, (await info.getMember(row.user_id)).displayName);
       }
     }
     const selfId = useAuthStore().currentLocalUser?.server_user_id || getCurrentUserId() || "";
-    if (selfId !== "") add((await info.getMember(selfId)).displayName);
-    return names.map((name) => ({ name }));
+    if (selfId !== "") add(selfId, (await info.getMember(selfId)).displayName);
+    return table;
   }
 
   // 切账本即切会话（Ruling 14：`ai_conversations.ledger_id` UNIQUE，会话必须跟账本绑定）
