@@ -316,31 +316,20 @@ async function persistMessage(
 }
 
 /**
- * 准备会话：**每一轮都先 `ensureConversation`**（修正第 10 条）。
+ * 准备会话：往**当前会话**写本轮 user 消息 + 补标题。
  *
- * 往"已软删会话"里 `appendMessage` 是**写得进、读不出**（静默、不 warn）：清空会话后继续
- * 说话，消息会落进 `is_deleted=1` 的行里，用户再也看不到它。唯一保证就是每轮先 ensure
- * —— 它会**复活**那一行（`ledger_id UNIQUE` 决定了不能插第二行）。
+ * ⚠️ 本函数**不自己 `ensureConversation`**：会话 id 由 `runAgent` 在读历史之前就保证了
+ * （那里每轮先 ensure —— 它会**复活**软删会话行；清空会话后继续说话，消息否则会落进
+ * `is_deleted=1` 的行里，写得进、读不出）。这里再 ensure 一次的话，`ledgerId`/`now` 与
+ * 同一 tick 内的库状态都与第一次完全相同 ⇒ **结果必然与第一次相同**（实测：删掉它聚焦测试全绿，
+ * 整块换成一行 null 判断也全绿）⇒ 是冗余，不是防线。
  *
- * `ensureError` 由调用方在更早的位置（读历史之前）捕获：这里只负责把它翻译成"本地库不可用"。
+ * 因此走到这里 `conversationId` 仍是 null，只可能是一次 ensure 就失败（抛 / 回 null）：
+ * 翻译成"本地库不可用"。
  */
-async function prepareConversation(
-  p: Persist,
-  ledgerId: string,
-  userText: string,
-  ensureError: boolean,
-): Promise<"ok" | "db_error"> {
+async function prepareConversation(p: Persist, userText: string): Promise<"ok" | "db_error"> {
   if (p.session === undefined) return "ok";
-
-  if (p.conversationId === null) {
-    if (ensureError) return "db_error";
-    try {
-      p.conversationId = await p.session.ensureConversation(ledgerId, p.now);
-    } catch (e) {
-      console.warn("[ai/agent] ensureConversation 抛出（session 层契约是永不抛）：", e);
-      return "db_error";
-    }
-  }
+  // 会话 id 由 runAgent 每轮先 ensure 保证 ⇒ 这里仍为 null 就是本地库不可用
   if (p.conversationId === null) return "db_error";
 
   // 首条 user 消息写完**立刻**补标题：`setTitleIfEmpty` 自己只认 title 是否为空，
@@ -362,7 +351,10 @@ async function prepareConversation(
 // ---------------------------------------------------------------------------
 
 /**
- * 跑一轮完整对话。**永不抛**：任何失败都是一条等价的返回值（`text` 是给用户的话）。
+ * 跑一轮完整对话。**永不抛**：`try` 从**序言**第一行就开始覆盖（lookup / 建会话 / 读历史 /
+ * `buildSystemPrompt` / 编排循环全在里面）⇒ 任何失败都变成一条等价的返回值（`text` 是给用户的
+ * 话）并落进消息流，而不是冒到调用方。try 之外只剩对入参的两次纯取值（`deps.now()` 与
+ * `signal.aborted`）。
  */
 export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
   const nowFn = args.deps.now ?? ((): Date => new Date());
@@ -374,54 +366,58 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
     return { ...emptyTurn(), aborted: true };
   }
 
-  // 名字查找表：不注入就走真实的 buildLookupContext（它的抛 ⇒ §5.3 的通用失败消息）
-  let lookup: LookupContext;
-  try {
-    lookup =
-      args.lookup ??
-      (await buildLookupContext(
-        args.ledgerId,
-        args.snapshot.members.map((m, i) => ({ userId: `member-${i}`, name: m.name })),
-      ));
-  } catch (e) {
-    console.warn("[ai/agent] buildLookupContext 失败：", e);
-    return { ...emptyTurn(), text: DB_FAILURE_TEXT };
-  }
-
-  // 会话 + 历史必须在**落库 user 消息之前**读：否则本轮消息会把最老的一轮挤出"最近 3 轮"。
-  // ⚠️ 顺序：先 ensureConversation（它会复活软删会话，下面写消息就落在活着的行里），
-  //    再读历史，最后才写 user 消息 + 补标题（修正第 10 条）。
-  let history: { role: "user" | "assistant"; content: string }[] = [];
-  let ensureError = false;
-  if (persist.session !== undefined) {
-    try {
-      persist.conversationId = await persist.session.ensureConversation(args.ledgerId, now);
-    } catch (e) {
-      console.warn("[ai/agent] ensureConversation 抛出（session 层契约是永不抛）：", e);
-      ensureError = true;
-    }
-    if (persist.conversationId !== null) {
-      try {
-        history = await persist.session.recentTurns(persist.conversationId, 3);
-      } catch (e) {
-        // 读历史失败不是致命的（prompt 少一段上下文仍然能回答）
-        console.warn("[ai/agent] recentTurns 失败：", e);
-      }
-    }
-  }
-
-  if ((await prepareConversation(persist, args.ledgerId, args.userText, ensureError)) === "db_error") {
-    return { ...emptyTurn(), text: DB_FAILURE_TEXT };
-  }
-
-  const system = buildSystemPrompt(args.snapshot, now);
+  // 账（chips/drafts/refs/trace）在 try **之前**声明：catch 也要能把"到目前为止"的账交回去
   const state = { chips: [] as unknown[], drafts: [] as unknown[], refs: {} as Record<string, string> };
   const trace: AgentTurn["trace"] = [];
-  let roundMessagesForModel: ChatMessage[] = [];
-  let refIndex = 1;
-  let corrections = 0;
 
+  // ⚠️ try 必须从**序言**就覆盖：`buildSystemPrompt` 在快照缺字段时会直接抛 TypeError
+  //    （`prompt.ts:68` 的 `s.categories.map`）。修复前 try 从循环才开始 ⇒ 那个 TypeError
+  //    原样冒到调用方，而 docstring 却写着"永不抛"，且没有一条用例能红。
   try {
+    // 名字查找表：不注入就走真实的 buildLookupContext（它的抛 ⇒ §5.3 的通用失败消息）
+    let lookup: LookupContext;
+    try {
+      lookup =
+        args.lookup ??
+        (await buildLookupContext(
+          args.ledgerId,
+          args.snapshot.members.map((m, i) => ({ userId: `member-${i}`, name: m.name })),
+        ));
+    } catch (e) {
+      console.warn("[ai/agent] buildLookupContext 失败：", e);
+      return { ...emptyTurn(), text: DB_FAILURE_TEXT };
+    }
+
+    // 会话 + 历史必须在**落库 user 消息之前**读：否则本轮消息会把最老的一轮挤出"最近 3 轮"。
+    // ⚠️ 顺序：先 ensureConversation（它会复活软删会话，下面写消息就落在活着的行里），
+    //    再读历史，最后才写 user 消息 + 补标题（修正第 10 条）。
+    //    ⚠️ 这次 ensure 是**唯一**一次：会话 id 由这里每轮保证，`prepareConversation` 不再自己 ensure。
+    let history: { role: "user" | "assistant"; content: string }[] = [];
+    if (persist.session !== undefined) {
+      try {
+        persist.conversationId = await persist.session.ensureConversation(args.ledgerId, now);
+      } catch (e) {
+        console.warn("[ai/agent] ensureConversation 抛出（session 层契约是永不抛）：", e);
+      }
+      if (persist.conversationId !== null) {
+        try {
+          history = await persist.session.recentTurns(persist.conversationId, 3);
+        } catch (e) {
+          // 读历史失败不是致命的（prompt 少一段上下文仍然能回答）
+          console.warn("[ai/agent] recentTurns 失败：", e);
+        }
+      }
+    }
+
+    if ((await prepareConversation(persist, args.userText)) === "db_error") {
+      return { ...emptyTurn(), text: DB_FAILURE_TEXT };
+    }
+
+    const system = buildSystemPrompt(args.snapshot, now);
+    let roundMessagesForModel: ChatMessage[] = [];
+    let refIndex = 1;
+    let corrections = 0;
+
     for (let round = 1; round <= ROUND_LIMIT; round++) {
       if (args.signal.aborted) return { ...buildTurn(state, trace), aborted: true };
 
@@ -472,8 +468,8 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
     await persistMessage(persist, "assistant", ROUND_LIMIT_TEXT);
     return { ...buildTurn(state, trace), text: ROUND_LIMIT_TEXT };
   } catch (e) {
-    // 契约是"永不抛"：任何意外都变成一条消息，而不是未捕获的 rejection
-    console.warn("[ai/agent] 编排循环意外抛出：", e);
+    // 契约是"永不抛"：任何意外（含序言里的）都变成一条消息，而不是未捕获的 rejection
+    console.warn("[ai/agent] 编排（含序言）意外抛出：", e);
     await persistMessage(persist, "assistant", DB_FAILURE_TEXT);
     return { ...buildTurn(state, trace), text: DB_FAILURE_TEXT };
   }

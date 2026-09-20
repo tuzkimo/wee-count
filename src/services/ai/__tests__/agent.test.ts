@@ -610,6 +610,41 @@ describe("错误一律变成一条用户可见的 assistant 消息，用 transpo
     expect(appended.filter((r) => r.role === "assistant")).toHaveLength(1);
   });
 
+  it("序言里的 `buildSystemPrompt` 抛（快照缺 categories）⇒ 也只是一条失败消息，绝不冒出去", async () => {
+    // 杀手（Minor 第 1 处）：`:365` 的 docstring 写着"永不抛"，但 `try` 曾经从**循环**才开始
+    // ⇒ 序言里的 `buildSystemPrompt`（`prompt.ts:68` 的 `s.categories.map`）在快照缺字段时
+    // 直接 TypeError 冒到调用方，且当时**没有一条用例能红**（`:601` 只覆盖循环内的 transport throw）。
+    // 修复前本用例实测：`TypeError: Cannot read properties of undefined (reading 'map')`。
+    const broken = {
+      kind: "personal",
+      accounts: [{ name: "招行", type: "银行卡" }],
+      tags: [],
+      members: [{ name: "我" }],
+    } as unknown as LedgerSnapshot;
+    const { session, appended } = fakeSession();
+    const { transport, chat } = scriptedTransport({ text: "不该被问到", toolCalls: [] });
+
+    const turn = await runAgent({
+      userText: "这个月花了多少",
+      ledgerId: LEDGER,
+      snapshot: broken,
+      lookup: LOOKUP,
+      deps: { transport, session, now: () => NOW },
+      signal: new AbortController().signal,
+    });
+
+    // ① 不抛：变成一条用户可见的消息（§5.3 的通用失败文案）
+    expect(turn.text).toBe(DB_FAILURE_TEXT);
+    expect(turn.aborted).toBe(false);
+    // ② system prompt 都组不出来 ⇒ 一个请求都不该发出去
+    expect(chat).not.toHaveBeenCalled();
+    // ③ "错误即消息"：这条失败同样要落进消息流，与 `!outcome.ok` 路径同一处理风格
+    //    （user 消息在序言里已落库，assistant 那条由 catch 补上）
+    const assistants = appended.filter((r) => r.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.content).toBe(DB_FAILURE_TEXT);
+  });
+
   it("本地 DB 不可用（会话建不出来）⇒ 实话实说的失败消息，不假装查过", async () => {
     const session = {
       ensureConversation: vi.fn(async () => null),
