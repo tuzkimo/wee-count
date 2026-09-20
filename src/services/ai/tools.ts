@@ -18,6 +18,7 @@ import {
   PRESET_KEYS,
   TX_TYPES,
   validateQuery,
+  type AiGroupBy,
   type AiQuery,
   type AiQueryError,
   type AiTxType,
@@ -27,7 +28,7 @@ import {
   type LookupContext,
   type ResolveError,
 } from "@/services/ai/resolve";
-import type { AiTotals, AiQueryItem } from "@/services/ai/querySql";
+import type { AiGroup, AiTotals, AiQueryItem } from "@/services/ai/querySql";
 import { runQuery, type RunQueryFailure } from "@/services/ai/runQuery";
 import { getUserDb } from "@/db/userDb";
 import { toDateKey } from "@/utils/dateRange";
@@ -57,8 +58,8 @@ export type ToolOutcome =
  * **刻意不从 `AI_QUERY_MAX_ITEMS` 派生**：那个常量是 M1 的"SQL 取多少行"，
  * 这个是"最多发几条给模型"，是**隐私边界**的一部分。两者今天同值，但语义不同 ——
  * M1 若为了别的用途把取数放宽，隐私上限不该跟着悄悄放宽。
- * 它们的关系由一条前提守卫钉住（`MAX_PROMPT_ITEMS <= AI_QUERY_MAX_ITEMS`），
- * 而那条守卫是"truncated 原样透传"这个做法成立的**前提**（见 queryTool 里的注释）。
+ * 它们的关系由一条前提守卫钉住（`AI_QUERY_MAX_ITEMS <= MAX_PROMPT_ITEMS`），
+ * 而那条守卫是"本层 slice 不会真的丢条"这个结论的**前提**（见 queryTool 里的注释）。
  */
 export const MAX_PROMPT_ITEMS = 20;
 
@@ -67,6 +68,145 @@ const BUCKET_LABEL: Record<AiTxType, string> = {
   income: "收入",
   transfer: "转账",
 };
+
+/**
+ * `refs` 的键 → 它是什么（生成给模型的 `refsNote` 用）。
+ *
+ * **每个键都必须在这里有说法**：`describeRefs` 只遍历 `Object.keys(refs)`，
+ * 遇到没有说法的键直接抛 —— "note 提到的键 ⊆ refs 的键"和"refs 的键都被解释过"
+ * 这两条同时成立，而且都只有一个来源（`refs` 自己）。
+ * 注意 `*.avg` 断言的是"平均值"而不是"总额"：金额引用写错语义是静默错数字。
+ */
+const REF_PROMISES: Record<string, (key: string) => string> = {
+  total: (key) => `${key} 是总额`,
+  count: (key) => `${key} 是笔数`,
+  avg: (key) => `${key} 是平均值`,
+  matched: (key) => `${key} 是命中的全部笔数`,
+  net: (key) => `${key} 是净额`,
+};
+
+/** 分组桶的引用键（`q1.g0.total` 这类）与它的说法。F1 的同一份派生逻辑覆盖了它们 */
+const GROUP_REF_PROMISES: Record<string, string> = {
+  total: "总额",
+  label: "分组名",
+  count: "笔数",
+};
+
+const REF_KEY_RE = /^q(\d+)\.(.+)$/;
+const GROUP_REF_KEY_RE = /^g(\d+)\.(\w+)$/;
+
+/**
+ * M1 的成员分组用 `user_id` 作分组键，`runQuery` 用 `ctx.members` 里的昵称替换；
+ * 查不到时它兜底成 `id.slice(0, 8)`（`runQuery.ts` 的 `SHORT_ID_LEN`）。
+ *
+ * ⚠️ **8 位十六进制片段也是 id 片段，§7.3 说"绝不发 id"**。今天漏出去的形态恰好躲过
+ * 所有断言（`UUID_RE` 看不见 8 位短串、账本 id 也不出现），所以这一层不依赖"猜它像不像
+ * id"，而是**按来源判别**：member 分组的 label 必须能在 `lookup.members` 里找到同名成员，
+ * 找不到就换成这个中性标签（原始 id 若要本地用，只留在 `payload` 里）。
+ */
+const UNKNOWN_MEMBER_LABEL = "未知成员";
+
+/**
+ * 逐字段取值。写成泛型索引而不是 `it[k]`：`AiGroup`/`AiQueryItem` 上没有索引签名，
+ * `it[k]` 在 TS 严格模式下取到的是 `any`（本仓禁止）。
+ */
+function pick<T, K extends keyof T>(it: T, keys: readonly K[]): Pick<T, K> {
+  const out = {} as Pick<T, K>;
+  for (const k of keys) out[k] = it[k];
+  return out;
+}
+
+const GROUP_FIELDS = ["label", "expense", "income", "transfer", "count"] as const;
+
+/** 进内容的 group：**逐字段白名单**（与 `items` 的 `toPromptItem` 同一条纪律），
+ *  且 member 分组的 label 必须来自 lookup，否则换成中性标签（见 UNKNOWN_MEMBER_LABEL）。 */
+function toPromptGroups(groups: AiGroup[] | null, groupBy: AiGroupBy | undefined, lookup: LookupContext): AiGroup[] | null {
+  if (groups === null) return null;
+  return groups.map((g) => {
+    const safe = pick(g, GROUP_FIELDS);
+    const resolved = groupBy !== "member" || lookup.members.some((m) => m.name === safe.label);
+    return resolved ? safe : { ...safe, label: UNKNOWN_MEMBER_LABEL };
+  });
+}
+
+/**
+ * 把这份 `refs` 的**每个键**解释给模型。文字全部由 `Object.keys(refs)` 派生 ——
+ * 这里没有第二份"键清单"，所以 note 不可能承诺一个 `refs` 里不存在的键。
+ *
+ * 为什么非这样不可：note 里出现而 `refs` 里没有的键，会诱导模型写出一条
+ * `fillRefs` 查不到的引用，于是**用户直接看到裸 `{{q1.transfer.total}}`**（§7.2 的
+ * 既定行为：宁可暴露占位符，也不塞错数字）。旧版 note 无条件宣称
+ * "`q1.expense / income / transfer.*` 是各桶、`q1.net` 是净额"，而 `type` 省略时
+ * `transfer` 桶是 `null`（不给键）、`type` 指定时没有 `net` —— 两种形态各承诺了一个
+ * 不存在的键。派生之后这类承诺在结构上不可能出现。
+ */
+function describeRefs(refs: Record<string, string | number>, primary: AiTxType, typed: boolean): string {
+  const sorted = Object.keys(refs).sort();
+  const notes: string[] = [];
+
+  // 聚合键（`q1.total` 这类）。分组键单独在下面处理。
+  const plain = sorted.filter((k) => {
+    const m = REF_KEY_RE.exec(k);
+    return m !== null && !GROUP_REF_KEY_RE.test(m[2]);
+  });
+  const grouped = sorted.filter((k) => {
+    const m = REF_KEY_RE.exec(k);
+    return m !== null && GROUP_REF_KEY_RE.test(m[2]);
+  });
+
+  for (const key of plain) {
+    const m = REF_KEY_RE.exec(key);
+    if (m === null) continue;
+    // 键有两级形态：`q1.total` 与 `q1.expense.count`。说法按**最后一段**取，
+    // 所以每个 key 都必须匹配到一条说法 —— 遇到没有说法的键直接抛，绝不静默跳过：
+    // 新加一个 refs 键却忘了给它说法，模型就会拿到一个没被解释过、只能干猜的键。
+    // 用下标取最后一段而不是 `.at(-1)`：本仓的 tsconfig lib 够不到 `Array.prototype.at`
+    // （类型门会报 TS2550，运行期也可能在旧 WebView 上缺失）。
+    const segments = m[2].split(".");
+    const leaf = segments[segments.length - 1] ?? "";
+    const promise = REF_PROMISES[leaf];
+    if (promise === undefined) throw new Error(`refs 里有 ${key}，但 REF_PROMISES 没有它的说明`);
+    if (leaf === "total" || leaf === "avg") {
+      let text = promise(key);
+      if (leaf === "total") {
+        text += typed
+          ? `（${BUCKET_LABEL[primary]}桶；你给了 type，所以只有这一个桶）`
+          : `（你没给 type，这里按「${BUCKET_LABEL[primary]}」桶给）`;
+      }
+      notes.push(text);
+      continue;
+    }
+    notes.push(promise(key));
+  }
+
+  if (grouped.length > 0) {
+    const order = new Set<number>();
+    const prefixes = new Set<string>();
+    for (const key of grouped) {
+      const m = REF_KEY_RE.exec(key);
+      if (m === null) continue;
+      const g = GROUP_REF_KEY_RE.exec(m[2]);
+      if (g === null) continue;
+      const promise = GROUP_REF_PROMISES[g[2]];
+      if (promise === undefined) throw new Error(`refs 里有 ${key}，但 GROUP_REF_PROMISES 没有它的说明`);
+      order.add(Number(g[1]));
+      prefixes.add(m[1]);
+    }
+    const indexes = [...order].sort((a, b) => a - b);
+    // 说明里的示例键必须**逐字取自已存在的 refs 键**：拼一个不存在的键就又会教模型写错引用
+    const sample = `q${[...prefixes][0]}.g${indexes[0]}`;
+    notes.push(
+      `每个分组桶还有 ${sample}.total（总额）/ ${sample}.label（分组名）/ ${sample}.count（笔数）；` +
+      `下标 ${indexes.join(" / ")} 依次对应 content.groups 的顺序（g0 是第一个）`,
+    );
+  }
+
+  notes.push(
+    `要报「一共几笔」请用 .matched（含转账，与流水页列出的条数一致）；` +
+    `.count 只是「${BUCKET_LABEL[primary]}」桶的笔数，两者不同`,
+  );
+  return `${notes.join("；")}。明细最多 ${MAX_PROMPT_ITEMS} 条。`;
+}
 
 // ---------------------------------------------------------------------------
 // JSON Schema
@@ -326,21 +466,37 @@ async function runQueryTool(
   if (result.net !== null) refs[`${prefix}.net`] = result.net;
   refs[`${prefix}.matched`] = result.matched;
 
-  // ⚠️ truncated **原样透传**，不重算、不吞（M1 裁决 9）。
-  // 本层还有一次 `MAX_PROMPT_ITEMS` 截断，为什么仍可以用原值：
-  // M1 的明细 SQL 本身就 `LIMIT min(limit, 20)`（AI_QUERY_MAX_ITEMS），生产链路上
-  // `items.length <= 20` 恒成立 ⇒ 本层的 slice 从不真的丢东西；能出现 `> 20` 条的状态，
-  // 必然同时满足 `matched <= items.length`（M1 才会判 false），那也说明没有条目被丢掉。
-  // 这条推理的前提由 `MAX_PROMPT_ITEMS <= AI_QUERY_MAX_ITEMS` 钉住（tools.test.ts 的 ②）。
-  const items = result.items === null
-    ? null
-    : result.items.slice(0, MAX_PROMPT_ITEMS).map(toPromptItem);
+  // 分组的引用键（F7：没有它们，"哪个分类花得最多"这类旗舰问题就写不出任何合法引用 ——
+  // prompt 又禁止直接写数字，唯一的绕法是再查一次，而对 COALESCE 兜底标签必然 not_found）。
+  // 顺序与 content.groups 逐项对应，下标就是 g 后面的编号。
+  const groups = toPromptGroups(result.groups, query.groupBy, ctx.lookup);
+  groups?.forEach((g, i) => {
+    refs[`${prefix}.g${i}.label`] = g.label;
+    refs[`${prefix}.g${i}.total`] = groupBucket(g, primary);
+    refs[`${prefix}.g${i}.count`] = g.count;
+  });
 
-  const refsNote =
-    `${prefix}.total / count / avg 指「${BUCKET_LABEL[primary]}」桶` +
-    (query.type === undefined ? "（你没指定 type，所以按支出桶给；" : "（") +
-    `${prefix}.expense / income / transfer.* 是各桶，${prefix}.net 是净额，` +
-    `${prefix}.matched 是命中的全部笔数（含转账）。明细最多 ${MAX_PROMPT_ITEMS} 条。`;
+  // 明细上限：**两层截断都要如实上报**。
+  //
+  // `truncated` 不是"M1 的那个布尔值原样透传"这么简单：本层还有一次
+  // `MAX_PROMPT_ITEMS` 截断，而 M1 的判据（`matched > items.length`）对"我们砍掉的
+  // 条数"一无所知。于是旧实现在 `items.length > MAX_PROMPT_ITEMS` 时会把**砍掉 10 条**
+  // 的结果标成 `truncated:false` —— 对模型撒谎说"这份明细是完整的"。哪一层截断都算。
+  //
+  // 前提守卫（tools.test.ts 的 ②）：`AI_QUERY_MAX_ITEMS <= MAX_PROMPT_ITEMS`。
+  // 生产链路上 M1 的明细 SQL 自带 `LIMIT min(limit, AI_QUERY_MAX_ITEMS)`
+  // （`buildItemsSql` ⇒ querySql.ts:356），所以今天 slice 从不真的丢条；守卫写反了
+  // 就永远红不了，也就保护不了这条推理。
+  const rawItems = result.items;
+  const items = rawItems === null
+    ? null
+    : rawItems.slice(0, MAX_PROMPT_ITEMS).map(toPromptItem);
+  const droppedItems = rawItems !== null && rawItems.length > MAX_PROMPT_ITEMS;
+  const truncated = result.truncated || droppedItems;
+
+  // refsNote 的键清单**完全由 refs 派生**（见 describeRefs 的注释）：note 只解释
+  // 这份结果里真实存在的键，不承诺任何别的。
+  const refsNote = describeRefs(refs, primary, query.type !== undefined);
 
   const content = JSON.stringify({
     summary: {
@@ -350,9 +506,9 @@ async function runQueryTool(
       net: result.net,
       matched: result.matched,
     },
-    groups: result.groups,
+    groups,
     items,
-    truncated: result.truncated,
+    truncated,
     refs,
     refsNote,
   });
@@ -361,9 +517,14 @@ async function runQueryTool(
     ok: true,
     refs,
     // payload 只给本地（芯片跳转 / 会话回放）：**带 id**，绝不进 content。
-    payload: { chips: [applied], refs, matched: result.matched, truncated: result.truncated },
+    payload: { chips: [applied], refs, matched: result.matched, truncated },
     content,
   };
+}
+
+/** 分组桶里"主桶"的金额（与 `refs[total]` 同一口径：type 省略时就是支出桶） */
+function groupBucket(g: AiGroup, type: AiTxType): number {
+  return type === "expense" ? g.expense : type === "income" ? g.income : g.transfer;
 }
 
 function bucketOf(

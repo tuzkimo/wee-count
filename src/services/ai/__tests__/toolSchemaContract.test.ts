@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { TOOLS, MAX_PROMPT_ITEMS } from "@/services/ai/tools";
-import { validateQuery } from "@/services/ai/dsl";
+import {
+  AGGREGATES,
+  GROUP_BYS,
+  ORDER_BYS,
+  PRESET_KEYS,
+  TX_TYPES,
+  validateQuery,
+} from "@/services/ai/dsl";
 import { buildSystemPrompt, type LedgerSnapshot } from "@/services/ai/prompt";
 
 /**
@@ -96,6 +103,31 @@ describe("§8.E 工具 schema 与 validateQuery 的对称性", () => {
  * **两份手写真相**。不把 `TOOLS` 引进 `prompt.ts`（会把 `@/db/userDb` 拖进
  * prompt 的纯函数模块图），改为在这里夹住：prompt 文本必须包含每个工具名。
  */
+/**
+ * 工具名候选取样器（F4）：**锚在名词上**（transaction(s) / draft(s)，大小写不敏感），
+ * 而不是锚在 `query_` / `create_` 这两个动词前缀上 —— 后者会让
+ * `delete_transaction`（不存在的写工具）、`queryTx`（无下划线）、
+ * `Query_transactions`（首字母大写）全部溜过去（实测三种形态下契约文件 7/7 全绿）。
+ *
+ * 实现是"把文本切成 ASCII 词，再挑出含名词的词"，**不是**用一个正则同时干两件事：
+ * `\b…(?=…名词)` 这种写法在 `Query_transactions` 上只抽到 `Query_`（实测），
+ * 因为前瞻的字符类允许 `_` 跨越下划线，回溯后落在一个错误的位置上。
+ * 先切词再过滤没有歧义：`queryTx` / `Query_transactions` / `delete_transaction` 都是**一个词**。
+ *
+ * 名词集合里有 **tx**（审查 F4 点名的形态之一）：`\b\w*(?:transaction|draft)\w*` 抓不到
+ * `queryTx`，而 `Tx` 恰好是"流水"最常用的缩写 ⇒ 一个不存在的工具名又溜过去了。
+ * 代价（接受）：prompt 若写英文散文 "documents in tax" 之类会被误抽 —— 那是**误报方向安全**
+ * 的一侧（改措辞即可），比漏掉 `queryTx` 好。
+ * `\w` 不含中文与引号，所以 prompt 里的 JSON 键 `"query":` 与中文散文都不会被误抽。
+ */
+function toolNameCandidates(text: string): string[] {
+  return [
+    ...new Set(
+      (text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).filter((w) => /[Tt]ransaction|[Dd]raft|[Tt]x/.test(w)),
+    ),
+  ];
+}
+
 describe("prompt ↔ TOOLS 契约（工具名单一来源）", () => {
   const SNAPSHOT: LedgerSnapshot = {
     kind: "personal",
@@ -119,16 +151,41 @@ describe("prompt ↔ TOOLS 契约（工具名单一来源）", () => {
     // 上一条只保证"每个真工具名都出现过"，**挡不住"只改了一半"**：
     // 把 prompt 里三处 query_transactions 改成 query_tx、第四处忘了改，
     // 上一条仍然绿（旧名字还在文本里），而模型已经在两处读到不存在的工具名。
-    // 这里按工具名的构词（query_ / create_ 前缀）抽出候选，逐个要求在 TOOLS 里。
-    // 变异实验：把 prompt.ts 里的工具名**部分**改名 → 这条必须红。
+    //
+    // ⚠️ 抽出候选的正则**锚在名词上，不锚在动词前缀上**（审查 F4）：
+    // 旧版 `/\b(?:query|create)_[a-z_]+/` 只认"我们已知的两个前缀"，于是
+    // `delete_transaction`（一个**不存在的写工具**，直接违反"AI 只能读"）、
+    // `queryTx`（无下划线）、`Query_transactions`（首字母大写）全都能溜过去 ——
+    // 实测三种形态下本文件 **7/7 全绿**。取样逻辑见 toolNameCandidates。
     const prompt = buildSystemPrompt(SNAPSHOT, new Date(2026, 2, 1));
-    const mentioned = [...new Set(prompt.match(/\b(?:query|create)_[a-z_]+/g) ?? [])];
-    // 防空转：正则抽不到任何工具名时，下面一条断言都不跑
+    const mentioned = toolNameCandidates(prompt);
+    // 防空转：正则抽不到任何候选时，下面一条断言都不跑
     expect(mentioned.length).toBeGreaterThan(0);
     const known = TOOLS.map((t) => t.function.name);
     for (const name of mentioned) {
       expect(known, `prompt 提到的工具 ${name} 不在 TOOLS 里`).toContain(name);
     }
+  });
+
+  it.each([
+    ["delete_transaction", "需要删除流水时可以调 delete_transaction"],
+    ["queryTx", "需要查时可以调 queryTx"],
+    ["Query_transactions", "可以调 Query_transactions"],
+  ])("反向的判别力：%s 这种形态也会被抽成候选并在 TOOLS 里查不到", (expected, text) => {
+    // 这条不测 prompt，而测**上面那条断言的抽取能力**：把三种"漏网形态"喂给同一个取样器，
+    // 必须都被抽成候选。改窄上面那条正则（例如退回动词前缀）时它会红 —— 否则
+    // "反向断言改窄之后仍然全绿"这件事本身没有人看得见（F4 的教训：在场 ≠ 能红）。
+    const candidates = toolNameCandidates(text);
+    expect(candidates).toContain(expected);
+    // 抽到的候选确实不在真工具名单里 ⇒ 上面那条反向断言在这种 prompt 下必然红
+    expect(TOOLS.map((t) => t.function.name)).not.toContain(expected);
+  });
+
+  it("反向的抽取不会宽到命中普通散文（不含名词就没有候选）", () => {
+    expect(toolNameCandidates("账户与分类名字要与下面的快照一致")).toEqual([]);
+    expect(toolNameCandidates("你可以查询、创建草稿")).toEqual([]);
+    // prompt 里的 JSON 键 `"query":` 不能把裸 `query` 抽成候选（旧版就栽在这种形状上）
+    expect(toolNameCandidates('{"query": "转账"}')).toEqual([]);
   });
 
   it("两个工具按规格 §4.2 的次序、且描述里写明了草稿不写库", () => {
@@ -140,5 +197,65 @@ describe("prompt ↔ TOOLS 契约（工具名单一来源）", () => {
     expect(TOOLS[1].function.description).toContain("不得声称已经记账");
     // §7.3 的"最多前 20 条"也得在工具描述里对模型说清楚
     expect(TOOLS[0].function.description).toContain(String(MAX_PROMPT_ITEMS));
+  });
+});
+
+/**
+ * §8.E 的另一半：**取值层与必填层**。
+ *
+ * 字段名层（上面那个 describe）已经被夹住了，但把 `aggregate.enum` 从 `[...AGGREGATES]`
+ * 硬编码成 `["sum","count"]`、再把 `required` 清空 ⇒ 当时三个文件 73 用例**全绿**
+ * （审查 F5）⇒ "工具声明了但校验器不认/少认"的取值层与必填层今天没有防线。
+ *
+ * 这里逐项比对：工具声明的每个 enum 必须**逐字等于** dsl.ts 的常量（多一个少一个都红，
+ * 顺序也钉住，因为模型读的是这份顺序）；`required` 必须与 `validateQuery` 的
+ * **必填行为**一致（清空 required ⇒ 红）。
+ */
+describe("§8.E 取值层与必填层：schema 的 enum / required 必须与 dsl.ts 的常量一致", () => {
+  function queryProps(): Record<string, { enum?: unknown; type?: unknown }> {
+    return (TOOLS[0].function.parameters as { properties: Record<string, { enum?: unknown }> }).properties;
+  }
+
+  const ENUM_CONTRACT: { field: string; live: readonly string[]; golden: readonly string[] }[] = [
+    { field: "aggregate", live: AGGREGATES, golden: ["sum", "count", "avg", "max", "min", "list"] },
+    { field: "groupBy", live: GROUP_BYS, golden: ["category", "account", "member", "month", "day", "tag"] },
+    { field: "orderBy", live: ORDER_BYS, golden: ["value_desc", "value_asc", "date_desc", "date_asc"] },
+    { field: "type", live: TX_TYPES, golden: ["expense", "income", "transfer"] },
+    { field: "date.preset", live: PRESET_KEYS, golden: [
+      "today", "yesterday", "thisWeek", "lastWeek", "thisMonth", "lastMonth",
+      "last7Days", "last30Days", "last3Months", "last6Months", "thisYear", "lastYear",
+    ] },
+  ];
+
+  it.each(ENUM_CONTRACT)("$field：dsl 常量没漂，且 schema 的 enum 就是这一份（顺序也一致）", ({ field, live, golden }) => {
+    // golden 是冻结的字面量（不是拿常量再 join 出来），所以常量漂移时这条会红；
+    // 第二条断言才是"schema 的 enum 与常量一致"。
+    expect(golden).toEqual([...live]);
+    const enumList =
+      field === "date.preset"
+        ? (queryProps().date as { properties: Record<string, { enum?: unknown }> }).properties.preset.enum
+        : queryProps()[field].enum;
+    expect(enumList).toEqual([...live]);
+  });
+
+  it("required 与校验器的必填行为一致：aggregate 必填（清空 required ⇒ 红）", () => {
+    const required = (TOOLS[0].function.parameters as { required: unknown }).required;
+    expect(required).toEqual(["aggregate"]);
+    // 行为侧：aggregate 缺了就真被拒（否则 required 声明与校验器各说各话）
+    const missing = validateQuery({ type: "expense" });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.errors.map((e) => e.code)).toContain("missing_aggregate");
+  });
+
+  it("草稿工具的 required 与它的两条硬必填一致（type / amount）", () => {
+    const required = (TOOLS[1].function.parameters as { required: unknown }).required;
+    expect(required).toEqual(["type", "amount"]);
+  });
+
+  it("schema 里不出现 dsl 不认的取值（枚举是引用常量、不是手写第二份）", () => {
+    // 硬编码成 ["sum","count"] 时，`aggregate` 的 enum 会**丢**掉 dsl 认得的 max/min/list：
+    // 上面 each 已经逐字比过了；这一条把"丢掉的取值"直接点出来，失败原因更可读。
+    const dropped = [...AGGREGATES].filter((v) => !(queryProps().aggregate.enum as unknown[]).includes(v));
+    expect(dropped).toEqual([]);
   });
 });

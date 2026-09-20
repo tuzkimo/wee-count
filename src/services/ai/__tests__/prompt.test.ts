@@ -14,6 +14,7 @@ import {
   PRESET_KEYS,
   TX_TYPES,
 } from "@/services/ai/dsl";
+import { TOOLS } from "@/services/ai/tools";
 import { toDateKey } from "@/utils/dateRange";
 
 /**
@@ -191,6 +192,102 @@ describe("buildSystemPrompt few-shot 示例", () => {
 
   it("还带上了规格 §7.1 的第三次查询示例（两次查询后对比）", () => {
     expect(prompt()).toContain("这个月花的比上个月多吗");
+  });
+
+  it("「一共几笔」的示例引用的是 matched（不是支出桶的 count）", () => {
+    // F3：芯片的 applied.type=null ⇒ 流水页列表**含转账**（filterQuery.ts:27），
+    // 而 `{{q1.count}}` 是支出桶笔数 ⇒ 用户会看到"AI 说 1 笔、列表 2 条"，
+    // 正是 M1 约束 8 警告的形态。所以示例里的笔数引用必须是 matched。
+    // ⚠️ 断言落在**引用的是哪个键**上（不是"这句话在"）：把实现改回 q1.count 必须红。
+    const p = prompt();
+    expect(p).toContain("{{q1.matched}} 笔");
+    expect(p).not.toContain("{{q1.count}}");
+  });
+
+  it("输出约定写明了 matched 与 count 的区别、以及分组引用的形状（F7）", () => {
+    const p = prompt();
+    expect(p).toContain("{{qN.matched}}");
+    expect(p).toContain("{{qN.count}}");
+    expect(p).toContain("groupBy");
+    expect(p).toContain("{{qN.g0.total}}");
+    expect(p).toContain("{{qN.g0.label}}");
+  });
+});
+
+/**
+ * few-shot 里**参数名**的通用契约（计划修正第 19 条的通用化）。
+ *
+ * 同族缺陷已经出现过三次（`PRESET_KEYS` 取值、`AGGREGATES` 取值、这一次的工具参数名），
+ * 每次只修一个示例必然复发 ⇒ 这里从 prompt 文本里**抽出工具调用行**的参数名，
+ * 逐个要求它属于该工具的 `properties`。模型照着 prompt 调用时，参数名写错就是一条
+ * 必然吃到的错误（`create_transaction_draft` 的未知字段分支），而不是"模型自己发挥"。
+ *
+ * 抽取规则（有意写窄，避免全篇抓 `=`）：
+ * - 工具调用形状是 `工具名（…）`（中文全角括号，与 prompt 正文一致）
+ * - 参数名是紧跟全角/半角括号或逗号的标识符，后面接 `=` 或 `:`（`amount=128`、`categories:["买菜"]`）
+ * - 后视 `(?<![\w{:.])` 排除 `{date:{preset:"yesterday"}}` 里的 `preset`、`{from/to}` 里的键，
+ *   以及 `{{q1.matched}}` 这类引用
+ */
+function toolCallParams(p: string): { tool: string; name: string }[] {
+  const propsOf = (tool: string): string[] => {
+    const schema = TOOLS.find((t) => t.function.name === tool);
+    if (schema === undefined) return [];
+    const params = schema.function.parameters as { properties: Record<string, unknown> };
+    return Object.keys(params.properties);
+  };
+  const out: { tool: string; name: string }[] = [];
+  for (const call of p.matchAll(/([a-z_]+)（([^）]*)）/g)) {
+    const [, tool, args] = call;
+    const known = propsOf(tool);
+    if (known.length === 0) {
+      // `ident（…）` 这个形状也会命中**散文**（`aggregate（必填）`、`transfer（省略表示…）`）
+      // 与**参数赋值里嵌的对象**（`aggregate:"sum"`）。真正的"调用不在 TOOLS 里"判别式是
+      // 「括号里以 ASCII 参数名赋值开头」——`delete_transaction（foo=1）` 命中它，
+      // 上面两条散文都不命中。工具名自身的漂移另有 toolSchemaContract.test.ts 的反向断言。
+      if (!/^[A-Za-z_][A-Za-z0-9_]*\s*[=:]/.test(args)) continue;
+      expect(TOOLS.map((t) => t.function.name), `prompt 调了未知工具 ${tool}`).toContain(tool);
+      continue;
+    }
+    // 按分隔符切开后**只看每段的开头**：段首的 `ident=` / `ident:` 才是这一层的参数名。
+    // 这样既不会把值里的内容算进来，也不会被 `{preset:` 这种嵌套键混进来（它不是段首）。
+    // ⚠️ 不要把 `ident[=:]` 直接全文 match：`type="expense"，amount=128` 这种写法下，
+    // 第一段之后的扫描会从值里继续，段首判断就失效（实测 4 个参数只抽到 1 个）。
+    for (const part of args.split(/[，,]/)) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[=:]/.exec(part);
+      if (m !== null) out.push({ tool, name: m[1] });
+    }
+  }
+  return out;
+}
+
+describe("few-shot 里的工具参数名必须属于对应工具的 schema", () => {
+  it("每个抽到的参数名都在该工具的 properties 里（抽取式，不是改一个示例）", () => {
+    const params = toolCallParams(prompt());
+    // 防空转：抽取失败（正则与 prompt 措辞脱节）时下面的循环一条断言都不跑，
+    // 这条测试就会变成恒真 —— 4 个示例里真参数名至少有 6 个（见示例 1/2/3）。
+    expect(params.length).toBeGreaterThanOrEqual(6);
+    for (const { tool, name } of params) {
+      const schema = TOOLS.find((t) => t.function.name === tool);
+      expect(schema, `prompt 调了未知工具 ${tool}`).toBeDefined();
+      const props = (schema!.function.parameters as { properties: Record<string, unknown> }).properties;
+      expect(
+        Object.keys(props),
+        `few-shot 教模型用 ${tool}（${name}=…），但工具没有这个参数`,
+      ).toContain(name);
+    }
+  });
+
+  it("示例 1 用的是草稿工具真有的字段（occurredAt / note，不是 date / merchant）", () => {
+    // Ruling 30 第 1 条：旧示例教 model 调 `create_transaction_draft（date=…, merchant=…）`，
+    // 而草稿工具只有 occurredAt / note ⇒ 模型照示例调用**必然**吃一条未知字段错误。
+    const draftLine = prompt()
+      .split("\n")
+      .find((line) => line.includes("create_transaction_draft（"));
+    expect(draftLine).toBeDefined();
+    expect(draftLine).toContain("occurredAt=");
+    expect(draftLine).toContain("note=");
+    expect(draftLine).not.toMatch(/\bdate\s*=/);
+    expect(draftLine).not.toMatch(/\bmerchant\s*=/);
   });
 });
 

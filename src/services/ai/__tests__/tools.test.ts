@@ -108,11 +108,33 @@ interface ParsedContent {
     | null;
   truncated: boolean;
   refs: Record<string, string | number>;
+  /** 工具自己写给模型的"这份 refs 有哪些键、各是什么"的说明（F1/F3/F7 的主战场） */
+  refsNote: string;
 }
 
 /** 只有成功分支有 content；失败分支给模型的是 error。两者都是"模型读到的文本" */
 function modelText(out: ToolOutcome): string {
   return out.ok ? out.content : out.error;
+}
+
+/**
+ * 从 `refsNote` 里抽出它提到的每一个 `refs` 键。
+ *
+ * 注意 note 里写的是**裸键**（`q1.total`）而不是 `{{q1.total}}`：带花括号的写法会让
+ * 将来任何对 note 做 `fillRefs` 的实现在用户面前漏出占位符。取值类文本（分组的
+ * `label` 回填后是"买菜"）不会被这个正则抽到，所以断言仍然只落在**键**上。
+ */
+function noteRefs(note: string): string[] {
+  return [...note.matchAll(/(?<![A-Za-z0-9_])q\d+(?:\.[A-Za-z0-9_]+)*/g)].map((m) => m[0]);
+}
+
+/** 分组键 `q1.g0.total` 的取值也要能被 `fillRefs` 找到（F7） */
+function noteGroupRefs(note: string): string[] {
+  return noteRefs(note).filter((k) => /\.g\d+\./.test(k));
+}
+
+function noteAggRefs(note: string): string[] {
+  return noteRefs(note).filter((k) => !/\.g\d+\./.test(k));
 }
 
 function contentOf(out: ToolOutcome): ParsedContent {
@@ -170,17 +192,25 @@ describe("① query_transactions 的 refs 编号来自注入的 refIndex", () =>
   });
 });
 
-describe("② 明细上限 20 条，且 truncated 原样带上", () => {
-  it(`发给模型的明细最多 ${MAX_PROMPT_ITEMS} 条（喂 30 条行）`, () => {
+describe("② 明细上限 20 条，且两层截断都如实上报", () => {
+  it("前提守卫：M1 取数上限 ≤ 我们发给模型的上限（否则 slice 会静默丢条）", () => {
     expect(MAX_PROMPT_ITEMS).toBe(20);
     // 隐私边界的一半：§7.3「最多 20 条明细」是**发出去**的上限。
     // 它今天与 M1 的取数上限同值，但不是同一件事：M1 那个是"SQL 取多少行"，
-    // 这个常量是"最多发给模型几条"。下面这条是**前提守卫**——verbatim 透传
-    // truncated 之所以安全，前提就是 M1 取数 <= 我们发的（见 ② 第三条用例的注释）。
-    expect(MAX_PROMPT_ITEMS).toBeLessThanOrEqual(AI_QUERY_MAX_ITEMS);
+    // 这个常量是"最多发给模型几条"。
+    //
+    // ⚠️ 方向必须是这一侧（审查 F2：旧版写成 `MAX_PROMPT_ITEMS <= AI_QUERY_MAX_ITEMS`
+    // 是**反的**，它在"M1 取数多于我们发的"这个唯一危险状态下为真 ⇒ 永远红不了 ⇒
+    // 是一条"空的保护"）。要保护的不变式是：M1 取到的行数 ≤ 我们发的上限
+    // （`items.length <= AI_QUERY_MAX_ITEMS` + `AI_QUERY_MAX_ITEMS <= MAX_PROMPT_ITEMS`
+    // ⇒ `slice(0, MAX_PROMPT_ITEMS)` 不丢东西）。M1 若把 `AI_QUERY_MAX_ITEMS` 放宽到
+    // 超过本常量，这一条必须红 —— 实测：dsl.ts:63 20→30 时红在这里（见交付报告）。
+    expect(AI_QUERY_MAX_ITEMS).toBeLessThanOrEqual(MAX_PROMPT_ITEMS);
+    // 「这条守卫本身能被触发」由上面的不等式直接给出：把 dsl.ts 的上限改到 21 以上即红。
+    // 不写 `expect(true).toBe(true)` 之类的空转来"证明"它在场。
   });
 
-  it("喂 30 条明细 → content 里只有 20 条", async () => {
+  it("喂 30 条明细 → content 里只有 20 条（slice 真的按上限截断）", async () => {
     mockDb.select
       .mockResolvedValueOnce([{ ...emptyRow, expense_total: 300, expense_count: 30, matched: 30 }])
       .mockResolvedValueOnce(Array.from({ length: 30 }, (_, i) => itemRow(i)));
@@ -196,13 +226,12 @@ describe("② 明细上限 20 条，且 truncated 原样带上", () => {
     expect(c.items?.[19].note).toBe("第19笔");
   });
 
-  it("truncated 是 M1 的布尔值原样透传：M1 说 false 就 false，说 true 就 true", async () => {
-    // M1 的判据是 `groupsTruncated || matched > items.length`（runQuery.ts 末尾）。
-    // 这一条喂 30 条行、matched=30 ⇒ M1 判 false：**我们自己的 20 条上限丢掉了 10 条，
-    // 也照样报 false**。这是 M1 裁决 9「截断必须原样上报，M3 不能重算、不能吞」的字面要求，
-    // 而且不会造成静默丢数：M1 的明细 SQL 本身就 `LIMIT min(limit,20)`（AI_QUERY_MAX_ITEMS），
-    // 生产链路上永远拿不到 >20 条；能拿到 >20 条的状态同时意味着 matched <= items.length，
-    // 那又说明没有条目被我们丢掉。上面的前提守卫（MAX <= AI_QUERY_MAX_ITEMS）钉住这个推理。
+  it("本层砍掉了明细时 truncated 必须为 true（不许对模型说'这份明细是完整的'）", async () => {
+    // ⚠️ 这条是**产品语义**，不是"透传"：M1 的判据 `matched > items.length` 对
+    // "我们砍掉的 10 条"一无所知 ⇒ 旧实现报 `false`，模型于是相信手里是全部明细。
+    // 喂 30 条行、matched=30 ⇒ 本层 slice 丢掉 10 条 ⇒ 必须 true。
+    // （生产链路上 M1 自带 LIMIT 20，不会出现 >20 条；这条 fixture 刻意越过上限，
+    //   同时由上面那条前提守卫保证"M1 放宽后这条推理仍然成立"。）
     mockDb.select
       .mockResolvedValueOnce([{ ...emptyRow, expense_total: 300, expense_count: 30, matched: 30 }])
       .mockResolvedValueOnce(Array.from({ length: 30 }, (_, i) => itemRow(i)));
@@ -211,10 +240,12 @@ describe("② 明细上限 20 条，且 truncated 原样带上", () => {
       { aggregate: "list", type: "expense", date: { preset: "thisMonth" } },
       ctx(),
     );
-    expect(contentOf(out).truncated).toBe(false);
+    const c = contentOf(out);
+    expect(c.items).toHaveLength(20);
+    expect(c.truncated).toBe(true);
   });
 
-  it("反向：M1 说 true 时 content 必须是 true（防止实现把 truncated 写死成 false）", async () => {
+  it("M1 自己说 true 时必须仍是 true（防止实现把 truncated 写死成 false）", async () => {
     mockDb.select
       .mockResolvedValueOnce([{ ...emptyRow, expense_total: 300, expense_count: 30, matched: 30 }])
       .mockResolvedValueOnce(Array.from({ length: 20 }, (_, i) => itemRow(i)));
@@ -224,6 +255,261 @@ describe("② 明细上限 20 条，且 truncated 原样带上", () => {
       ctx(),
     );
     expect(contentOf(out).truncated).toBe(true);
+  });
+
+  it("没有明细时 truncated 不因本层的判空而变成 true（items=null 不是'丢光了'）", async () => {
+    mockDb.select.mockResolvedValueOnce([{ ...emptyRow, expense_total: 10, expense_count: 1, matched: 1 }]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    expect(contentOf(out).truncated).toBe(false);
+  });
+});
+
+/**
+ * REF_PROMISES 的键：note 里每个 `{{qN.xxx}}` 都必须能在 `refs` 里查到。
+ * 这份清单独立写在这里（不 import 实现里的常量）：它一旦与实现漂移，
+ * 「refs 的每个键都被解释了」那条断言就会红。
+ */
+const PROMISE_KINDS = ["total", "count", "avg", "matched", "net"] as const;
+
+describe("F1 refsNote 只承诺 refs 里真有的键（不许教模型写漏占位符）", () => {
+  it("type 省略：note 不得提到没有给键的 transfer 桶", async () => {
+    // type 省略时 shapeSummary 把 transfer 置 null（querySql.ts:197）⇒ runQueryTool 不给
+    // `qN.transfer.*` 发键；`net` 有值所以有键。旧 note 无条件说"q1.expense / income /
+    // transfer.* 是各桶"，模型照它写 `{{q1.transfer.total}}` 就会被 fillRefs 原样漏给用户。
+    mockDb.select.mockResolvedValueOnce([{ ...emptyRow, matched: 0 }]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    expect(Object.keys(c.refs)).not.toContain("q1.transfer.total");
+    expect(c.refsNote).not.toMatch(/q1\.transfer/);
+    expect(c.refsNote).toContain("q1.net");
+    expect(c.refsNote).toContain("q1.expense.total");
+    expect(c.refsNote).toContain("q1.income.total");
+  });
+
+  it("type 指定：note 不得提到没有给键的 net；空桶的键也不得被承诺", async () => {
+    mockDb.select.mockResolvedValueOnce([{ ...emptyRow, expense_total: 100, expense_count: 1, matched: 1 }]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", type: "expense", date: { preset: "thisMonth" } },
+      ctx({ refIndex: 2 }),
+    );
+    const c = contentOf(out);
+    expect(Object.keys(c.refs)).not.toContain("q2.net");
+    expect(c.refsNote).not.toMatch(/q2\.(net|transfer)/);
+    expect(c.refsNote).toContain("q2.total");
+  });
+
+  it("note 里出现的每个键都在 refs 里（不许承诺任何别的东西）", async () => {
+    mockDb.select.mockResolvedValueOnce([
+      { ...emptyRow, expense_total: 100, expense_count: 1, income_total: 50, income_count: 1, matched: 2 },
+    ]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    // 分组键与聚合键分开看：分组键在 note 里以 `q1.g0` 前缀出现，按完整键比会假红。
+    const promised = noteAggRefs(c.refsNote);
+    // 防空转：抽不到任何键时下面的循环一条断言都不跑
+    expect(promised.length).toBeGreaterThan(0);
+    for (const key of promised) {
+      expect(Object.keys(c.refs), `note 承诺了 ${key}，但 refs 里没有它`).toContain(key);
+    }
+    for (const key of noteGroupRefs(c.refsNote)) {
+      expect(Object.keys(c.refs), `note 承诺了分组键 ${key}，但 refs 里没有它`).toContain(key);
+    }
+  });
+
+  it("方向反过来也成立：refs 里每个键都被 note 解释过（新键不许静默出现）", async () => {
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 10, expense_count: 1, matched: 1 }])
+      .mockResolvedValueOnce([itemRow(0)]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "list", type: "expense", date: { preset: "thisMonth" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    const explained = new Set<string>();
+    for (const key of Object.keys(c.refs)) {
+      // 聚合键（`q1.total`、`q1.expense.count`）在 note 里以完整键出现。
+      if (c.refsNote.includes(key)) {
+        explained.add(key);
+        continue;
+      }
+      // 分组键（`q1.g0.total`）在 note 里以 `q1.g0` 这个前缀出现（下标逐个写会让
+      // 断言与实现的下标规则耦合），所以按前缀匹配。
+      const prefix = /\.g\d+\./.test(key) ? key.slice(0, key.lastIndexOf(".")) : "";
+      if (prefix !== "" && c.refsNote.includes(prefix)) explained.add(key);
+    }
+    expect([...explained].sort()).toEqual(Object.keys(c.refs).sort());
+    // 非分组键的"说法"必须都在 PROMISE_KINDS 里（新键没有被解释时上面那条已经红，
+    // 这条是给"解释文案换了措辞"留的可读失败原因）
+    for (const key of Object.keys(c.refs)) {
+      if (/\.g\d+\./.test(key)) continue;
+      const segments = key.split(".");
+      const leaf = segments[segments.length - 1] ?? "";
+      expect(PROMISE_KINDS as readonly string[], `${key} 的说法不在 PROMISE_KINDS 里`).toContain(leaf);
+    }
+  });
+});
+
+describe("F3 报「共几笔」用 matched，不用支出桶的 count", () => {
+  it("refsNote 明确两者不同，并指向 matched", async () => {
+    mockDb.select.mockResolvedValueOnce([{ ...emptyRow, matched: 0 }]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const note = contentOf(out).refsNote;
+    // ⚠️ 判别力来自**引用的键**而不只是"这句话在"：把实现里的 `.matched` 换成 `.count`
+    // 时下面第一条必须红（实测：只断言 `note.toContain(".count")` 会漏掉这个变异）。
+    expect(note).toContain("用 .matched");
+    expect(note).toContain("含转账");
+    expect(note).toContain(".count");
+    // 反向：不许把"共几笔"指向 count（那正是 F3 要消灭的用法）
+    expect(note).not.toMatch(/几笔」请用 \.count/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 分组：F6（隐私）与 F7（旗舰问题能不能写出合法引用）
+// ---------------------------------------------------------------------------
+
+/** 前 8 位恰好是 `deadbeef`（runQuery 的兜底长度），完整是 UUID 形状 */
+const MEMBER_STRANGER = "deadbeef-0000-4000-8000-000000000000";
+
+function groupRow(key: string): {
+  key: string;
+  expense_total: number;
+  income_total: number;
+  transfer_total: number;
+  cnt: number;
+} {
+  return { key, expense_total: 100, income_total: 0, transfer_total: 0, cnt: 1 };
+}
+
+describe("F6 groups 逐字段白名单：未解析的成员 id 片段绝不进 content", () => {
+  it("label 兜底成 id.slice(0,8) 的成员 → 换成中性标签，片段一个字都不出现", async () => {
+    // runQuery.ts:53 的 memberLabel 在 lookup.members 里找不到该 user_id 时兜底
+    // `userId.slice(0, 8)` —— **8 位十六进制片段也是 id 片段**（§7.3：绝不发 id）。
+    // 今天漏出去的形态恰好躲过所有断言：UUID_RE 看不见 8 位短串、账本 id 也不出现。
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 200, expense_count: 2, matched: 2 }])
+      .mockResolvedValueOnce([groupRow("老婆"), groupRow(MEMBER_STRANGER)]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", groupBy: "member", limit: 12, date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    expect(c.groups?.map((g) => g.label)).toEqual(["老婆", "未知成员"]);
+    // 片段（前 8 位）与完整 UUID 都不得出现
+    // ⚠️ 用 `modelText(out)` 而不是 `out.content`：`contentOf` 只在**函数内部**收窄了
+    // 类型，这里 `out` 仍是联合类型（类型门会报 TS2339 —— 上一轮就是这样被抓到的）。
+    expect(modelText(out)).not.toContain(MEMBER_STRANGER.slice(0, 8));
+    expect(modelText(out)).not.toContain("deadbeef");
+    expect(modelText(out)).not.toMatch(UUID_RE);
+    // 反空转：确认被替换的是这一项的 label（refs 里的分组名也必须是中性标签）
+    expect(c.refs["q1.g1.label"]).toBe("未知成员");
+    expect(c.refs["q1.g0.label"]).toBe("老婆");
+  });
+
+  it("group 对象只带白名单字段（content 里就是这五个键）", async () => {
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 100, expense_count: 1, matched: 1 }])
+      .mockResolvedValueOnce([groupRow("买菜")]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", groupBy: "category", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    expect(c.groups?.[0]).toEqual({ label: "买菜", expense: 100, income: 0, transfer: 0, count: 1 });
+    // ⚠️ 判别力说明（不装样子）：`toPromptGroups` 的 `pick` 与 M1 的 `shapeGroups`
+    // 逐字段清单目前完全相同，所以把它换成 `{...g}` 时本用例**仍然绿**（已实测）。
+    // 它真正挡住的形态是"M1 给 AiGroup 加了字段"，那时 `{...g}` 才会漏；这里只能证明
+    // "发出去的就是这五个字段"。**F6 第一条用例（中性标签）才是真杀手**。
+    expect(Object.keys(c.groups?.[0] ?? {}).sort()).toEqual([
+      "count",
+      "expense",
+      "income",
+      "label",
+      "transfer",
+    ]);
+  });
+});
+
+describe("F7 分组也有 refs 键（旗舰问题「哪个分类花得最多」必须能写合法引用）", () => {
+  it("每个分组给出 q1.g{i}.total / label / count，且与 content.groups 逐项对应", async () => {
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 300, expense_count: 3, matched: 3 }])
+      .mockResolvedValueOnce([
+        { key: "买菜", expense_total: 200, income_total: 0, transfer_total: 0, cnt: 2 },
+        { key: "未分类", expense_total: 100, income_total: 0, transfer_total: 0, cnt: 1 },
+      ]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", groupBy: "category", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    expect(c.refs["q1.g0.total"]).toBe(200);
+    expect(c.refs["q1.g0.label"]).toBe("买菜");
+    expect(c.refs["q1.g0.count"]).toBe(2);
+    expect(c.refs["q1.g1.total"]).toBe(100);
+    // COALESCE 兜底标签（未分类 / 未打标签 / 未知账户）是**真名字**、必须保留：
+    // 抹掉它们会让"哪个分类最多"答不出兜底桶，而再查一次 `categories:["未分类"]` 必然 not_found。
+    expect(c.refs["q1.g1.label"]).toBe("未分类");
+    // 下标耦合：模型按 content.groups 的顺序找 g{i}，所以 refs 的 label 必须与
+    // content.groups[i].label 逐项一致（顺序错了就是把 A 分组的总额说成 B 分组的）
+    expect(c.groups?.map((g) => g.label)).toEqual(
+      c.groups?.map((_g, i) => c.refs[`q1.g${i}.label`]),
+    );
+  });
+
+  it("refsNote 教模型怎么写分组引用，且提到的每个键都真在 refs 里", async () => {
+    mockDb.select
+      .mockResolvedValueOnce([{ ...emptyRow, expense_total: 300, expense_count: 3, matched: 3 }])
+      .mockResolvedValueOnce([groupRow("买菜"), groupRow("未分类")]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", groupBy: "category", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    const groupRefs = noteGroupRefs(c.refsNote);
+    // 防空转：抽不到任何分组键时下面的循环一条断言都不跑
+    expect(groupRefs.length).toBeGreaterThan(0);
+    for (const key of groupRefs) {
+      expect(Object.keys(c.refs), `note 教了 ${key}，但 refs 里没有它`).toContain(key);
+    }
+    expect(groupRefs).toContain("q1.g0.total");
+    expect(groupRefs).toContain("q1.g0.label");
+    expect(groupRefs).toContain("q1.g0.count");
+  });
+
+  it("没有 groupBy 时一个分组键都不给（不给模型空桶去猜）", async () => {
+    mockDb.select.mockResolvedValueOnce([{ ...emptyRow, expense_total: 10, expense_count: 1, matched: 1 }]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const c = contentOf(out);
+    expect(c.groups).toBeNull();
+    expect(Object.keys(c.refs).some((k) => /\.g\d+\./.test(k))).toBe(false);
+    expect(c.refsNote).not.toMatch(/g\d+\.total/);
   });
 });
 

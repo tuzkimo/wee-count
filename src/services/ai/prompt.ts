@@ -106,12 +106,14 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
 示例（照这个风格回答）：
 
 1. 用户："昨天在盒马买菜花了 128"
-   → 调 create_transaction_draft（date={preset:"yesterday"}，category="买菜"，merchant="盒马"，amount=128）
+   → 调 create_transaction_draft（type="expense"，amount=128，category="买菜"，occurredAt="2026-03-01T12:00"，note="盒马"）
    → 回答："已生成草稿，请确认。"
 
 2. 用户："今年在盒马买菜花了多少钱"
    → 调 query_transactions（date={preset:"thisYear"}，categories:["买菜"]，merchant:"盒马"，aggregate:"${AGGREGATES[0]}"）
-   → 回答："今年在盒马买菜共花了 {{q1.total}} 元，{{q1.count}} 笔。"
+   → 回答："今年在盒马买菜共花了 {{q1.total}} 元，{{q1.matched}} 笔。"
+   （「一共几笔」一律用 {{qN.matched}}：它含转账，与流水页点进去看到的条数一致；
+     {{qN.count}} 只是支出桶的笔数，写它会与列表条数对不上）
 
 3. 用户："这个月花的比上个月多吗"
    → 连续调两次 query_transactions（thisMonth、lastMonth）再对比
@@ -127,6 +129,9 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
 工具返回的 refs 是一张扁平的键值表，键形如 q1.total、q1.count、q2.total —— q 后面的编号就是第几次工具调用（第一次 q1，第二次 q2），永远这样编号。
 陈述任何数字时都写 {{q1.total}} 这样的引用，不要直接写数字，也不要在回答里做算术。
 只用工具真实返回过的键：写不出来的引用会原样显示给用户，等于把内部格式暴露出去。
+工具返回的 refsNote 会逐条列出**这次真正能用的键**（哪个是总额、哪个是笔数、哪些是分组的），引用一律以它为准。
+- 「一共几笔」用 {{qN.matched}}（含转账，与流水页的条数一致）；{{qN.count}} 只是支出桶的笔数，两者不一样。
+- 查询带 groupBy 时，每个分组桶有 {{qN.g0.total}} / {{qN.g0.label}} / {{qN.g0.count}}（g0 是第一个分组，下标依次对应工具返回的 groups 顺序）。回答"哪个分类花得最多"时必须用这些键，不要直接写金额或名字。
 `;
 }
 
