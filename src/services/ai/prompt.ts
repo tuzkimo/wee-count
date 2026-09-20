@@ -110,7 +110,7 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
    → 回答："已生成草稿，请确认。"
 
 2. 用户："今年在盒马买菜花了多少钱"
-   → 调 query_transactions（date={preset:"thisYear"}，categories:["买菜"]，merchant:"盒马"，aggregate:"sum"）
+   → 调 query_transactions（date={preset:"thisYear"}，categories:["买菜"]，merchant:"盒马"，aggregate:"${AGGREGATES[0]}"）
    → 回答："今年在盒马买菜共花了 {{q1.total}} 元，{{q1.count}} 笔。"
 
 3. 用户："这个月花的比上个月多吗"

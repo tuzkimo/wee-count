@@ -73,6 +73,18 @@ const NOW = new Date("2026-03-01T00:00:00Z");
 const prompt = (): string => buildSystemPrompt(SNAPSHOT, NOW);
 const promptWith = (s: LedgerSnapshot, now: Date): string => buildSystemPrompt(s, now);
 
+/**
+ * few-shot 里唯一一处 `aggregate:"…"` 的取值（示例 2）。
+ *
+ * 它必须由 `AGGREGATES` 派生，不能手写第二份字面量：常量一旦改名，手写的示例会教
+ * 模型一个 `validateQuery` 不认的取值（`bad_aggregate`），而清单行的断言看不见示例行。
+ */
+function fewShotAggregate(p: string): string {
+  const m = /aggregate:"([^"]*)"/.exec(p);
+  if (m === null) throw new Error("few-shot 里没有 aggregate:\"…\" 示例（示例 2 被删了？）");
+  return m[1];
+}
+
 describe("PROMPT_VERSION", () => {
   it("是数字，且以 prompt_version=<值> 落进 prompt 文本（老会话可追溯）", () => {
     expect(typeof PROMPT_VERSION).toBe("number");
@@ -136,9 +148,21 @@ describe("buildSystemPrompt 今天日期", () => {
   it("按本地时区取日期：UTC 的 2/28 16:30 在东八区已经是 3/1", () => {
     // 这条与上一条是**两条独立的防线**：上一条的 now 在 UTC 与本地同一天，
     // 用 toISOString().slice(0,10) 的实现也能过；只有这一条能抓住 UTC/本地混淆。
-    const p = promptWith(SNAPSHOT, new Date("2026-02-28T16:30:00Z"));
-    expect(p).toContain("2026-03-01");
-    expect(p).not.toContain("2026-02-28");
+    //
+    // ⚠️ 「东八区」必须由测试自己钉住，不能靠跑测试那台机器的偏移：CI 的
+    // ubuntu-latest 是 UTC，`2026-02-28T16:30Z` 在那里本来就还是 2/28，
+    // 断言会与实现无关地红。写法照仓内先例（`src/utils/__tests__/datetime.test.ts:44-51`）：
+    // 临时设 `process.env.TZ` 并在 finally 里逐字还原。
+    const prevTZ = process.env.TZ;
+    process.env.TZ = "Asia/Shanghai";
+    try {
+      const p = promptWith(SNAPSHOT, new Date("2026-02-28T16:30:00Z"));
+      expect(p).toContain("2026-03-01");
+      expect(p).not.toContain("2026-02-28");
+    } finally {
+      if (prevTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTZ;
+    }
   });
 
   it("写明了时区，否则「今天」在跨时区时会被模型理解错", () => {
@@ -238,13 +262,32 @@ describe("prompt 的取值清单来自 dsl.ts 的导出常量", () => {
     expect(golden).toBe(live);
     expect(prompt()).toContain(golden);
   });
+
+  it("few-shot 里印的取值也是同一份常量（示例行不手写第二份真相）", () => {
+    // 这一段的分辨力来自**变异实验**（把 `AGGREGATES[0]` 改名 ⇒ 这条与上面的清单断言一起红）；
+    // 断言本身只钉「示例的取值是常量里的一员」——写死成别的合法值时它绿，那是**契约**问题
+    // （示例不再跟着常量走），由上面 `golden === live` 与变异实验共同负责，不在这里制造恒真口子。
+    expect(AGGREGATES).toContain(fewShotAggregate(prompt()));
+  });
 });
 
 describe("prompt 的隐私边界（§7.3 绝不发的）", () => {
   it("快照里的余额 / 信用额度 / 凭据 / 其他账本数据一个都不许出现", () => {
     const p = prompt();
-    expect(p).not.toContain("12345.67"); // 账户余额
-    expect(p).not.toContain("50000"); // 信用额度
+    // 每种金额**两种形态都要钉**（裸值 + 本仓惯用的 zh-CN 格式化形态）：
+    // `"12,345.67".includes("12345.67") === false`，只钉裸值的断言看不见
+    // 「写完 toLocaleString 再漏出去」这条路径，而金额在本仓照例走
+    // `toLocaleString("zh-CN", …)`（`src/utils/useAmountMask.ts:35`、`src/utils/transaction.ts:36`
+    // 的用法）⇒ 格式化形态恰恰是最可能被顺手抄进取值路径的那一种。
+    // 形态实测（minimumFractionDigits 0/2 两档）：
+    //   12345.67 → "12,345.67" | "12,345.67"
+    //   8.5      → "8.5"       | "8.50"
+    //   50000    → "50,000"    | "50,000.00"
+    expect(p).not.toContain("12345.67"); // 账户余额（裸值）
+    expect(p).not.toContain("12,345.67"); // 账户余额（zh-CN 格式化）
+    expect(p).not.toContain("8.5"); // 第二个账户余额（裸值 "8.5" / 格式化 "8.50" 都含它）
+    expect(p).not.toContain("50000"); // 信用额度（裸值）
+    expect(p).not.toContain("50,000"); // 信用额度（两档格式化都含它）
     expect(p).not.toContain("sk-live-not-in-prompt"); // API key
     expect(p).not.toContain("hunter2-not-in-prompt"); // 备份密码
     expect(p).not.toContain("另一个账本的流水汇总"); // 其他账本数据
