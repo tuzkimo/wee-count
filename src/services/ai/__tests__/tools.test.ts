@@ -16,10 +16,12 @@ import {
   TOOLS,
   buildLookupContext,
   executeTool,
+  toPromptGroups,
   type ToolContext,
   type ToolOutcome,
 } from "@/services/ai/tools";
 import { AI_QUERY_MAX_ITEMS } from "@/services/ai/dsl";
+import type { AiGroup } from "@/services/ai/querySql";
 import type { LookupContext } from "@/services/ai/resolve";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,32 @@ function noteAggRefs(note: string): string[] {
 function contentOf(out: ToolOutcome): ParsedContent {
   if (!out.ok) throw new Error(`预期成功，实际失败：${out.error}`);
   return JSON.parse(out.content) as ParsedContent;
+}
+
+/**
+ * 取 `refsNote` 里**某一个键那一条说法**（到下一个「；」为止）。
+ *
+ * 为什么不能只对整条 note 做 `toContain`：note 是一串用「；」连起来的说法，整条
+ * `not.toContain("支出")` 会因为**别的键**（裸 `q1.total` 的桶说明、末尾 F3 那句）
+ * 恒红，而整条 `toContain` 又会因为别处出现过同样的字而恒绿。R1 的错法正好是
+ * "把 A 键的说法贴到 B 键上"，所以断言必须**落在键的那一段**上。
+ *
+ * ⚠️ 括号内的「；」不算分隔（type 指定时裸键那句是
+ * `q2.total 是总额（支出桶；你给了 type，所以只有这一个桶）`）—— 按裸「；」切会把它
+ * 切成半句，`toContain("你给了 type")` 就变成一条永远满足不了的断言（实测栽过一次）。
+ */
+function noteClause(note: string, key: string): string {
+  const start = note.indexOf(key);
+  expect(start, `note 里没有 ${key}：${note}`).toBeGreaterThanOrEqual(0);
+  const rest = note.slice(start);
+  let depth = 0;
+  for (let i = 0; i < rest.length; i += 1) {
+    const ch = rest.charAt(i);
+    if (ch === "（") depth += 1;
+    else if (ch === "）") depth -= 1;
+    else if (ch === "；" && depth === 0) return rest.slice(0, i);
+  }
+  return rest;
 }
 
 /** payload 是**本地**用的结构化结果（带 id）；content 是给模型的。两者一起断才有意义 */
@@ -363,6 +391,52 @@ describe("F1 refsNote 只承诺 refs 里真有的键（不许教模型写漏占�
   });
 });
 
+describe("R1 桶归属只贴裸键：带桶名的键绝不能被说成另一个桶（模型会照着写错引用）", () => {
+  it("type 省略、两个桶都有值时：q1.income.total 不得被说成「支出」桶，裸 q1.avg 必须拿到桶说明", async () => {
+    // 这段文字上一轮**零断言**：`describeRefs` 对每个 `*.total` 无条件追加"按支出桶给"，
+    // 于是 note 里写着 `q1.income.total 是总额（你没给 type，这里按「支出」桶给）`——
+    // 它的值是**收入**桶总额。而 prompt 要求"引用一律以 refsNote 为准"（prompt.ts:132），
+    // 模型照它写引用就会把收入金额当支出报给用户（与 F3 同族）。
+    mockDb.select.mockResolvedValueOnce([
+      { ...emptyRow, expense_total: 100, expense_count: 1, income_total: 50, income_count: 1, matched: 2 },
+    ]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", date: { preset: "thisYear" } },
+      ctx(),
+    );
+    const note = contentOf(out).refsNote;
+    // 防空转：这几条键确实都被解释了（"不许提支出"在 note 里根本没有这些键时也会绿）
+    expect(noteClause(note, "q1.income.total")).toContain("是总额");
+    expect(noteClause(note, "q1.expense.total")).toContain("是总额");
+    // ⚠️ 复审点名的那一句（R1 的最小修法要求逐字挡住它）
+    expect(note).not.toContain("q1.income.total 是总额（你没给 type");
+    // 更一般：带桶名的键那一条说法里不许出现**别的桶**
+    expect(noteClause(note, "q1.income.total")).not.toContain("支出");
+    // 反向的一半：裸键（`q1.total` / `q1.avg`）才是唯一需要说明"没给 type 时指哪个桶"的形态，
+    // `q1.avg` 与 `q1.total` 同源（runQueryTool 里在同一处赋值给支出桶），不许丢这句
+    expect(noteClause(note, "q1.total")).toContain("按「支出」桶给");
+    expect(noteClause(note, "q1.avg")).toContain("按「支出」桶给");
+  });
+
+  it("type 指定时：带桶名的键不贴桶说明，裸键仍带（且说的是被指定的那个桶）", async () => {
+    mockDb.select.mockResolvedValueOnce([
+      { ...emptyRow, expense_total: 100, expense_count: 1, matched: 1 },
+    ]);
+    const out = await executeTool(
+      "query_transactions",
+      { aggregate: "sum", type: "expense", date: { preset: "thisMonth" } },
+      ctx({ refIndex: 2 }),
+    );
+    const note = contentOf(out).refsNote;
+    expect(noteClause(note, "q2.expense.total")).toContain("是总额");
+    // 带桶名的键自己就说了桶，贴"你给了 type，所以只有这一个桶"是多余且会误导的
+    expect(noteClause(note, "q2.expense.total")).not.toContain("你给了 type");
+    expect(noteClause(note, "q2.total")).toContain("你给了 type");
+    expect(noteClause(note, "q2.avg")).toContain("你给了 type");
+  });
+});
+
 describe("F3 报「共几笔」用 matched，不用支出桶的 count", () => {
   it("refsNote 明确两者不同，并指向 matched", async () => {
     mockDb.select.mockResolvedValueOnce([{ ...emptyRow, matched: 0 }]);
@@ -436,10 +510,10 @@ describe("F6 groups 逐字段白名单：未解析的成员 id 片段绝不进 c
     );
     const c = contentOf(out);
     expect(c.groups?.[0]).toEqual({ label: "买菜", expense: 100, income: 0, transfer: 0, count: 1 });
-    // ⚠️ 判别力说明（不装样子）：`toPromptGroups` 的 `pick` 与 M1 的 `shapeGroups`
-    // 逐字段清单目前完全相同，所以把它换成 `{...g}` 时本用例**仍然绿**（已实测）。
-    // 它真正挡住的形态是"M1 给 AiGroup 加了字段"，那时 `{...g}` 才会漏；这里只能证明
-    // "发出去的就是这五个字段"。**F6 第一条用例（中性标签）才是真杀手**。
+    // ⚠️ 这条（走 executeTool 的）只证明"今天发出去的就是这五个字段"：`toPromptGroups` 的
+    // `pick` 与 M1 的 `shapeGroups` 逐字段清单今天完全相同，所以把它换成 `{...g}` 时本用例
+    // 仍然绿（已实测）。它真正挡不住的形态是"M1 给 AiGroup 加了字段" —— 那个由下一条
+    // （直接喂一个带多余字段的 group）来管。
     expect(Object.keys(c.groups?.[0] ?? {}).sort()).toEqual([
       "count",
       "expense",
@@ -447,6 +521,29 @@ describe("F6 groups 逐字段白名单：未解析的成员 id 片段绝不进 c
       "label",
       "transfer",
     ]);
+  });
+
+  it("M1 将来给 AiGroup 加字段（如 id）时不得进 content —— 白名单的杀手", () => {
+    // 上一条为什么不够：多余字段今天在 M1 的 `AiGroup` 里还不存在，走 `executeTool` 时
+    // 根本构造不出来。所以这里**直接**调 `toPromptGroups`（为测试导出）喂一个带多余字段的
+    // 分组，让"白名单"这件事本身有牙：把 `pick(g, GROUP_FIELDS)` 换成 `{ ...g }` ⇒ 本用例红。
+    //
+    // TS 的多余属性检查只作用于**对象字面量**：先赋给一个交叉类型的变量再传参，既塞得进
+    // 多余字段，也不需要 `any`。⚠️ 绝不能写成 `{...} as AiGroup` —— 断言会把多余字段藏起来，
+    // 这条用例就变成空转了（写它的意义正在于此）。
+    const withId: AiGroup & { id: string } = {
+      label: "买菜",
+      expense: 100,
+      income: 0,
+      transfer: 0,
+      count: 1,
+      id: MEMBER_STRANGER,
+    };
+    const out = toPromptGroups([withId], "category", LOOKUP);
+    expect(out?.[0]).toEqual({ label: "买菜", expense: 100, income: 0, transfer: 0, count: 1 });
+    expect(Object.keys(out?.[0] ?? {})).not.toContain("id");
+    // 白名单是隐私边界的一部分：漏出去的 id 片段一个字都不许进 content
+    expect(JSON.stringify(out)).not.toContain(MEMBER_STRANGER.slice(0, 8));
   });
 });
 

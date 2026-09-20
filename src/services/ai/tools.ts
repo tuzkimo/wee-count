@@ -119,8 +119,13 @@ function pick<T, K extends keyof T>(it: T, keys: readonly K[]): Pick<T, K> {
 const GROUP_FIELDS = ["label", "expense", "income", "transfer", "count"] as const;
 
 /** 进内容的 group：**逐字段白名单**（与 `items` 的 `toPromptItem` 同一条纪律），
- *  且 member 分组的 label 必须来自 lookup，否则换成中性标签（见 UNKNOWN_MEMBER_LABEL）。 */
-function toPromptGroups(groups: AiGroup[] | null, groupBy: AiGroupBy | undefined, lookup: LookupContext): AiGroup[] | null {
+ *  且 member 分组的 label 必须来自 lookup，否则换成中性标签（见 UNKNOWN_MEMBER_LABEL）。
+ *
+ *  **导出只为测试**：这条白名单要挡的形态是"M1 将来给 `AiGroup` 多加一个字段"，
+ *  而那种字段今天不存在，只有直接喂一个带多余字段的对象才验得出来（tools.test.ts 的 F6）。
+ *  从 `executeTool` 走的话多余字段得先经过 M1 的类型，测不了；改 M1 又是禁区。
+ *  断言方式是"两条一起"：`toEqual` 五字段**且** `Object.keys` 里没有多余键。 */
+export function toPromptGroups(groups: AiGroup[] | null, groupBy: AiGroupBy | undefined, lookup: LookupContext): AiGroup[] | null {
   if (groups === null) return null;
   return groups.map((g) => {
     const safe = pick(g, GROUP_FIELDS);
@@ -168,7 +173,15 @@ function describeRefs(refs: Record<string, string | number>, primary: AiTxType, 
     if (promise === undefined) throw new Error(`refs 里有 ${key}，但 REF_PROMISES 没有它的说明`);
     if (leaf === "total" || leaf === "avg") {
       let text = promise(key);
-      if (leaf === "total") {
+      // 桶说明**只贴裸键**（`q1.total` / `q1.avg`：`m[2]` 里没有第二段）。
+      //
+      // 上一版对**每个** `*.total` 都贴这句，于是 note 里出现
+      // `q1.income.total 是总额（你没给 type，这里按「支出」桶给）` —— 它的值是**收入**
+      // 桶总额，而 prompt 要求"引用一律以 refsNote 为准"（prompt.ts:132），模型照它
+      // 写引用就会把收入金额当支出报给用户。带桶名的键自己就说明了桶（`q1.income.total`），
+      // 再贴一句别的桶是**错的**；裸键才是唯一需要说明"没给 type 时指哪个桶"的形态，
+      // 而 `q1.avg` 和 `q1.total` 一样是主桶（`runQueryTool` 里同一处赋值）。
+      if (!m[2].includes(".")) {
         text += typed
           ? `（${BUCKET_LABEL[primary]}桶；你给了 type，所以只有这一个桶）`
           : `（你没给 type，这里按「${BUCKET_LABEL[primary]}」桶给）`;

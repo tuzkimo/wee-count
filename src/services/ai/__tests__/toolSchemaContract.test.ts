@@ -104,7 +104,7 @@ describe("§8.E 工具 schema 与 validateQuery 的对称性", () => {
  * prompt 的纯函数模块图），改为在这里夹住：prompt 文本必须包含每个工具名。
  */
 /**
- * 工具名候选取样器（F4）：**锚在名词上**（transaction(s) / draft(s)，大小写不敏感），
+ * 工具名候选取样器（F4）：**锚在名词上**（transaction(s) / draft(s) / tx），
  * 而不是锚在 `query_` / `create_` 这两个动词前缀上 —— 后者会让
  * `delete_transaction`（不存在的写工具）、`queryTx`（无下划线）、
  * `Query_transactions`（首字母大写）全部溜过去（实测三种形态下契约文件 7/7 全绿）。
@@ -119,13 +119,66 @@ describe("§8.E 工具 schema 与 validateQuery 的对称性", () => {
  * 代价（接受）：prompt 若写英文散文 "documents in tax" 之类会被误抽 —— 那是**误报方向安全**
  * 的一侧（改措辞即可），比漏掉 `queryTx` 好。
  * `\w` 不含中文与引号，所以 prompt 里的 JSON 键 `"query":` 与中文散文都不会被误抽。
+ *
+ * ### 增量复审的两种绕过（逐条堵）
+ *
+ * 复审对抗性实测：上面的词级扫描有 2 种形态**全绿**（在场 ≠ 能红）：
+ *
+ * 1. `DELETE_TRANSACTION`（全大写）：名词过滤写的是 `[Tt]ransaction` ⇒ 只对**首字母**
+ *    大小写不敏感，整词被漏掉。⇒ 过滤改成 `/transaction|draft|tx/i`。**候选仍保留原样
+ *    拼法**：判断"是不是真工具名"必须按原样（`TOOLS[i].function.name` 是逐字比较的），
+ *    `Query_transactions` 大写开头同样不是真名字（那条元测试钉着它）。
+ * 2. `q u e r y _ t r a n s a c t i o n s`（字母被拆开）：词级扫描看到的是 23 个单字母词，
+ *    一个名词都匹配不上。⇒ 增加**块级**扫描：按"强边界"（中文 / 标点 / 引号 / 括号 / 顿号…
+ *    —— 任何不属于 `[A-Za-z0-9\s_.-]` 的字符）切块，块内**先剥掉非字母数字**
+ *    （`_` / `.` / `-` / 空白）再比对真名字。
+ *
+ * 块级的两条判定（顺序有意义）：
+ * - 归一化后**逐字等于**某个真名字（`- query_transactions` 去掉行首列表记号后就是它）
+ *   ⇒ 正常拼法，报真名字 —— 这一步也让"真 prompt 至少有一条候选"继续成立（防空转）。
+ * - 归一化后等于真名字的归一化形态、但**原样不等于**（`DELETE_TRANSACTION`、拆开的写法）
+ *   ⇒ 报原样，它在 `TOOLS` 里查不到 ⇒ 反向断言红。
+ *
+ * **残留（如实记录，不装作没有）**：块级只认"剥掉非字母数字后**恰好**是真名字"的形态，
+ * 所以 `q u e r y _ t r a n s X c t i o n s` 这种改过字母的写法仍然绕过 —— 它已经不是真
+ * 名字了（模型也未必认得）。真正的根治仍然是"`prompt.ts` 不要再手写第二份工具名"。
  */
+const TOOL_NOUN_RE = /transaction|draft|tx/i;
+
+/** 强边界：会切断一个标识符的字符。空白 / `_` / `.` / `-` 是**弱**分隔符，不切。 */
+const IDENT_STRONG_BOUNDARY_RE = /[^A-Za-z0-9\s_.-]+/;
+
+/** 剥掉非字母数字再小写 —— "先归一化再比对"（F4 的两种绕过都靠它现形） */
+function squashIdent(s: string): string {
+  return s.replace(/[^A-Za-z0-9]+/g, "").toLowerCase();
+}
+
 function toolNameCandidates(text: string): string[] {
-  return [
-    ...new Set(
-      (text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).filter((w) => /[Tt]ransaction|[Dd]raft|[Tt]x/.test(w)),
-    ),
-  ];
+  const out: string[] = [];
+  const push = (c: string): void => {
+    if (c !== "" && !out.includes(c)) out.push(c);
+  };
+
+  // ① 词级：原样拼法 + 大小写不敏感的名词过滤
+  for (const w of text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+    if (TOOL_NOUN_RE.test(w)) push(w);
+  }
+
+  // ② 块级：归一化后比对（补"字母被拆开"的形态）
+  const known = new Map(TOOLS.map((t) => [squashIdent(t.function.name), t.function.name]));
+  for (const chunk of text.split(IDENT_STRONG_BOUNDARY_RE)) {
+    const squashed = squashIdent(chunk);
+    if (!TOOL_NOUN_RE.test(squashed)) continue;
+    // 行首列表记号（`- `）不是标识符的一部分：`- query_transactions` 是正常拼法
+    const bare = chunk.trim().replace(/^[-*.]+/, "").trim();
+    const canonical = known.get(squashed);
+    if (canonical !== undefined && bare === canonical) {
+      push(canonical);
+      continue;
+    }
+    push(bare);
+  }
+  return out;
 }
 
 describe("prompt ↔ TOOLS 契约（工具名单一来源）", () => {
@@ -171,6 +224,10 @@ describe("prompt ↔ TOOLS 契约（工具名单一来源）", () => {
     ["delete_transaction", "需要删除流水时可以调 delete_transaction"],
     ["queryTx", "需要查时可以调 queryTx"],
     ["Query_transactions", "可以调 Query_transactions"],
+    // 增量复审实测"仍然全绿"的两种形态（⑤）：全大写被旧过滤的 `[Tt]` 漏掉；字母被拆开的
+    // 写法在词级扫描里是一个名词都匹配不上的 23 个单字母词。
+    ["DELETE_TRANSACTION", "需要删除流水时可以调 DELETE_TRANSACTION"],
+    ["q u e r y _ t r a n s a c t i o n s", "需要删除时可以调 q u e r y _ t r a n s a c t i o n s"],
   ])("反向的判别力：%s 这种形态也会被抽成候选并在 TOOLS 里查不到", (expected, text) => {
     // 这条不测 prompt，而测**上面那条断言的抽取能力**：把三种"漏网形态"喂给同一个取样器，
     // 必须都被抽成候选。改窄上面那条正则（例如退回动词前缀）时它会红 —— 否则
@@ -179,6 +236,17 @@ describe("prompt ↔ TOOLS 契约（工具名单一来源）", () => {
     expect(candidates).toContain(expected);
     // 抽到的候选确实不在真工具名单里 ⇒ 上面那条反向断言在这种 prompt 下必然红
     expect(TOOLS.map((t) => t.function.name)).not.toContain(expected);
+  });
+
+  it("块级扫描不误伤正常拼法：行首列表记号、裸词都不算异常", () => {
+    // 这两条是上面"报警"一侧的对照：归一化后逐字等于真名字 ⇒ 报**真名字**（能过契约），
+    // 而不是报 `- query_transactions` 这种带记号的原文（那会变成误报）。
+    expect(toolNameCandidates("调 - query_transactions 时")).toEqual(["query_transactions"]);
+    expect(toolNameCandidates("调 query_transactions 时")).toEqual(["query_transactions"]);
+    // 拆开的真名字：归一化后等于真名字、原样不等于 ⇒ 报原样（它查不到 ⇒ 反向断言红）
+    expect(toolNameCandidates("可以调 q u e r y _ t r a n s a c t i o n s")).toEqual([
+      "q u e r y _ t r a n s a c t i o n s",
+    ]);
   });
 
   it("反向的抽取不会宽到命中普通散文（不含名词就没有候选）", () => {
