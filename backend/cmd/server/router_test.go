@@ -130,6 +130,13 @@ func TestRouter_AIDailyQuotaIsPerUser(t *testing.T) {
 	if bytes.Contains([]byte(body), []byte("ai_rate_limited")) {
 		t.Errorf("日配额用尽被报成了 ai_rate_limited（分钟级限流抢答）；实际: %s", body)
 	}
+	// Retry-After 是**窗口长度本身**（httprate limiter.go:106 写的是
+	// int(windowLength.Seconds())，不是"距重置的秒数"）⇒ 24h 窗口恒为 "86400"，
+	// 不受窗口对齐影响、不抖动；分钟级那条是 "60"，区分力足够。
+	// 没有这条断言，把日配额窗口误写成 time.Minute 不会有任何用例会响。
+	if got := rec.Header().Get("Retry-After"); got != "86400" {
+		t.Errorf("日配额超限的 Retry-After = %q, want %q（日配额窗口必须是 24h）", got, "86400")
+	}
 
 	// ★ 日配额的 key 同样必须是 userID：A 用完当天的额度不该影响 B。
 	recB := postChat(r, mintAccessToken(t, "user-b"))
@@ -141,26 +148,67 @@ func TestRouter_AIDailyQuotaIsPerUser(t *testing.T) {
 	}
 }
 
-// 两条限流**同时**超限时，用户看到的必须是日配额那条（`ai_quota_exceeded`）。
-// 这条钉的是「**外层是日配额**」这个顺序决定本身，不是笼统的"限流优先级"：
-// 日配额与分钟级都设 1 制造"同时超限"，第二次的响应体只由外层决定——
+// 两条限流**同时**超限时，用户看到的必须是分钟级那条（`ai_rate_limited`）。
+// 这条钉的是「**外层是分钟级**」这个顺序决定本身，不是笼统的"限流优先级"：
+// 两条都设 1 制造"同时超限"，第二次的响应体只由外层决定——
 // 把 router.go 里那两条 r.Use 对调后，只有这条会红。
-// 文案不同 ⇒ 用户下一步动作不同：报日配额是"今天别试了"，
-// 报分钟级会把人引去等一分钟、然后继续撞日配额。
-func TestRouter_AIDailyQuotaIsOuter(t *testing.T) {
+//
+// 为什么外层必须是分钟级（而不是文案更"有行动指向"的日配额）：
+// httprate 只给**放行的**请求计数（limiter.go:102-110 超限直接 return，
+// IncrementBy 只在放行路径上），而外层先判、外层先计数 ⇒ 外层会对每个它放行的
+// 请求记账，不管内层接下来会不会拒绝。若日配额在外层，一个重试循环会被分钟级
+// 全部拒掉、一次 AI 都没调用，却把当天额度耗尽 ⇒ 用户 24 小时用不了，什么都没得到。
+func TestRouter_AIRateLimitIsOuter(t *testing.T) {
 	r := newTestRouter(t, 1, 1)
 	tokenA := mintAccessToken(t, "user-a")
 
 	if rec := postChat(r, tokenA); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("A 第 1 次请求: got %d, want 503", rec.Code)
 	}
-	// 第 2 次：两条都超了 ⇒ 必须由外层（日配额）说话
+	// 第 2 次：两条都超了 ⇒ 必须由外层（分钟级）说话
 	rec := postChat(r, tokenA)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("A 第 2 次请求: got %d, want 429", rec.Code)
 	}
+	if body := rec.Body.String(); !bytes.Contains([]byte(body), []byte("ai_rate_limited")) {
+		t.Errorf("两条同时超限时应报外层（分钟级）ai_rate_limited；实际: %s", body)
+	}
+}
+
+// /ai/status 是廉价的本地响应（不发上游），**不得消耗日配额**：
+// M3 客户端要用它决定是否展示隐私卡。若它吃日配额，客户端一次前台探测、
+// 或只是一个轮询 bug，就能在没有任何 AI 调用的情况下把当天额度耗光 ⇒ 功能直接不可用。
+// 这里 daily=1 制造最紧的条件：status 连打两次都必须 200，且其后的第一次 chat
+// 必须还能走到 handler（503），第二次才轮到日配额 429。
+func TestRouter_AIStatusDoesNotConsumeDailyQuota(t *testing.T) {
+	r := newTestRouter(t, 100, 1)
+	tokenA := mintAccessToken(t, "user-a")
+
+	getStatus := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/ai/status", nil)
+		req.Header.Set("Authorization", "Bearer "+tokenA)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for i := 0; i < 2; i++ {
+		if rec := getStatus(); rec.Code != http.StatusOK {
+			t.Fatalf("第 %d 次 /ai/status: got %d, want 200（status 不该吃日配额）", i+1, rec.Code)
+		}
+	}
+
+	// 日配额应当完好：第一次 chat 正常走到 handler（AI 未配置 ⇒ 503）
+	if rec := postChat(r, tokenA); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status 之后的第 1 次 chat: got %d, want 503（日配额被 status 吃掉了？）", rec.Code)
+	}
+	// 第二次 chat 才是日配额用尽
+	rec := postChat(r, tokenA)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 2 次 chat: got %d, want 429", rec.Code)
+	}
 	if body := rec.Body.String(); !bytes.Contains([]byte(body), []byte("ai_quota_exceeded")) {
-		t.Errorf("两条同时超限时应报外层（日配额）ai_quota_exceeded；实际: %s", body)
+		t.Errorf("第 2 次 chat 响应体应是 ai_quota_exceeded；实际: %s", body)
 	}
 }
 
