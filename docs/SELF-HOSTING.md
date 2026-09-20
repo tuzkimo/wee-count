@@ -161,7 +161,7 @@ Key 只存在于服务器进程内存里，由服务端注入到上游请求头�
 - **只发当前这次请求需要的内容**（清单由 M3 的客户端组装，服务端只转发、不增删）：用户输入原文；分类/账户/标签/成员的名称；本轮工具返回的汇总数字。完整流水、账户余额、初始余额、信用额度、其他账本数据、备份密码、任何凭据都不发。
 - 用户问的每一句话都会发往 `AI_BASE_URL` 指向的供应商，请在隐私说明里告知使用者。M3 落地后，App 会在首次开启 AI 前展示一张说明卡，卡片里的供应商域名取自 `/api/v1/ai/status` 的 `host` 字段（由 `AI_BASE_URL` 解析而来，**不含 key**）；取不到 `host` 时 App 不得允许开启（规格 §7.3）。该字段现在就已经可用。
 - 启用是**两层开关**：服务端 `AI_API_KEY` 非空只是"能力可用"；M3 会在 App「我的 → 隐私」里再提供一个**默认关闭**的独立开关（意愿层），用户看过说明卡并同意后才真正发送。
-- 服务端日志**只记**：`user_id`、耗时、`finish_reason`、token 用量（prompt/completion）与错误码（`handler/ai.go:60-61/66-68`），加上成功路径上的上游状态码 `upstream=200`（`service/ai.go:202-204`）；请求体解析失败时会记下该 `user_id` 与 Go 的 decode 报错原文（`handler/ai.go:46`）——那是 `json` 包的位置/类型报错，**不含消息内容**。**不记**：对话内容、工具结果、任何账目数字。上游返回的原始错误体既不下发给客户端、也不写进日志（`service/ai.go:190-195`）。
+- 服务端日志**只记**：`user_id`、耗时、`finish_reason`、token 用量（prompt/completion）与错误码（`handler.AIHandler.Chat` 里以 `ai chat` / `ai chat failed` 开头的日志），加上成功路径上的上游状态码（`service.AIService.Chat` 里以 `ai upstream ok` 开头的日志，格式串带 `upstream=%d`）；请求体解析失败时会记下该 `user_id` 与 Go 的 decode 报错原文（`handler.AIHandler.Chat` 里以 `ai bad request` 开头的日志）——那是 `json` 包的位置/类型报错，**不含消息内容**。**不记**：对话内容、工具结果、任何账目数字。上游返回的原始错误体既不下发给客户端、也不写进日志（`service.AIService.Chat` 里"只有 200 算成功"那个分支）。
 
 ### 配额：多实例时按实例各算一份
 
@@ -169,11 +169,11 @@ Key 只存在于服务器进程内存里，由服务端注入到上游请求头�
 
 - 单实例自托管：就是配置的 `AI_RATE_LIMIT` / `AI_DAILY_LIMIT`，够用。
 - **多实例部署时每个实例各有一份配额。** 例如 3 个副本 + `AI_DAILY_LIMIT=200`，实际日上限约 **3 × 200 = 600/日**；分钟级同样按实例各算一份。**不要把它当成全局配额来估算成本。**
-- 日配额的**边界不由你的请求决定，也不是自然日 0 点**：`httprate` 在创建限流器（= 进程启动）时就定死了窗口相位（`limiter.go:43-44`），窗口是 `t.Add(-offset).Truncate(24h).Add(offset)`（`limiter.go:161-163`，按 UTC）——**所有用户共用同一条边界**，与"某个用户第一次请求的时刻"无关；进程启动那一刻正好是一个边界，下一个边界是"启动 + 24h"。多实例启动时刻不同 ⇒ 边界也不同。
-- 它是"滑动窗口"的近似：跨过边界后，上一个窗口的计数仍按剩余比例计入（`limiter.go:176`），所以额度是**逐渐恢复**的，不是到点瞬间清零。
-- **`/ai/status` 不吃日配额**：日配额只包 `/ai/chat`，status 只走鉴权 + 分钟级限流（`router.go:100-111`）——它是本地响应、不发上游，而客户端要拿它决定是否展示隐私卡；若让它吃日配额，一个轮询 bug 就能在零 AI 调用的情况下把当天额度耗光。
-- **被分钟级限流拒掉的请求不计入日配额**：httprate 只给**放行**的请求计数（`limiter.go:102-110`，超限直接 return），而分钟级在外层（`router.go:100-105`）⇒ 被它拒掉的请求根本到不了日配额那一层。反过来（日配额在外层）会让"连点重试"在**一次 AI 都没调用**的情况下耗光当天额度。
-- **分钟级限流按用户、两个端点共用一个桶**：`/ai/status` 与 `/ai/chat` **合计**每分钟不超过 `AI_RATE_LIMIT` 次——探状态不是免费的，它同样占该用户的每分钟额度（打满后**打哪个端点**都是 429 `ai_rate_limited`）。日配额只约束 `/ai/chat`，探状态不吃日配额。之所以共用一个桶（同一个 limiter 实例，`router.go:94-95` 创建、`:100-110` 挂载），是因为给两个端点各建一个桶会让 `/ai/*` 的每分钟总量**静默翻倍**。
+- 日配额的**边界不由你的请求决定，也不是自然日 0 点**：`httprate` 在创建限流器（= 进程启动）时就定死了窗口相位（`httprate.LimitBy` → `NewRateLimiter` 的 `WithWindowLength` 路径），窗口是 `t.Add(-offset).Truncate(24h).Add(offset)`（按 UTC）——**所有用户共用同一条边界**，与"某个用户第一次请求的时刻"无关；进程启动那一刻正好是一个边界，下一个边界是"启动 + 24h"。多实例启动时刻不同 ⇒ 边界也不同。
+- 它是"滑动窗口"的近似：跨过边界后，上一个窗口的计数仍按剩余比例计入（`httprate` 的 `FixedWindow` 计数器实现），所以额度是**逐渐恢复**的，不是到点瞬间清零。
+- **`/ai/status` 不吃日配额**：日配额只包 `/ai/chat`，status 只走鉴权 + 分钟级限流（`newRouter` 里 AI 路由组的挂载处：`aiDailyLimit` 只 `Use` 在 `/ai/chat` 那个内层组上）——它是本地响应、不发上游，而客户端要拿它决定是否展示隐私卡；若让它吃日配额，一个轮询 bug 就能在零 AI 调用的情况下把当天额度耗光。
+- **被分钟级限流拒掉的请求不计入日配额**：httprate 只给**放行**的请求计数（`httprate` 的 `FixedWindow`：超限直接 return，只有放行路径才 `IncrementBy`），而分钟级在外层（`newRouter` 里 `aiMinuteLimit` 挂在外层组）⇒ 被它拒掉的请求根本到不了日配额那一层。反过来（日配额在外层）会让"连点重试"在**一次 AI 都没调用**的情况下耗光当天额度。
+- **分钟级限流按用户、两个端点共用一个桶**：`/ai/status` 与 `/ai/chat` **合计**每分钟不超过 `AI_RATE_LIMIT` 次——探状态不是免费的，它同样占该用户的每分钟额度（打满后**打哪个端点**都是 429 `ai_rate_limited`）。日配额只约束 `/ai/chat`，探状态不吃日配额。之所以共用一个桶（`newRouter` 里 `aiMinuteLimit` 只创建一次、由 AI 外层组同时覆盖两个端点），是因为给两个端点各建一个桶会让 `/ai/*` 的每分钟总量**静默翻倍**。
 - 前置反代做负载均衡时，同一用户在不同实例间漂移会使计数更分散。
 - 需要跨实例的精确配额，请部署为单实例，或改用 Redis 实现（v1 未提供，见设计文档 §6.3）。
 
@@ -184,14 +184,14 @@ M3 落地后，客户端会按响应体里的 `error` 值映射中文文案（�
 > **⚠️ `error` 值分三类，客户端映射时必须区分**（否则会落到未定义分支）：
 > 1. **契约错误码**（下表带 `ai_` 前缀的那些）：规格 §6.6 定义，客户端有对应中文文案。
 > 2. **限流中间件码**：`ai_rate_limited` / `ai_quota_exceeded` —— 它们和契约码**同样带前缀**，
->    由 `router.go` 的限流处理器产出（同一个 `{"error":"<code>"}` 形状），客户端按码处理。
+>    由 `newRouter` 里的 `aiLimitHandler` 产出（同一个 `{"error":"<code>"}` 形状），客户端按码处理。
 > 3. **无前缀的直述消息**（**不是错误码**，规格 §6.6 没有为它们定义码，本轮也不新增）：
->    - 请求体问题（`handler/ai.go`，`application/json`）：`request body too large`、`invalid request body`
->    - 鉴权问题（`middleware/auth.go:21/33/39/46/52`，经 `http.Error` 输出，注意是
+>    - 请求体问题（`handler.AIHandler.Chat`，`application/json`）：`request body too large`、`invalid request body`
+>    - 鉴权问题（`middleware.AuthMiddleware`，经 `http.Error` 输出，注意是
 >      **`text/plain` + 尾换行**，响应体形如 `{"error":"..."}` 但 Content-Type 不是 JSON）：
 >      `missing or invalid Authorization header`、`invalid or expired token`、`invalid token claims`、
 >      `invalid token type`、`invalid user id in token`
->    - 兜底：`handler/ai.go:31` 的 `unauthorized`（受保护组已过鉴权，正常到不了；只在 ctx 里
+>    - 兜底：`handler.AIHandler.Chat` 里的 `unauthorized`（受保护组已过鉴权，正常到不了；只在 ctx 里
 >      userID 为空串这种边缘情形出现）
 >    **客户端不得把它们当码查表**（查不到）；带 `ai_` 前缀的一律按码表映射，其余一律走兜底文案
 >    （如「请求失败，请重试」）。判据就一条：**看有没有 `ai_` 前缀**。
