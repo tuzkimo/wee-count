@@ -548,11 +548,15 @@ export const useAiChatStore = defineStore("aiChat", () => {
   /**
    * 把一条草稿移出"待确认"。**纯内存**，不落库。
    *
-   * ⚠️ UI 的"确认 / 拒绝 / 撤销"**不**走这里（走 `confirmDraft` / `rejectDraft` / `undoDraft`：
-   * 它们把决定写进 `payload.drafts[i].status`）—— 只改内存的话，任何一次 `load()` 都会让草稿
+   * ⚠️ **生产已无调用者**（R86-6，实测：`grep dismissDraft src/` 只剩它自己、它的用例、以及几条
+   * 提到它的注释）。UI 的"确认 / 拒绝 / 撤销"走 `confirmDraft` / `rejectDraft` / `undoDraft`：
+   * 它们把决定写进 `payload.drafts[i].status` —— 只改内存的话，任何一次 `load()` 都会让草稿
    * 复活成待确认，用户再点一次「确认记账」就写第二笔真账（收口 C-P1 实测过）。
-   * 保留它是因为它的语义仍然成立：把一条草稿从**内存投影**里拿掉（`dismissDraft` 的用例钉着
-   * "这一层零写入"）。
+   *
+   * 为什么**没有**按 Ruling 35 删掉：删它就要连带删掉 `aiChat.test.ts` 那条只钉它的用例
+   * （「全程 `db.execute` 一次都不调」，钉的是"草稿投影这一层零写入"这条边界），而 AGENTS.md 明令
+   * 不可删改既有测试。代价是它留在这里像一个可用原语 —— 所以把话说死：
+   * **不要再从 UI 接回它**，那正是 C-P1 的复活路径；要"让卡消失"就用 `rejectDraft`。
    *
    * 本 store 不落**交易**：真记账是 UI 走 `transactionStore.add`，撤销走 `remove`。在这里写交易表
    * 会让"AI 只能只读 + 新增草稿（经用户确认）"这条权限边界多出一个绕开校验的写入口；这里写的
@@ -584,7 +588,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
    *  - `role = 'assistant'` + `id = ?`：**那条消息**（草稿只产生在 assistant 消息上）；
    *  - `json_each … draftId = ?`：**那一张**草稿（一个 payload 里可以有多张，只 patch 命中的那张）；
    *  - 状态守卫：`pending` 只接受"当前是 confirmed"（撤销），其余只接受"还没决定过"。
-   *    重复点击 / 双确认因此改不动第二笔，`changes() = 0` ⇒ 调用方不动内存。
+   *    重复点击 / 双确认因此改不动第二笔，`rowsAffected = 0` ⇒ 调用方不动内存。
    *
    * 硬删过的消息（`clearConversation`）⇒ 这里必然 0 行 ⇒ 返回 false，调用方保持"待确认"。
    */
@@ -603,8 +607,17 @@ export const useAiChatStore = defineStore("aiChat", () => {
       // 才知道的（`payload.drafts` 里可以有多张草稿）⇒ 逐元素重建整个 drafts 数组，只有目标那张
       // 被 `json_patch` 打上决定。别的草稿、别的 payload 一个字节都不动（同一行仍然只改一次）。
       // `hash` 是 sqlite 的内置函数（3.45+，与 `json_*` 同族）。
-      // ⚠️ `@tauri-apps/plugin-sql` 的 `execute` 在**一条都没改**时 resolve `null`（实测：
-      // `{ changes: 0 }` 也会走 `null` 那一支）—— 所以不能假设它一定是对象，先判空再问 `changes()`。
+      //
+      // ⚠️ 成败判据**只认 `execute` 返回的 `rowsAffected`**（R86-2 修正，照**安装包产物**核过：
+      // `node_modules/@tauri-apps/plugin-sql/dist-js/index.js:88-98` 恒返回
+      // `{ lastInsertId, rowsAffected }`；`index.d.ts` 的类型也是 `Promise<QueryResult>`，
+      // `QueryResult.rowsAffected: number`，2.4.0）——**没有** `null` 那一支。
+      // 曾经这里写的是"0 行时 resolve `null`，再问 `SELECT changes()`"，那**两条都是错的**：
+      //   ① `null` 在生产里不可达（删掉那个分支所有用例照样绿 = 等价变异）；
+      //   ② `SELECT changes()` 是**连接作用域**的，而插件走 sqlx 默认连接池
+      //      （`max_connections = 10`）⇒ UPDATE 与这条 SELECT 可能落在**两条不同连接**上，
+      //      读到别的连接留下的**陈旧非零** ⇒ "库里 0 行、内存却进已记账"的**假成功**，
+      //      重进页面草稿复活、再点确认就是第二笔真账（正是 C-P1 要防的那件事）。
       const applied = await db.execute(
         `UPDATE ai_messages
             SET payload = json_patch(payload, json_object('drafts', (
@@ -631,9 +644,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
         [draftId, status, transactionId, conversationId, messageId, draftId, status, status],
       );
       // 没改到行 ⇒ 这条决定不成立（重复点击 / 消息已被清掉 / 草稿已被别人决定）
-      if (applied === null) return false;
-      const changed = await db.select<{ n: number }[]>("SELECT changes() AS n");
-      return (changed[0]?.n ?? 0) > 0;
+      return applied.rowsAffected > 0;
     } catch (e) {
       // 不抛：这是"用户点确认"的下游，异常冒到 UI 只会变成一个没人接的 rejection。
       // 返回 false ⇒ 调用方**不**动内存，草稿留在待确认（用户还能重试）。
@@ -683,10 +694,19 @@ export const useAiChatStore = defineStore("aiChat", () => {
   }
 
   /**
-   * 用户点了「撤销」（§4.4:164 的安全网）：那笔交易由**卡片**调 `transactionStore.remove` 真删，
-   * 这里只把**决定**改回"待确认" —— 照规格字面「确认后仍可反悔」+ 卡内既有的 commit/rollback
-   * 语义（`DraftCard.onUndo` 成功后 `resetForNewDraft()` ⇒ 卡回到可确认态），撤销完那张卡
-   * **仍可确认一次**。所以持久化的也是 `pending`（而不是新增一个 `undone` 状态）。
+   * 用户点了「撤销」（§4.4:164 的"手滑确认的廉价安全网"）：那笔交易由**卡片**调
+   * `transactionStore.remove` 真删，这里只把**决定**改回"待确认"。
+   *
+   * ⚠️ `confirmed → pending` 是**扩展**，不是规格字面（R86-3 修正）：`§4.4:160` 的状态机只有
+   * `pending → confirmed | discarded`；spec 全文也**没有**「确认后仍可反悔」这句话（0 命中，上一轮
+   * 把它当原文引用是错的）。选 `pending` 的实际依据有两条，都在**仓内**：
+   *   ① `§4.4:164` 要求已记账的卡上挂「撤销」（`remove()`）⇒ 撤销后那笔交易已经不存在了，
+   *      卡片**必须**离开"已记账"视图（留在 saved 就是谎报）；
+   *   ② 卡内既有的 commit/rollback 语义：`DraftCard.onUndo` 成功后 `resetForNewDraft()` ⇒ 卡回到
+   *      可确认态，即"撤销 = 回到还没记"。
+   * 所以这里持久化的也是 `pending`（而不是新增 `undone` 状态 —— 那要动状态机与读写两侧的归一化，
+   * 且 `readDecision` 会把未知字面量当 `pending`，加了也读不回来）。撤销完那张卡**可再确认一次**，
+   * 与卡内视图一致。
    */
   async function undoDraft(draftId: string): Promise<boolean> {
     const target = allDrafts.value.find((d) => d.draftId === draftId);
@@ -923,6 +943,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
     send,
     cancel,
     clear,
+    // 已无生产调用者（R86-6）：**不要**从 UI 接回它（那是 C-P1 的复活路径），UI 用 rejectDraft
     dismissDraft,
     confirmDraft,
     rejectDraft,

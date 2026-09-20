@@ -149,7 +149,11 @@ function asTauriDb(sqlite: DatabaseSync) {
   const execute = vi.fn(
     async (sql: string, params: unknown[] = []): Promise<unknown> => {
       const q = toPositional(sql, params);
-      return sqlite.prepare(q.sql).run(...(q.params as never[]));
+      // 形状照安装包产物：plugin-sql 的 `execute` 恒返回 `{ rowsAffected, lastInsertId }`
+      // （`dist-js/index.js:88-98`，2.4.0），不是 `node:sqlite` 的 `{ changes, lastInsertRowid }`
+      // —— 后者会让 store 按 `rowsAffected` 判成败时**永远读到 undefined**（R86-2）。
+      const r = sqlite.prepare(q.sql).run(...(q.params as never[]));
+      return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
     },
   );
   const select = vi.fn(async (sql: string, params: unknown[] = []): Promise<unknown> => {
@@ -622,6 +626,34 @@ describe("草稿卡接线", () => {
     expect(useAiChatStore().confirmedDrafts).toEqual([]);
     expect(useAiChatStore().pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
     expect(wrapper.get('[data-test="draft-card"]').attributes("data-draft-state")).toBe("pending");
+  });
+
+  it("决定落库失败不许静默（M-5）：卡回退成待确认 + 把那笔撤回 + 让人看见", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    runMock().mockResolvedValue(turn({ text: "给你一张草稿", drafts: [DRAFT_A] }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const wrapper = await mountPage();
+    await ask(wrapper, "记一笔");
+    // ⚠️ 不调 persistDrafts：库里没有那条 assistant 行 ⇒ 决定 UPDATE 必然 0 行
+    // （真链路里 = 落库那一刻失败）
+
+    await wrapper.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    // 卡片本地**进过**「已记账」（`tx.add` 成功了）—— 决定没落库就必须回退，不许停在假成功
+    // 杀手：页面把 `confirmDraft` 的返回值丢掉（`void ai.confirmDraft(...)`）⇒ 状态是 saved、这条红
+    expect(wrapper.get('[data-test="draft-card"]').attributes("data-draft-state")).toBe("pending");
+    // 而且要让用户看见（静默 = 用户以为记上了）
+    expect(wrapper.get('[data-test="draft-error"]').text()).toContain("决定没存下");
+    // 账上那笔也必须撤回：留下"账上有一笔、库里没有决定"的形态 ⇒ 重进页面草稿复活、再确认 = 第二笔
+    expect(tx.remove).toHaveBeenCalledWith(TX_ID);
+    expect(useAiChatStore().confirmedDrafts).toEqual([]);
+    expect(useAiChatStore().pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
+    // 回退必须是**可重试**的：卡在"记账中"就永远点不动了
+    expect(wrapper.get('[data-test="draft-confirm"]').attributes("disabled")).toBeUndefined();
+    warn.mockRestore();
   });
 
   it("拒绝：立刻收起，不记账", async () => {

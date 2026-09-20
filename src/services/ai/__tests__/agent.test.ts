@@ -951,8 +951,12 @@ describe("接线（修正第 10 条）：每一轮先 ensureConversation 再 app
 describe("真库：往软删会话里 appendMessage 是「写得进、读不出」⇒ 每轮先 ensure 才安全（修正第 10 条）", () => {
   function asTauriDb(sqlite: DatabaseSync) {
     return {
-      execute: async (sql: string, params: unknown[] = []): Promise<unknown> =>
-        sqlite.prepare(sql).run(...(params as never[])),
+      // 形状照安装包产物：plugin-sql 的 `execute` 恒返回 `{ rowsAffected, lastInsertId }`
+      // （`dist-js/index.js:88-98`，2.4.0），不是 `node:sqlite` 的 `{ changes }`（R86-2）。
+      execute: async (sql: string, params: unknown[] = []): Promise<unknown> => {
+        const r = sqlite.prepare(sql).run(...(params as never[]));
+        return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
+      },
       select: async <T,>(sql: string, params: unknown[] = []): Promise<T> =>
         sqlite.prepare(sql).all(...(params as never[])) as unknown as T,
     };

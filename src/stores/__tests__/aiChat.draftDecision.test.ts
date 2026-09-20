@@ -75,9 +75,13 @@ function asTauriDb(sqlite: DatabaseSync) {
     execute: vi.fn(
       async (sql: string, params: unknown[] = []): Promise<unknown> => {
         const r = sqlite.prepare(sql).run(...(params as never[]));
-        // ⚠️ 照 `@tauri-apps/plugin-sql` 的真实行为：**一条都没改**时 resolve `null`
-        // （不是 `{ changes: 0 }`）。不模拟这一条，"写不进去"那族用例就是假的。
-        return r.changes === 0 ? null : r;
+        // ⚠️ **形状照安装包产物**（不是照记忆，R86-2）：
+        // `node_modules/@tauri-apps/plugin-sql/dist-js/index.js:88-98` 恒返回
+        // `{ lastInsertId, rowsAffected }`；`index.d.ts` 的 `execute(): Promise<QueryResult>`，
+        // `QueryResult.rowsAffected: number`（2.4.0）。**0 行也不是 `null`**。
+        // 上一轮这里写成 `r.changes === 0 ? null : r`（`node:sqlite` 自己的字段名）——
+        // 那是把**假契约写进了 mock**：它让"写不进去保持待确认"那族用例只证明了 mock 的分支。
+        return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
       },
     ),
     select: vi.fn(
@@ -342,6 +346,42 @@ describe("C-P1 要求 5：写不进去时不许假装成功", () => {
     // 杀手：写失败也照样从待确认里移走 ⇒ 用户以为记上了，重进页面它又回来（可再写一笔）
     expect(store.pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
     expect(store.confirmedDrafts).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("判据必须是 `rowsAffected`：0 行 + 池里另一条连接的**陈旧** `changes()` ⇒ 不许假成功", async () => {
+    const sqlite = await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(runAgent).mockResolvedValueOnce(
+      turn({ text: "给你一张草稿", drafts: [rawDraft(1)] }),
+    );
+    await store.send("记一笔");
+    // ⚠️ **必须先把会话行造出来**：否则 `findConversationId` 直接返回 `null`，
+    // `updateDraftPayload` 会在最上面那道守卫就 `return false` —— 那样这条用例对"判据"毫无判别力
+    // （实测：不建会话行时，把判据换回旧的 `SELECT changes()` 它照样绿）。
+    await ensureConversation(LEDGER_ID, new Date(T0));
+    // 会话行**在**、assistant 行**不在**（真链路里 = 那条 payload 没落库）⇒ UPDATE 必然命中 0 行
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM ai_messages").get()).toEqual({ n: 0 });
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM ai_conversations").get()).toEqual({ n: 1 });
+
+    // 模拟"池里另一条连接"留下的**陈旧非零**：`SELECT changes()` 在这条连接上读到 1。
+    // 这就是旧判据（先判 null、再问 `SELECT changes()`）的翻车形态 —— 插件走 sqlx 默认连接池
+    // （`max_connections = 10`），两次 invoke 可能落在两条连接上。
+    const adapter = state.db as { select: { getMockImplementation: () => unknown; mockImplementation: (f: unknown) => void } };
+    const real = adapter.select.getMockImplementation() as (sql: string, params?: unknown[]) => Promise<unknown>;
+    adapter.select.mockImplementation(async (sql: string, params: unknown[] = []) =>
+      /changes\(\)/.test(sql) ? [{ n: 1 }] : real(sql, params),
+    );
+
+    await store.confirmDraft("d-1", TX_ID);
+
+    // 杀手（判据写错时必须红）：`rowsAffected = 0` ⇒ 不落库就不许改内存。
+    // 旧判据（问 `changes()`）在这里会读到 1 ⇒ 内存进"已记账"、库里 0 行 ⇒ 重进复活后再确认 = 第二笔真账。
+    expect(store.confirmedDrafts).toEqual([]);
+    expect(store.pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });

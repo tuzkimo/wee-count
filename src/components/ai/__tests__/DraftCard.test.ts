@@ -149,10 +149,42 @@ describe("DraftCard", () => {
     expect(w.find('[data-test="draft-undo"]').exists()).toBe(true);
     expect(w.find('[data-test="draft-confirm"]').exists()).toBe(false);
     expect(w.find('[data-test="draft-reject"]').exists()).toBe(false);
-    // id 必须**是 add 的返回值**（页面拿它去 dismissDraft；撤销也才有落点）。
-    // 对外只有**一个**成功事件（曾经 confirm + saved 同 id 双发 ⇒ 页面会 dismissDraft 两次）
+    // id 必须**是 add 的返回值**（页面拿它落"已记账"这个决定 + 撤销也才有落点）。
+    // 对外只有**一个**成功事件（曾经 confirm + saved 同 id 双发 ⇒ 页面会把同一个决定处理两次）
     expect(w.emitted("confirm")).toEqual([[ID_D1]]);
     expect(w.emitted("saved")).toBeUndefined();
+  });
+
+  it("已记账视图里不再写「待确认的记账」（M-4）：同一屏不能同时说待确认与已记账", async () => {
+    const w = mount(DraftCard, { props });
+    // 待确认视图里这一行**在**（它说明这张卡是什么）
+    expect(w.get('[data-test="draft-card"]').text()).toContain("待确认的记账");
+
+    await w.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+
+    // 杀手：这一行若照旧无条件渲染，saved 视图里就会出现「待确认的记账」+「已记账 ✓」两句相反的话
+    expect(w.attributes("data-draft-state")).toBe("saved");
+    expect(w.get('[data-test="draft-card"]').text()).not.toContain("待确认的记账");
+    expect(w.get('[data-test="draft-saved-text"]').text()).toContain("已记账");
+  });
+
+  it("页面说「决定没落库」⇒ 卡回退成待确认并把那句话显示出来（M-5 的卡侧）", async () => {
+    const w = mount(DraftCard, { props });
+    await w.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+    expect(w.attributes("data-draft-state")).toBe("saved");
+
+    // 页面把账上那笔撤回之后 +1（`transactionStore.remove` 已由页面调过，这一步只回退视图）
+    // 杀手：`props.rollback` 的 watch 若不在 ⇒ 卡停在「已记账 ✓」而库里仍是待确认（假成功）
+    await w.setProps({ rollback: 1, rollbackMessage: "决定没存下，已把那笔撤回，请重试" });
+
+    expect(w.attributes("data-draft-state")).toBe("pending");
+    expect(w.find('[data-test="draft-saved"]').exists()).toBe(false);
+    expect(w.find('[data-test="draft-confirm"]').exists()).toBe(true);
+    expect(w.get('[data-test="draft-error"]').text()).toContain("决定没存下");
+    // 回退后**不能**再点撤销（`savedId` 已清）：那笔账不存在了
+    expect(w.find('[data-test="draft-undo"]').exists()).toBe(false);
   });
 
   it("撤销调 `transactionStore.remove(ID_D1)` —— id 来自 `add` 的返回，不是猜最后一笔", async () => {

@@ -17,10 +17,14 @@ import { initUserTables } from "@/db/userDb";
  */
 
 /** 把真库包成 `@tauri-apps/plugin-sql` 的 `Database` 形状（initUserTables 只用 execute/select） */
+// ⚠️ 返回形状照安装包产物（`dist-js/index.js:88-98`，2.4.0）：`{ rowsAffected, lastInsertId }`，
+// 不是 `node:sqlite` 的 `{ changes }`（R86-2）。
 function asTauriDb(sqlite: DatabaseSync) {
   return {
-    execute: async (sql: string, params: unknown[] = []): Promise<unknown> =>
-      sqlite.prepare(sql).run(...(params as never[])),
+    execute: async (sql: string, params: unknown[] = []): Promise<unknown> => {
+      const r = sqlite.prepare(sql).run(...(params as never[]));
+      return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
+    },
     select: async <T,>(sql: string, params: unknown[] = []): Promise<T> =>
       sqlite.prepare(sql).all(...(params as never[])) as unknown as T,
   };

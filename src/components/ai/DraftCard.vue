@@ -20,7 +20,7 @@
 //
 // ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面据此把
 // **决定**写进 payload（`aiChat.confirmDraft`）并**保留这张卡**（§4.4:164 的「已记账 ✓ + 撤销」）；
-// 曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把 `dismissDraft` 调两次
+// 曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把同一个决定处理两次
 // （复审指出的两条会打架的契约）⇒ 已合并成一个。
 //
 // ⚠️ **没有事件层守卫**（`if (saving) return` 之类）：`onConfirm` / `onReject` 的唯一入口是模板里
@@ -68,12 +68,23 @@ const props = withDefaults(
     status?: "pending" | "confirmed" | "rejected";
     /** 已记账那笔的交易 id（`add` 的返回值，随决定一起落库）：重进页面后撤销仍要知道删哪一笔 */
     transactionId?: string | null;
+    /**
+     * 递增即"刚才那次决定**没落库**"（收口 R86-4）。页面在这一层做两件事：把账上那笔撤回来
+     * （`transactionStore.remove`），再把这里 +1 —— 卡据此**回退**成待确认并显示 `rollbackMessage`。
+     *
+     * 为什么需要它：卡片是"记账"的写入方（`add` 成功即进「已记账 ✓」视图），而"决定"落库是**页面**
+     * 的事（`ai.confirmDraft`）。两者不一致时（库里仍是 pending、账上已经多了一笔）不许静默：
+     * 用户会以为记上了，重进页面草稿复活、再点一次确认就是**第二笔**真账。
+     */
+    rollback?: number;
+    /** 回退时显示给用户的那句话（由页面决定文案：它知道账上那笔有没有撤回成功） */
+    rollbackMessage?: string;
   }>(),
   // ⚠️ `masked: undefined` **必须显式写出来**：Vue 对 Boolean 类型 prop 有"缺席 ⇒ false"的强制转换
   // （`resolvePropValue`：没有 default 时，缺席的 Boolean prop 会被赋成 `false`），
   // 而这里"缺席"的语义是**没有判定**（跟随全局开关），不是"不遮"。显式给了 default 之后，
   // 缺席就保持 `undefined` ⇒ 下面 `?? amountsHidden.value` 才成立（实测：去掉它，跟随全局那条直接变"不遮"）。
-  { masked: undefined, status: "pending", transactionId: null },
+  { masked: undefined, status: "pending", transactionId: null, rollback: 0, rollbackMessage: "" },
 );
 
 /** 对外契约 `confirm` 带新交易 id（撤销另有 `undo`，拒绝是 `reject`） */
@@ -204,6 +215,25 @@ watch(() => props.status, (next) => {
   if (next === "pending" && state.value !== "pending") resetForNewDraft();
 });
 
+/**
+ * 页面说"刚才那次决定没落库"（R86-4）：**回退**成待确认 + 让用户看见这句人话。
+ *
+ * 与上面那个 `props.status` watch 的分工：`status` 只管"库里那份决定变没变"（撤销时 `confirmed
+ * → pending`），而**失败**那条路上 `status` 一直就是 `pending`（值没变，watch 不会触发）——
+ * 可卡片本地已经因为 `add` 成功进了 `saved`。这个计数器就是那种"值没变但必须回退"的信号。
+ *
+ * 不回退的后果（实测形态）：账上多了一笔、库里没有决定 ⇒ 卡片写着「已记账 ✓」，重进页面草稿复活成
+ * 待确认 ⇒ 用户再确认一次 = 第二笔真账。
+ *
+ * ⚠️ 只调 `resetForNewDraft()`，**不**清 `editedFields`：用户手改过的金额还在，重试时不用重敲
+ * （与"换草稿就清编辑缓冲"那条区分开 —— 这里换的不是草稿，是同一条草稿的失败重试）。
+ */
+watch(() => props.rollback, (next, prev) => {
+  if (next === prev) return;
+  resetForNewDraft();
+  error.value = props.rollbackMessage;
+});
+
 /** 打开编辑区：从**当前**草稿播种表单（改过就是改后的值，没改过就是 props） */
 function onStartEdit(): void {
   error.value = "";
@@ -287,7 +317,10 @@ function onConfirm(): void {
   })();
 }
 
-/** 撤销刚才那笔（§4.4：确认后仍可反悔）。id 用 `onConfirm` 拿到的那个，不重算、不猜。 */
+/** 撤销刚才那笔。id 用 `onConfirm` 拿到的那个，不重算、不猜。 */
+// ⚠️ 依据是 `§4.4:164` 的那颗「撤销」按钮，**不是** spec 里的某句话：`§4.4:160` 的状态机只有
+// `pending → confirmed | discarded`，`confirmed → pending` 是本仓的**扩展**（撤销后那张卡可再确认，
+// 与 `resetForNewDraft()` 的既有语义一致）。上一轮把「确认后仍可反悔」当原文引用是错的（R86-3）。
 function onUndo(): void {
   // ⚠️ 这里**没有**空 id 守卫：`savedId` 只可能被 `onConfirm` 写入或由 `transactionId` prop 播种，
   // 而撤销按钮只在 `state === "saved" | "undoing"` 时渲染，两者是一体的。
@@ -311,7 +344,10 @@ function onUndo(): void {
   })();
 }
 
-/** 拒绝：**只发事件**（拆不拆卡由页面调 store 的 `dismissDraft` 决定，本层不写任何东西） */
+/**
+ * 拒绝：**只发事件**（本层不写任何东西 —— 卡从列表里消失是**页面**调 `rejectDraft` 的结果：
+ * 那条决定落库后草稿进 `rejectedDrafts`，而页面只渲染待确认 + 已确认两份）。
+ */
 function onReject(): void {
   emit("reject");
 }
@@ -323,7 +359,11 @@ function onReject(): void {
     :data-draft-state="state"
     data-test="draft-card"
   >
-    <p class="mb-2 text-xs text-text-secondary">待确认的记账</p>
+    <!-- ⚠️ 这一行只在**待确认视图**里出现（R86-5）：已记账卡同一屏写着「待确认的记账」与「已记账 ✓」
+         是自相矛盾的文案（本轮之前 saved 视图在页面里画不出来，所以看不出来）。 -->
+    <p v-if="state !== 'saved' && state !== 'undoing'" class="mb-2 text-xs text-text-secondary">
+      待确认的记账
+    </p>
     <p class="text-sm font-medium text-text">
       {{ TYPE_LABEL[fields.type] }} {{ maskCurrency(fields.amount, hidden) }}
     </p>

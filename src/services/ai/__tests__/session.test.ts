@@ -27,10 +27,15 @@ import {
 const T0 = "2026-03-01T00:00:00.000Z";
 
 /** 把真库包成 `@tauri-apps/plugin-sql` 的 `Database` 形状 */
+// ⚠️ `execute` 的返回值照安装包产物：插件恒返回 `{ rowsAffected, lastInsertId }`
+// （`node_modules/@tauri-apps/plugin-sql/dist-js/index.js:88-98`，2.4.0）—— 不是
+// `node:sqlite` 的 `{ changes, lastInsertRowid }`（R86-2）。
 function asTauriDb(sqlite: DatabaseSync) {
   return {
-    execute: async (sql: string, params: unknown[] = []): Promise<unknown> =>
-      sqlite.prepare(sql).run(...(params as never[])),
+    execute: async (sql: string, params: unknown[] = []): Promise<unknown> => {
+      const r = sqlite.prepare(sql).run(...(params as never[]));
+      return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
+    },
     select: async <T,>(sql: string, params: unknown[] = []): Promise<T> =>
       sqlite.prepare(sql).all(...(params as never[])) as unknown as T,
   };

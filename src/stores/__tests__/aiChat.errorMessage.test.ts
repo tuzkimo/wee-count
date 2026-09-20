@@ -45,9 +45,13 @@ const runMock = () => vi.mocked(runAgent);
 
 function asTauriDb(sqlite: DatabaseSync) {
   return {
+    // 形状照安装包产物：plugin-sql 的 `execute` 恒返回 `{ rowsAffected, lastInsertId }`
+    // （`dist-js/index.js:88-98`，2.4.0）—— 不是 `node:sqlite` 的 `{ changes }`（R86-2）。
     execute: vi.fn(
-      async (sql: string, params: unknown[] = []): Promise<unknown> =>
-        sqlite.prepare(sql).run(...(params as never[])),
+      async (sql: string, params: unknown[] = []): Promise<unknown> => {
+        const r = sqlite.prepare(sql).run(...(params as never[]));
+        return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
+      },
     ),
     select: vi.fn(
       async (sql: string, params: unknown[] = []): Promise<unknown> =>

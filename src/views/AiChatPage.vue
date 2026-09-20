@@ -21,6 +21,7 @@ import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useTagStore } from "@/stores/tag";
+import { useTransactionStore } from "@/stores/transaction";
 import { useAmountMask } from "@/composables/useAmountMask";
 import { shouldMaskAmounts } from "@/components/ai/amountMask";
 import type { AiMessagePayload } from "@/services/ai/session";
@@ -131,7 +132,24 @@ onMounted(async () => {
 });
 
 /**
- * 拒绝（`reject`）与**撤销**（`undo`）在页面上是**同一个动作**：把这张卡移出待确认。
+ * 决定**没落库**时的回退（收口 R86-4）：卡片本地已经因为 `add` 成功进了「已记账 ✓」视图，而
+ * `confirmDraft` / `rejectDraft` / `undoDraft` 返回 `false` 说明库里那份决定没写成 —— 两边不一致
+ * 必须让用户看见，且**确认**那条路还要把账上那笔撤回来，否则：
+ * 账上多一笔、库里仍是待确认 ⇒ 重进页面草稿复活 ⇒ 用户再确认一次 = **第二笔真账**。
+ *
+ * 文案由**页面**给（只有它知道账上那笔撤没撤成功），卡只负责显示。
+ */
+const rollback = ref<Record<string, { seq: number; text: string }>>({});
+function markRollback(draftId: string, text: string): void {
+  const seq = (rollback.value[draftId]?.seq ?? 0) + 1;
+  rollback.value = { ...rollback.value, [draftId]: { seq, text } };
+}
+function rollbackOf(draftId: string): { seq: number; text: string } {
+  return rollback.value[draftId] ?? { seq: 0, text: "" };
+}
+
+/**
+ * 拒绝：把这条草稿的决定写成 `rejected`（页面不再渲染已拒绝的草稿 ⇒ 卡从列表里消失）。
  *
  * ⚠️ 与 `confirm` **不同**（§4.4:164）：确认后卡片要留着显示「已记账 ✓ + 撤销」，所以
  * `onDraftConfirmed` 只把**决定**写进 payload（`confirmDraft`）—— 卡片因为 `status === "confirmed"`
@@ -143,21 +161,32 @@ onMounted(async () => {
  * （用户以为它记上了，或它其实没记上却从列表里消失了）。
  * 同一实例换草稿由卡内自清兜住（`DraftCard.vue` 的 props 注释），跨草稿的身份由下面的 `:key` 钉住。
  */
-function onDraftDismissed(draftId: string): void {
-  void ai.rejectDraft(draftId);
+async function onDraftDismissed(draftId: string): Promise<void> {
+  if (await ai.rejectDraft(draftId)) return;
+  markRollback(draftId, "这条决定没存下，草稿仍是待确认，请重试");
 }
 
 /** 确认入账：**保留这张卡**（决定落库 ⇒ 它进「已记账 ✓ + 撤销」，`transactionId` 供撤销用） */
-function onDraftConfirmed(draftId: string, transactionId: string): void {
-  void ai.confirmDraft(draftId, transactionId);
+async function onDraftConfirmed(draftId: string, transactionId: string): Promise<void> {
+  if (await ai.confirmDraft(draftId, transactionId)) return;
+  // 决定没写进去 ⇒ 把卡片刚记的那笔**撤回**（记账的唯一入口就是它，页面这层做补偿）
+  try {
+    await useTransactionStore().remove(transactionId);
+    markRollback(draftId, "决定没存下，已把那笔撤回，请重试");
+  } catch {
+    // 撤回也失败：不装作没事 —— 这种形态只能让人去核对
+    markRollback(draftId, "决定没存下，那笔也没能撤回，请到流水页核对");
+  }
 }
 
 /**
  * 撤销：`transactionStore.remove` 已经由**卡片**走完（id 是 `add` 的返回值），这里只把决定写回
- * `pending` —— 卡片随即回到"可确认"（§4.4「确认后仍可反悔」，与卡内 `resetForNewDraft` 同一语义）。
+ * `pending`（扩展，依据见 `aiChat.undoDraft` 的注释）。落库失败时同样不许静默：那笔交易已经
+ * 真删了，而库里还写着"已确认" ⇒ 重进页面会显示「已记账 ✓」配一个已经不存在的交易。
  */
-function onDraftUndone(draftId: string): void {
-  void ai.undoDraft(draftId);
+async function onDraftUndone(draftId: string): Promise<void> {
+  if (await ai.undoDraft(draftId)) return;
+  markRollback(draftId, "撤销的决定没存下，请到流水页核对");
 }
 
 /** 清空会话：413 的文案就是"清空会话记录后再试"（§5.3），所以必须有这个入口 */
@@ -230,6 +259,8 @@ watch(
             :masked="isMasked(m.id)"
             :status="d.status"
             :transaction-id="d.savedTransactionId"
+            :rollback="rollbackOf(d.draftId).seq"
+            :rollback-message="rollbackOf(d.draftId).text"
             @confirm="onDraftConfirmed(d.draftId, $event)"
             @undo="onDraftUndone(d.draftId)"
             @reject="onDraftDismissed(d.draftId)"
