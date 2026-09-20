@@ -28,6 +28,13 @@ export function hasBaseUrl(): boolean {
 // 给裸 fetch 加超时兜底：服务端 TCP 可达但 HTTP 不响应（半死 / 代理丢包）时，
 // 原生 fetch 会永久 pending，把整条 await 链挂死（曾导致在线服务下线时客户端白屏）。
 // 超时后 abort，fetch 走 catch，由调用方的 try/catch 吞成失败返回。
+//
+// `init.signal`（外部取消，AI 会话的"取消生成"用它）：**本函数过去会把它覆盖掉** ✗ ——
+// 上面那个 `{ ...init, signal: controller.signal }` 让外部 signal 静默失效（请求照发、
+// 结果照回），而调用方以为已经取消了。现在把两者**串起来**：外部一 abort 就转发给
+// 超时 controller（不直接 reject，保持"只有 controller 能结束这个请求"这一条不变，
+// 返回/抛出的形状与超时路径完全一致）。所有既有调用方都不传 signal ⇒ 行为不变
+// （`apiTimeout.test.ts` 的三条回归钉着这一点）。
 export async function fetchWithTimeout(
   input: string,
   init: RequestInit = {},
@@ -35,10 +42,18 @@ export async function fetchWithTimeout(
 ): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const external = init.signal ?? null
+  const onAbort = (): void => controller.abort()
+  if (external !== null) {
+    // 已经 abort 过的不再派发事件 ⇒ 必须显式接一次，否则请求照样发出去
+    if (external.aborted) controller.abort()
+    else external.addEventListener("abort", onAbort)
+  }
   try {
     return await fetch(input, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timer)
+    external?.removeEventListener("abort", onAbort)
   }
 }
 

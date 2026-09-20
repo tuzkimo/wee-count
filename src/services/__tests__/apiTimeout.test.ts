@@ -67,6 +67,56 @@ describe("fetchWithTimeout", () => {
   });
 });
 
+describe("fetchWithTimeout 的外部 signal（AI 取消生成靠它）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("外部 signal abort ⇒ 在途 fetch 真的被掐，且用的是超时 controller 那条路径", async () => {
+    // 旧实现是 `{ ...init, signal: controller.signal }` ⇒ **外部 signal 被覆盖**、取消静默失效
+    // （请求照发、结果照回）。这条用例把这个形态钉住：只断言"传进去的 signal 最后 aborted"
+    // 的实现会绿，断言"fetch 的 reject 真发生"才咬得住。
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const api = await import("@/services/api");
+    api.setBaseUrl("http://x");
+
+    const controller = new AbortController();
+    const before = api.fetchWithTimeout("http://x/api", { signal: controller.signal }, 15000);
+    const rejection = before.then(() => "resolved", (e: unknown) => e);
+
+    const passed = fetchMock.mock.calls[0]![1].signal as AbortSignal;
+    expect(passed.aborted).toBe(false);
+
+    controller.abort();
+
+    // ⚠️ 断言必须**同步**跟在 abort() 后面：转发是同步的（listener 里直接 abort controller）。
+    // 只写 `await expect(before).rejects.toThrow()` 的版本**杀不掉"覆盖 signal"的变异** ——
+    // 那时 fetch 永不 settle，测试会一直挂着，最后 vitest 按"测试超时"收尾而**不是失败**
+    // （实测：变异下这条用例 15008ms 后仍报 ✓）。所以判别力来自这一条同步断言。
+    expect(passed.aborted).toBe(true);
+
+    const err = await rejection;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("aborted");
+  });
+
+  it("已经 abort 过的 signal ⇒ 一个请求都不发（addEventListener 不会再派发已发生的事件）", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const api = await import("@/services/api");
+    api.setBaseUrl("http://x");
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      api.fetchWithTimeout("http://x/api", { signal: controller.signal }, 15000),
+    ).rejects.toThrow("aborted");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[0]![1].signal as AbortSignal).aborted).toBe(true);
+  });
+});
+
 describe("apiFetch 网络异常", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
