@@ -48,8 +48,12 @@ import {
 } from "@/services/aiPrivacySettings";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
 // ⚠️ 草稿形状的**唯一真相**在 `tools.ts` 的草稿工具产出里（Ruling 66 R3）：store 侧只 `import type`
-// 引入（类型擦除 ⇒ 不会把 `@/db/userDb` 拉进本 store 的运行期模块图），绝不重声明第二份 ——
-// 字段改名的漂移后果是**静默**的（`readDrafts` 把草稿当"形状不全"跳过，草稿卡不显示、不报错）。
+// 引入，绝不重声明第二份 —— 字段改名的漂移后果是**静默**的（`readDrafts` 把草稿当"形状不全"跳过，
+// 草稿卡不显示、不报错）。
+// ⚠️ 这条 `import type` 的真实收益**只是类型**（Ruling 86 修正）：`@/db/userDb` 本来就由上面那行
+// **运行期** import 进来了，所以"省掉模块图里的 `userDb`"不是它的理由；理由是 `tools.ts` 那条
+// 模块图（DSL 校验 + 名字解析 + 草稿工具）与本 store 的运行期无关，不该因为一个**注释里的锚点**
+// 被拖进来。别再把这条写成"不会把 userDb 拉进运行期模块图"—— 那是错的。
 import type { NormalizedDraft, ResolvedDraftIds } from "@/services/ai/tools";
 import { ACCOUNT_TYPE_LABELS } from "@/types";
 
@@ -91,6 +95,22 @@ export interface PendingDraft {
   messageId: string;
 }
 
+/**
+ * 草稿的**决定**（§4.4:160 的状态机 `pending → confirmed | discarded`）。
+ *
+ * 它**落库**：写在 `payload.drafts[i].status` 上（同层的 `transactionId` 是撤销要用的交易 id）。
+ * 只存内存的后果已经实测过（收口 C-P1）：任何一次 `load()` 都把草稿复活成待确认，
+ * 用户再点一次「确认记账」就写**第二笔**真账。
+ */
+export type DraftStatus = "pending" | "confirmed" | "rejected";
+
+/** 一条草稿 + 它的决定。UI 侧只按 `status` 分支（`confirmed` 渲染「已记账 ✓ + 撤销」） */
+export interface DecidedDraft extends PendingDraft {
+  status: DraftStatus;
+  /** 已记账那笔的交易 id（`transactionStore.add` 的返回值）；只有 `confirmed` 时非空 */
+  savedTransactionId: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // payload / 草稿的运行期收窄
 // ---------------------------------------------------------------------------
@@ -122,21 +142,41 @@ function parsePayload(raw: string | null): AiMessagePayload | null {
 }
 
 /**
+ * 收窄一条草稿的**决定**（§4.4:160 的状态机）：
+ * - 没有 `status`（旧 payload）⇒ `pending`（要求 6：坏/旧 payload 一律当"待确认"）；
+ * - `status` 不是三个已知字面量之一（被改坏）⇒ 同样当 `pending`，**绝不**跳过整张卡；
+ * - `confirmed` 但交易 id 不是非空字符串 ⇒ 也当 `pending`：撤销要用它，没有它就没有安全网。
+ */
+function readDecision(raw: unknown): { status: DraftStatus; transactionId: string | null } {
+  if (!isRecord(raw)) return { status: "pending", transactionId: null };
+  const { status, transactionId } = raw;
+  if (status === "rejected") return { status: "rejected", transactionId: null };
+  if (status === "confirmed") {
+    if (typeof transactionId !== "string" || transactionId === "") {
+      return { status: "pending", transactionId: null };
+    }
+    return { status: "confirmed", transactionId };
+  }
+  return { status: "pending", transactionId: null };
+}
+
+/**
  * 从 payload 里挑出**形状完整**的草稿（`payload.drafts` 的类型是 `unknown[]`：payload 是 JSON）。
  * 形状不全的条目直接跳过 —— 一条坏草稿不该让整张列表渲染不出来。
  *
  * ⚠️ 这是**唯一**的草稿读法：刚生成的一轮和从库里读回来的一轮都走它，
  * 于是"落库 → 重开 → 草稿卡还在"不需要第二份解析。
  */
-function readDrafts(payload: AiMessagePayload | null, messageId: string): PendingDraft[] {
+function readDrafts(payload: AiMessagePayload | null, messageId: string): DecidedDraft[] {
   if (payload === null || !Array.isArray(payload.drafts)) return [];
-  const out: PendingDraft[] = [];
+  const out: DecidedDraft[] = [];
   for (const item of payload.drafts) {
     if (!isRecord(item)) continue;
     const { draftId, draft, resolved } = item;
     if (typeof draftId !== "string" || draftId === "") continue;
     if (!isRecord(draft) || !isRecord(resolved)) continue;
 
+    const decision = readDecision(item);
     const type = draft.type;
     const amount = draft.amount;
     const occurredAt = draft.occurredAt;
@@ -153,6 +193,8 @@ function readDrafts(payload: AiMessagePayload | null, messageId: string): Pendin
     out.push({
       draftId,
       messageId,
+      status: decision.status,
+      savedTransactionId: decision.transactionId,
       draft: {
         type,
         amount,
@@ -209,8 +251,23 @@ export const useAiChatStore = defineStore("aiChat", () => {
   const error = ref<string | null>(null);
   /** 当前账本的会话 id（切账本即切会话，Ruling 14） */
   const conversationId = ref<string | null>(null);
-  /** 待确认的草稿（确认/撤销后由 `dismissDraft` 移出；落库是 UI 的事） */
-  const pendingDrafts = ref<PendingDraft[]>([]);
+  /**
+   * 会话里**全部**草稿（含已确认 / 已拒绝）——**唯一**的草稿真相。
+   *
+   * 每次 `load()` 都从 payload 重建（`readDrafts`），所以"决定"跨页面存活这件事只有一份实现：
+   * 写进 payload（`resolveDraft`）↔ 从 payload 读回（`readDrafts`）。内存里的 `messageId` 与
+   * 库里 `ai_messages.id` 是两套身份（见 `runTurn` 的注释），但**同一份会话内**自洽 ——
+   * `load()` 之后两者都会换成库里那份。
+   */
+  const allDrafts = ref<DecidedDraft[]>([]);
+  /** **待确认**的草稿：只由 `allDrafts` 派生（UI 用它渲染"待确认"的卡） */
+  const pendingDrafts = computed(() => allDrafts.value.filter((d) => d.status === "pending"));
+  /** 已确认的草稿：渲染「已记账 ✓ + 撤销」（§4.4:164），撤销入口在这里存活 */
+  const confirmedDrafts = computed(() =>
+    allDrafts.value.filter((d) => d.status === "confirmed"),
+  );
+  /** 已拒绝的草稿：不再渲染（页面不显示它），但**不许**从状态里消失（下次 `load` 才不会复活） */
+  const rejectedDrafts = computed(() => allDrafts.value.filter((d) => d.status === "rejected"));
 
   /** 在途那一轮的取消句柄（同时只允许一轮） */
   let inFlight: AbortController | null = null;
@@ -270,7 +327,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
         if (seq !== loadSeq) return;
         conversationId.value = null;
         messages.value = [];
-        pendingDrafts.value = [];
+        allDrafts.value = [];
         return;
       }
 
@@ -281,7 +338,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
         // 这个账本还没说过话（或 `getUserDb()` 为 null：冷启动 / 未登录，Ruling 13）。
         // 两种形态都是**预期**降级、都不是错误；共同点是**一条会话行都不许建**（R4）。
         messages.value = [];
-        pendingDrafts.value = [];
+        allDrafts.value = [];
         return;
       }
 
@@ -295,7 +352,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
         payload: parsePayload(r.payload),
         createdAt: r.created_at,
       }));
-      pendingDrafts.value = messages.value.flatMap((m) => readDrafts(m.payload, m.id));
+      allDrafts.value = messages.value.flatMap((m) => readDrafts(m.payload, m.id));
     } finally {
       if (seq === loadSeq) loading.value = false;
     }
@@ -413,14 +470,33 @@ export const useAiChatStore = defineStore("aiChat", () => {
     appendAssistant(text, null);
   }
 
+  /**
+   * payload 的契约本来就是 JSON（`AiMessagePayload` 里 chips/drafts 都是 `unknown[]`，落库也是
+   * `JSON.stringify`）⇒ 过一次 JSON 就是最省事的**深拷贝**，不用手写递归、也不用 `structuredClone`
+   * （后者在旧 WebView 上不一定有）。
+   */
+  function ownJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+
+  /**
+   * ⚠️ payload 必须是**自己**的数据，不能直接存 agent 这一轮的数组 / 对象引用。
+   *
+   * `markDraft` 是**原地**改 payload 里的决定（`entry.status = ...`，见它自己的注释：换新对象会
+   * 触发草稿卡的自清）⇒ 一旦别名共享，`confirmDraft` / `rejectDraft` 就会顺手把**调用方手里的
+   * `turn`** 也改了。真 agent 的 `turn` 是这一轮的一次性产物（所以生产上看不出来），但 store 没有
+   * 理由依赖这一点：测试里共享的夹具会因此被污染 —— 一张卡被拒绝之后，**后面每一条**用同一份
+   * 夹具种进库的 payload 都带着 `status: "rejected"`，`readDrafts` 读回就不再是"待确认"，
+   * 卡片凭空消失（实测：`AiChatPage.test.ts` 的两条遮罩用例因此红，且只在全量跑时红）。
+   */
   function appendTurn(turn: AgentTurn): void {
     const message = appendAssistant(turn.text, {
-      chips: turn.chips,
-      drafts: turn.drafts,
-      refs: turn.refs,
-      trace: turn.trace,
+      chips: ownJson(turn.chips),
+      drafts: ownJson(turn.drafts),
+      refs: ownJson(turn.refs),
+      trace: ownJson(turn.trace),
     });
-    pendingDrafts.value.push(...readDrafts(message.payload, message.id));
+    allDrafts.value.push(...readDrafts(message.payload, message.id));
   }
 
   function appendAssistant(content: string, payload: AiMessagePayload | null): UiMessage {
@@ -455,7 +531,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
     cancelInFlight();
     // 内存投影立刻清（UI 不用等落库）；迟到的写只可能进库，进不了列表
     messages.value = [];
-    pendingDrafts.value = [];
+    allDrafts.value = [];
     error.value = null;
     // ② 再等这些轮次**真正落定**：`abort()` 拦不住已经进 `await` 的落库 —— `agent.ts:462`
     //    检查 `signal.aborted` 之后，:476 仍会调 `persistAssistant`，而 `session.appendMessage`
@@ -470,18 +546,171 @@ export const useAiChatStore = defineStore("aiChat", () => {
   }
 
   /**
-   * 把一条草稿移出"待确认"。**确认与撤销都调它**。
+   * 把一条草稿移出"待确认"。**纯内存**，不落库。
    *
-   * 本 store 不落库：真记账是 UI 走 `transactionStore.add`，撤销走 `remove`。在这里写库会让
-   * "AI 只能只读 + 新增草稿（经用户确认）"这条权限边界多出一个绕开校验的写入口。
+   * ⚠️ UI 的"确认 / 拒绝 / 撤销"**不**走这里（走 `confirmDraft` / `rejectDraft` / `undoDraft`：
+   * 它们把决定写进 `payload.drafts[i].status`）—— 只改内存的话，任何一次 `load()` 都会让草稿
+   * 复活成待确认，用户再点一次「确认记账」就写第二笔真账（收口 C-P1 实测过）。
+   * 保留它是因为它的语义仍然成立：把一条草稿从**内存投影**里拿掉（`dismissDraft` 的用例钉着
+   * "这一层零写入"）。
+   *
+   * 本 store 不落**交易**：真记账是 UI 走 `transactionStore.add`，撤销走 `remove`。在这里写交易表
+   * 会让"AI 只能只读 + 新增草稿（经用户确认）"这条权限边界多出一个绕开校验的写入口；这里写的
+   * 只是 **AI 会话表自己的 payload**（§4.5 的 `drafts`，本来就落库）。
    *
    * ⚠️ 那句"既有流程，含 `round2` 与必填校验"**是错的**（Ruling 41）：`transactionStore.add`
    * （`transaction.ts:261-311`）**既不做金额变换、也不做任何必填校验**，缺 id 会**静默**写进去。
-   * 两条规则的真实归属：`round2` 由 `tools.ts:778` 生成草稿时做（内联编辑那条路改由
+   * 两条规则的真实归属：`round2` 由 `tools.ts:787` 生成草稿时做（内联编辑那条路改由
    * `draftData.parseEditedAmount` 做），必填校验由 `draftData.validateDraft` 在**确认前**做。
    */
   function dismissDraft(draftId: string): void {
-    pendingDrafts.value = pendingDrafts.value.filter((d) => d.draftId !== draftId);
+    allDrafts.value = allDrafts.value.filter((d) => d.draftId !== draftId);
+  }
+
+  // -------------------------------------------------------------------------
+  // 草稿的"决定"：确认 / 拒绝 / 撤销（§4.4:160 的状态机，跨 load() 存活）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 把一条草稿的决定**写进库里那条消息的 payload**（`payload.drafts[i].status`）。
+   *
+   * 为什么是这一层：草稿随 assistant 消息落库（`agent.persistAssistant` → `session.appendMessage`），
+   * 而 `load()` 又从 payload 重建 —— 决定必须落在**同一份** payload 上，否则"重进页面"这条路上
+   * 就只有一半真相（收口 C-P1）。
+   *
+   * ⚠️ 四处限定（要求 5）：
+   *  - `conversation_id = ?`：**那个账本**的会话（`ledger_id` UNIQUE ⇒ 一会话一账本）；不限定就是
+   *    "另一个账本里同 draftId 的草稿被一起改掉"；
+   *  - `role = 'assistant'` + `id = ?`：**那条消息**（草稿只产生在 assistant 消息上）；
+   *  - `json_each … draftId = ?`：**那一张**草稿（一个 payload 里可以有多张，只 patch 命中的那张）；
+   *  - 状态守卫：`pending` 只接受"当前是 confirmed"（撤销），其余只接受"还没决定过"。
+   *    重复点击 / 双确认因此改不动第二笔，`changes() = 0` ⇒ 调用方不动内存。
+   *
+   * 硬删过的消息（`clearConversation`）⇒ 这里必然 0 行 ⇒ 返回 false，调用方保持"待确认"。
+   */
+  async function updateDraftPayload(
+    draftId: string,
+    status: DraftStatus,
+    transactionId: string | null
+  ): Promise<boolean> {
+    const db = getUserDb();
+    const conversationId = await findConversationId(ledgerStore.currentLedgerId ?? "");
+    const messageId = allDrafts.value.find((d) => d.draftId === draftId)?.messageId ?? null;
+    if (db === null || conversationId === null || messageId === null) return false;
+
+    try {
+      // 为什么要这么写：SQLite 的 `json_set` **只能**按路径精确落值，而"数组里哪个元素"是运行期
+      // 才知道的（`payload.drafts` 里可以有多张草稿）⇒ 逐元素重建整个 drafts 数组，只有目标那张
+      // 被 `json_patch` 打上决定。别的草稿、别的 payload 一个字节都不动（同一行仍然只改一次）。
+      // `hash` 是 sqlite 的内置函数（3.45+，与 `json_*` 同族）。
+      // ⚠️ `@tauri-apps/plugin-sql` 的 `execute` 在**一条都没改**时 resolve `null`（实测：
+      // `{ changes: 0 }` 也会走 `null` 那一支）—— 所以不能假设它一定是对象，先判空再问 `changes()`。
+      const applied = await db.execute(
+        `UPDATE ai_messages
+            SET payload = json_patch(payload, json_object('drafts', (
+                  SELECT json_group_array(
+                           CASE WHEN json_extract(item.value, '$.draftId') = ?
+                                THEN json_patch(item.value, json_object('status', ?, 'transactionId', ?))
+                                ELSE item.value END
+                         )
+                  FROM json_each(json_extract(payload, '$.drafts')) AS item
+                )))
+          WHERE conversation_id = ?
+            AND role = 'assistant'
+            AND id = ?
+            AND EXISTS (
+                  SELECT 1 FROM json_each(json_extract(payload, '$.drafts'))
+                  WHERE json_extract(value, '$.draftId') = ?
+                    AND (
+                      (? = 'pending' AND json_extract(value, '$.status') = 'confirmed')
+                      OR (? <> 'pending'
+                          AND json_extract(value, '$.status') IS NOT 'confirmed'
+                          AND json_extract(value, '$.status') IS NOT 'rejected')
+                    )
+                )`,
+        [draftId, status, transactionId, conversationId, messageId, draftId, status, status],
+      );
+      // 没改到行 ⇒ 这条决定不成立（重复点击 / 消息已被清掉 / 草稿已被别人决定）
+      if (applied === null) return false;
+      const changed = await db.select<{ n: number }[]>("SELECT changes() AS n");
+      return (changed[0]?.n ?? 0) > 0;
+    } catch (e) {
+      // 不抛：这是"用户点确认"的下游，异常冒到 UI 只会变成一个没人接的 rejection。
+      // 返回 false ⇒ 调用方**不**动内存，草稿留在待确认（用户还能重试）。
+      console.warn("[ai/store] 写草稿决定失败：", e);
+      return false;
+    }
+  }
+
+  /**
+   * 把一条决定同时写进**库里**与**内存投影**。写不进去就一个都不改（返回 false）——
+   * 只有"两边都成"才算这条决定成立，"内存先改、库慢慢写"会让重进页面时状态与账目对不上。
+   */
+  function markDraft(
+    draftId: string,
+    status: DraftStatus,
+    transactionId: string | null
+  ): DecidedDraft | null {
+    const target = allDrafts.value.find((d) => d.draftId === draftId);
+    if (target === undefined) return null;
+    target.status = status;
+    target.savedTransactionId = transactionId;
+
+    // payload 是**引用**（`messages` 里同一条消息的 payload 也在被渲染用）：原地改一处即可，
+    // 不许换新对象 —— 换了 `props.draft` 的引用会触发草稿卡的自清（那是"换草稿"的信号）。
+    if (target.messageId !== null) {
+      const message = messages.value.find((m) => m.id === target.messageId);
+      const entry = message?.payload?.drafts?.find(
+        (it) => isRecord(it) && it.draftId === draftId
+      );
+      // 用 `isRecord` 再收一次窄：`find` 的谓词是 `&&` 组合 ⇒ 它不是类型守卫，返回 `unknown`
+      if (isRecord(entry)) {
+        entry.status = status;
+        entry.transactionId = transactionId;
+      }
+    }
+    return target;
+  }
+
+  /** 用户点了「确认记账」（`transactionId` 是 `transactionStore.add` 的返回值，撤销要用它） */
+  async function confirmDraft(draftId: string, transactionId: string): Promise<boolean> {
+    return applyDraftDecision(draftId, "confirmed", transactionId);
+  }
+
+  /** 用户点了「不要」 */
+  async function rejectDraft(draftId: string): Promise<boolean> {
+    return applyDraftDecision(draftId, "rejected", null);
+  }
+
+  /**
+   * 用户点了「撤销」（§4.4:164 的安全网）：那笔交易由**卡片**调 `transactionStore.remove` 真删，
+   * 这里只把**决定**改回"待确认" —— 照规格字面「确认后仍可反悔」+ 卡内既有的 commit/rollback
+   * 语义（`DraftCard.onUndo` 成功后 `resetForNewDraft()` ⇒ 卡回到可确认态），撤销完那张卡
+   * **仍可确认一次**。所以持久化的也是 `pending`（而不是新增一个 `undone` 状态）。
+   */
+  async function undoDraft(draftId: string): Promise<boolean> {
+    const target = allDrafts.value.find((d) => d.draftId === draftId);
+    if (target === undefined || target.status !== "confirmed") return false;
+    return applyDraftDecision(draftId, "pending", null);
+  }
+
+  /** 三个入口共用的收口：**先**写库、**后**改内存（照 `setSendingEnabled` 的 R57 规则） */
+  async function applyDraftDecision(
+    draftId: string,
+    status: DraftStatus,
+    transactionId: string | null
+  ): Promise<boolean> {
+    const target = allDrafts.value.find((d) => d.draftId === draftId);
+    // 已是同一个决定 ⇒ 幂等返回（同一张卡不会走两次，这条挡的是重复调用）
+    if (target === undefined || target.status === status) return target !== undefined;
+
+    const ok = await updateDraftPayload(draftId, status, transactionId);
+    if (!ok) {
+      // 决定没落库 ⇒ 内存也不改：用户看到"待确认"是**真的**（重进页面它还会在）
+      console.warn("[ai/store] 草稿决定没落库，保持待确认：", draftId);
+      return false;
+    }
+    return markDraft(draftId, status, transactionId) !== null;
   }
 
   // -------------------------------------------------------------------------
@@ -681,6 +910,8 @@ export const useAiChatStore = defineStore("aiChat", () => {
     error,
     conversationId,
     pendingDrafts,
+    confirmedDrafts,
+    rejectedDrafts,
     status,
     enabled,
     host,
@@ -693,6 +924,9 @@ export const useAiChatStore = defineStore("aiChat", () => {
     cancel,
     clear,
     dismissDraft,
+    confirmDraft,
+    rejectDraft,
+    undoDraft,
     refreshStatus,
     loadPrivacySettings,
     setSendingEnabled,

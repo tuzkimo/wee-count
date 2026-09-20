@@ -232,7 +232,7 @@ describe("applyDraftEdit（编辑区 → 新草稿 + 新 id）", () => {
     const base = draft({ type: "transfer", category: null, toAccount: "现金" });
     const names = { category: "不该出现", fromAccount: "招行", toAccount: "招行" };
 
-    // 同一个账户 ⇒ 拒（`doSave:149` 的规则；草稿生成链路上 tools.ts:792 拦过，内联编辑让它第一次可达）
+    // 同一个账户 ⇒ 拒（`doSave:149` 的规则；草稿生成链路上 tools.ts:801 拦过，内联编辑让它第一次可达）
     const same = applyDraftEdit(base, ids({ toAccountId: TO }), form({ toAccountId: FROM }), names);
     expect(same).toEqual({ ok: false, error: "转出和转入账户不能相同" });
 

@@ -8,14 +8,15 @@
 //     "账本里还没有分类"，而工具层的 lookup 却走 DB 解析得出来 —— 同一份数据两个加载时机。
 //  2. **草稿归位**：`PendingDraft.messageId` 指向产生它的那条 assistant 消息 ⇒ 草稿卡渲染在自己
 //     那条消息下面（组件上没有 `messageId`，也不许加回去）。
-//  3. **收起时机**：`confirm`（带新交易 id；`saved` 已删，两个都监听会把 `dismissDraft` 调两次）
-//     与 `reject` 都只收起**这张卡自己的**草稿 —— 见 `onDraftDismissed`。
+//  3. **决定归位**（§4.4:160/164）：确认 ⇒ 把决定写进 payload（`aiChat.confirmDraft`）并**留着卡**
+//     进「已记账 ✓ + 撤销」；撤销 ⇒ `transactionStore.remove` 走完之后把决定写回 `pending`
+//     （`aiChat.undoDraft`）；拒绝 ⇒ 收起。见 `onDraftDismissed` / `onDraftConfirmed` / `onDraftUndone`。
 //  4. 首屏探一次能力 + 读一次既有会话。
 //
 // ⚠️ 消息列表**不**按 `conversationId` 分支：空账本首次发送时它是 `null`（R4 把建会话推迟到
 // agent 的 `ensureConversation`）⇒ 拿它当渲染条件的话，第一轮问答直接就看不见了。
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useAiChatStore, type PendingDraft } from "@/stores/aiChat";
+import { useAiChatStore, type DecidedDraft } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
@@ -41,10 +42,19 @@ const { amountsHidden } = useAmountMask();
 /** 滚动容器（消息流自身滚动，输入栏固定在底部） */
 const scroller = ref<HTMLElement | null>(null);
 
-/** 草稿按产生它的 assistant 消息分组（`messageId` 只在 store 的 `PendingDraft` 上） */
-const draftsByMessage = computed<Record<string, PendingDraft[]>>(() => {
-  const grouped: Record<string, PendingDraft[]> = {};
-  for (const draft of ai.pendingDrafts) {
+/**
+ * 草稿按产生它的 assistant 消息分组（`messageId` 只在 store 的草稿条目上）。
+ *
+ * ⚠️ 必须同时收**待确认**与**已确认**两份：确认之后卡片要留在原地进「已记账 ✓ + 撤销」
+ * （§4.4:164）—— 只渲染 `pendingDrafts` 的话，确认的同一个 flush 里卡片就被卸载（C-P2）。
+ * 已拒绝的那份不在这里：它不该再渲染（但决定仍在 store/库里，重进页面不会复活成待确认）。
+ *
+ * 类型是 `DecidedDraft`（不是 `PendingDraft`）：卡要拿 `status` 决定初始视图、拿
+ * `savedTransactionId` 去撤销 —— 只给 `PendingDraft` 的话这两样在模板里都不存在。
+ */
+const draftsByMessage = computed<Record<string, DecidedDraft[]>>(() => {
+  const grouped: Record<string, DecidedDraft[]> = {};
+  for (const draft of [...ai.pendingDrafts, ...ai.confirmedDrafts]) {
     const list = grouped[draft.messageId];
     if (list === undefined) grouped[draft.messageId] = [draft];
     else list.push(draft);
@@ -52,7 +62,7 @@ const draftsByMessage = computed<Record<string, PendingDraft[]>>(() => {
   return grouped;
 });
 
-function draftsFor(messageId: string): PendingDraft[] {
+function draftsFor(messageId: string): DecidedDraft[] {
   return draftsByMessage.value[messageId] ?? [];
 }
 
@@ -121,16 +131,33 @@ onMounted(async () => {
 });
 
 /**
- * 确认入账（`confirm`）与拒绝（`reject`）在页面上是**同一个动作**：把这张卡移出待确认。
+ * 拒绝（`reject`）与**撤销**（`undo`）在页面上是**同一个动作**：把这张卡移出待确认。
+ *
+ * ⚠️ 与 `confirm` **不同**（§4.4:164）：确认后卡片要留着显示「已记账 ✓ + 撤销」，所以
+ * `onDraftConfirmed` 只把**决定**写进 payload（`confirmDraft`）—— 卡片因为 `status === "confirmed"`
+ * 继续被 `draftsFor()` 渲染，只是换了视图。
  *
  * ⚠️ `draftId` 必须是**这张卡自己的**（模板里从 `v-for` 的 item 直接传进来），不能取"当前第一张"
  * 或"列表里最后一张"：`transactionStore.add` 在途期间草稿列表可能被重建（新的一轮、清空、
  * `load()`），而 `confirm` 是**这张卡**发出来的 —— 收错人的后果是另一张草稿被**静默**收起
  * （用户以为它记上了，或它其实没记上却从列表里消失了）。
- * 同一实例换草稿由卡内自清兜住（`DraftCard.vue:78-84`），跨草稿的身份由下面的 `:key` 钉住。
+ * 同一实例换草稿由卡内自清兜住（`DraftCard.vue` 的 props 注释），跨草稿的身份由下面的 `:key` 钉住。
  */
 function onDraftDismissed(draftId: string): void {
-  ai.dismissDraft(draftId);
+  void ai.rejectDraft(draftId);
+}
+
+/** 确认入账：**保留这张卡**（决定落库 ⇒ 它进「已记账 ✓ + 撤销」，`transactionId` 供撤销用） */
+function onDraftConfirmed(draftId: string, transactionId: string): void {
+  void ai.confirmDraft(draftId, transactionId);
+}
+
+/**
+ * 撤销：`transactionStore.remove` 已经由**卡片**走完（id 是 `add` 的返回值），这里只把决定写回
+ * `pending` —— 卡片随即回到"可确认"（§4.4「确认后仍可反悔」，与卡内 `resetForNewDraft` 同一语义）。
+ */
+function onDraftUndone(draftId: string): void {
+  void ai.undoDraft(draftId);
 }
 
 /** 清空会话：413 的文案就是"清空会话记录后再试"（§5.3），所以必须有这个入口 */
@@ -201,7 +228,10 @@ watch(
             :draft="d.draft"
             :resolved="d.resolved"
             :masked="isMasked(m.id)"
-            @confirm="onDraftDismissed(d.draftId)"
+            :status="d.status"
+            :transaction-id="d.savedTransactionId"
+            @confirm="onDraftConfirmed(d.draftId, $event)"
+            @undo="onDraftUndone(d.draftId)"
             @reject="onDraftDismissed(d.draftId)"
           />
         </div>

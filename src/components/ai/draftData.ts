@@ -70,7 +70,7 @@ export function buildDraftData(
 
 /**
  * 必填校验（照 `useTransactionForm.doSave:139-152` 的四条，去掉"转出≠转入"——那条在
- * `tools.ts:792` 生成草稿时已经拦过，且这里拿不到"名字不同但 id 相同"以外的信息）。
+ * `tools.ts:801` 生成草稿时已经拦过，且这里拿不到"名字不同但 id 相同"以外的信息）。
  *
  * 为什么要在这里也做一遍：`transactionStore.add` **不做**这些校验，缺 id 会**静默写进去**
  * （`category_id = null` 的支出、没有转出账户的转账）。草稿的 id 是模型给的名字解析出来的，
@@ -137,7 +137,7 @@ export function parseEditedAmount(raw: string): number | null {
  * 编辑区 → 新草稿 + 新 id。**校验顺序**：金额 → 时间 → 账户/分类（`validateDraft`）→ 账户相同。
  *
  * 为什么"转出≠转入"要在这里补（`validateDraft` 里刻意没有）：`doSave:149` 有这条规则，而草稿
- * 的账户在**生成链路**上由 `tools.ts:792` 拦过 ⇒ 从前它不可达。内联编辑让**用户**能自己挑两个
+ * 的账户在**生成链路**上由 `tools.ts:801` 拦过 ⇒ 从前它不可达。内联编辑让**用户**能自己挑两个
  * 账户 ⇒ 这条规则第一次变得可达，不复用就会写出一笔"自己转给自己"的账。
  */
 export function applyDraftEdit(

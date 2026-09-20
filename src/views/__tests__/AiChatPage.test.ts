@@ -42,8 +42,16 @@ vi.mock("@/services/ai/transport", async (importOriginal) => {
   };
 });
 
-/** 草稿卡的记账动作：本文件只关心"页面在什么时候把草稿收起"，不关心记账本身 */
-const tx = vi.hoisted(() => ({ add: vi.fn(), remove: vi.fn() }));
+/**
+ * 草稿卡的记账动作：本文件只关心"页面在什么时候把草稿收起 / 换态"，不关心记账本身。
+ * `add` 返回一个**真 UUID 形状**的 id（撤销要用它；短串会让"猜一个 id"的断言失去判别力）。
+ */
+const TX_ID = "7f3a1c2e-9b4d-4e6f-8a1b-2c3d4e5f6a7b";
+
+const tx = vi.hoisted(() => ({
+  add: vi.fn<(data: Record<string, unknown>) => Promise<string>>(),
+  remove: vi.fn<(id: string) => Promise<void>>(),
+}));
 
 vi.mock("@/stores/transaction", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/stores/transaction")>();
@@ -222,6 +230,30 @@ async function ask(wrapper: VueWrapper, text: string): Promise<void> {
   await flushPromises();
 }
 
+/**
+ * 把 store 现在这批草稿**落进库**（`runAgent` 是 mock ⇒ 真 agent 里那一次 `persistAssistant`
+ * 不会发生）。要钉"决定真的写进 payload"的用例必须先调它：库里没有那条消息行时
+ * `updateDraftPayload` 必然 0 行，测出来的就不是页面的行为。
+ */
+async function persistDrafts(): Promise<void> {
+  const store = useAiChatStore();
+  const cid = (await ensureConversation(LEDGER_ID, new Date(T0)))!;
+  for (const m of store.messages) {
+    const drafts = m.payload?.drafts;
+    if (m.role !== "assistant" || !Array.isArray(drafts) || drafts.length === 0) continue;
+    await appendMessage({
+      id: m.id,
+      conversation_id: cid,
+      role: "assistant",
+      content: m.content,
+      created_at: m.createdAt,
+      payload: { chips: [], drafts, refs: {}, trace: [] },
+    });
+  }
+  store.conversationId = cid;
+  await flushPromises();
+}
+
 const runMock = () => vi.mocked(runAgent);
 
 beforeEach(() => {
@@ -231,6 +263,9 @@ beforeEach(() => {
   failNames = false;
   tx.add.mockReset();
   tx.remove.mockReset();
+  // 默认实现：`add` 给一个真 id（撤销要用它），`remove` 成功返回
+  tx.add.mockResolvedValue(TX_ID);
+  tx.remove.mockResolvedValue(undefined);
   pinia = createPinia();
   setActivePinia(pinia);
 });
@@ -511,7 +546,7 @@ describe("草稿卡接线", () => {
     expect(wrapper.findAll('[data-test="draft-card"]').length).toBe(1);
   });
 
-  it("确认的是第二张 ⇒ 收起的也必须是第二张（不能收'当前第一张'）", async () => {
+  it("确认的是第二张 ⇒ 第二张进「已记账 + 撤销」且卡留着，第一张仍待确认", async () => {
     const sqlite = await useRealDb();
     seedLedger(sqlite);
     runMock()
@@ -523,6 +558,7 @@ describe("草稿卡接线", () => {
 
     const store = useAiChatStore();
     expect(store.pendingDrafts.map((d) => d.draftId)).toEqual(["d-1", "d-2"]);
+    await persistDrafts();
 
     const pending = deferred<string>();
     tx.add.mockReturnValue(pending.promise);
@@ -534,11 +570,58 @@ describe("草稿卡接线", () => {
     // 点到的是第二张（金额 56），不是第一张
     expect(tx.add.mock.calls[0]![0].amount).toBe(56);
 
-    pending.resolve("tx-1");
+    pending.resolve(TX_ID);
     await flushPromises();
 
-    // 杀手：页面按 `pendingDrafts[0]` / "列表最后一张" 收起 ⇒ 这里红（收错了人）
-    expect(store.pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
+    // ⚠️ 这条断言**原先**写的是"`pendingDrafts` 剩 ["d-1"]、卡片消失"—— 那是把 C-P2 的缺陷
+    //    （`@confirm` 接 `onDraftDismissed`：确认的同一次 flush 里卡片被卸载，§4.4:164 的
+    //    「已记账 ✓ + 撤销」永远画不出来）冻成了契约（"把现状当规格"那一族）。
+    //    规格要的是：确认后卡片**留在原地**变成「已记账 ✓ + 撤销」。
+    // 杀手：收错人（按 `pendingDrafts[0]` / "列表最后一张" 收起）；或 `@confirm` 仍接旧处理 ⇒ 下面红
+    const after = wrapper.findAll('[data-test="draft-card"]');
+    expect(after.length).toBe(2);
+    expect(after[1]!.attributes("data-draft-state")).toBe("saved");
+    expect(after[1]!.get('[data-test="draft-saved-text"]').text()).toContain("已记账");
+    // 撤销认的是**它自己**那笔（`add` 的返回值），不是第一张的、也不是"最后一笔"
+    expect(after[1]!.find('[data-test="draft-undo"]').exists()).toBe(true);
+    expect(after[0]!.attributes("data-draft-state")).toBe("pending");
+    expect(after[0]!.find('[data-test="draft-confirm"]').exists()).toBe(true);
+  });
+
+  it("页面上真的接了 `@undo`：除卡片自己删那笔，**页面**还要把决定写回待确认（C-P2 的原状是没接）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    runMock().mockResolvedValue(turn({ text: "给你一张草稿", drafts: [DRAFT_A] }));
+    const wrapper = await mountPage();
+    await ask(wrapper, "记一笔");
+    await persistDrafts();
+
+    // 走真实交互进"已记账"：确认 ⇒ 卡片留在原地带撤销（上面那条钉了视图）
+    await wrapper.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-test="draft-card"]').attributes("data-draft-state")).toBe("saved");
+    // 前提：这次确认**真的**到了 store（不然下面"写回待确认"的断言就恒真了）
+    expect(useAiChatStore().confirmedDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
+
+    await wrapper.get('[data-test="draft-undo"]').trigger("click");
+    await flushPromises();
+
+    // ① 卡片自己的那一半：真调 `remove(add 返回的 id)`。
+    //    ⚠️ 这一条**只能**证明卡片这一层（`DraftCard.onUndo` 里就调 `remove`）—— 实测：把页面的
+    //    `@undo` 整个删掉，这一条**照样绿**（`remove` 在修复前就不是死代码，复审的这一句是错的）。
+    expect(tx.remove).toHaveBeenCalledWith(TX_ID);
+
+    // ② 页面那一半（这条才是 `@undo` 监听唯一的杀手）：`@undo` ⇒ `ai.undoDraft` 把决定写回
+    //    `pending`。没有监听的话 store 永远停在"已确认" ⇒ 下面红（重进页面还会说"已记账"）。
+    expect(useAiChatStore().confirmedDrafts).toEqual([]);
+    expect(useAiChatStore().pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
+
+    // ③ 撤销的决定**也持久**：重进页面（`load()`）不许复活成"已记账"
+    await useAiChatStore().load();
+    await flushPromises();
+    expect(useAiChatStore().confirmedDrafts).toEqual([]);
+    expect(useAiChatStore().pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
+    expect(wrapper.get('[data-test="draft-card"]').attributes("data-draft-state")).toBe("pending");
   });
 
   it("拒绝：立刻收起，不记账", async () => {
@@ -547,13 +630,16 @@ describe("草稿卡接线", () => {
     runMock().mockResolvedValue(turn({ text: "给你一张草稿", drafts: [DRAFT_A] }));
     const wrapper = await mountPage();
     await ask(wrapper, "记一笔");
+    await persistDrafts();
 
     await wrapper.find('[data-test="draft-reject"]').trigger("click");
     await flushPromises();
 
-    expect(useAiChatStore().pendingDrafts).toEqual([]);
     expect(tx.add).not.toHaveBeenCalled();
     expect(wrapper.find('[data-test="draft-card"]').exists()).toBe(false);
+    // 拒绝是一条**决定**（不是"把草稿删掉"）：它必须离开待确认列表（重进页面才不会复活）
+    expect(useAiChatStore().pendingDrafts).toEqual([]);
+    expect(useAiChatStore().rejectedDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
   });
 });
 

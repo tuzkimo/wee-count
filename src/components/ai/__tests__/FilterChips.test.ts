@@ -157,6 +157,21 @@ describe("FilterChips", () => {
       amountMax: "500",
     });
   });
+
+  it("芯片数量有上限：只渲染**前 N 条**、顺序照 payload 原序（不是挑几条、也不是倒序）", () => {
+    // 11 条**互不相同**的备注芯片（同一种形状、只差文案）⇒ 能同时判别"截断了几条"与"留的是哪几条"。
+    // 夹具故意多于任何合理的上限，且**不**写死那个数字（上限是产品取舍，不是规格条款）。
+    const many = Array.from({ length: 11 }, (_, i) => makeApplied({ merchant: `店${i}` }));
+    const w = mount(FilterChips, { props: { chips: many } });
+    const texts = w.findAll('[data-test="filter-chip"]').map((c) => c.text());
+
+    // ① 确实截断了（否则"上限"这个行为根本不存在，下面两条会恒真）
+    expect(texts.length).toBeLessThan(many.length);
+    // ② 留的是**前缀**且**保持原序**：杀手 —— 用 `chips.slice(-N)`（留末尾）或集合去重/排序 ⇒ 红
+    expect(texts).toEqual(many.slice(0, texts.length).map((c) => `备注：${c.merchant}`));
+    // ③ 至少给得出不止一条（否则"下钻入口"这个用途不成立）
+    expect(texts.length).toBeGreaterThan(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -516,6 +516,33 @@ describe("load / clear", () => {
     expect(store.pendingDrafts).toEqual([]);
   });
 
+  it("读会话行**失败** ⇒ 降级成「没有会话」（不抛、loading 归位），但必须留痕（不许静默）", async () => {
+    const { db } = await useRealDb();
+    setLedger(LEDGER_ID);
+    // 只让这一次查询炸（表结构坏 / 查询失败：Ruling 13 说的"DB 未就绪"之外的真实形态）
+    db.select.mockRejectedValueOnce(new Error("no such table: ai_conversations"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const store = openGate();
+    // 杀手①：`findConversationId` 的 catch 里改成 `throw` ⇒ 这一行直接 rejects（页面 onMounted
+    //        没人接 ⇒ unhandled rejection，整页打不开）
+    await store.load();
+
+    // 杀手②：把 catch 里的 `console.warn` 删掉 ⇒ 下面那条红（"留痕"是这条降级唯一的可观测性）
+    expect(warn).toHaveBeenCalledWith("[ai/store] 读会话行失败：", expect.any(Error));
+    expect(store.messages).toEqual([]);
+    expect(store.conversationId).toBeNull();
+    expect(store.loading).toBe(false);
+
+    // 为什么**照旧吞掉**（不 rethrow）：这一层是 `load()` 的只读探测，调用方只有两类 ——
+    // `onMounted` 与 `watch(账本)`，两边都**没有**放错误的位置（面板里没有"读会话失败"这个状态）；
+    // 而"读失败"与"还没有会话"对 UI 是同一种**可自愈**的降级（空列表，下次 load 会补回来），
+    // 且这一层**不写任何东西** ⇒ 没有数据被破坏，最坏只是一段时间看不到历史。
+    // 代价是承认它分不出"真的没说过话"与"读不到"——那需要一个第三态，超出本次范围（见报告）。
+    // 反过来 rethrow 的代价是确定的：空账本/坏库直接变成整页打不开。
+    warn.mockRestore();
+  });
+
   it("clear()：调 clearConversation(ledgerId, now) —— 真库里消息真没了、会话行被软删；内存投影同时清空", async () => {
     const { sqlite } = await useRealDb();
     setLedger(LEDGER_ID);

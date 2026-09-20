@@ -13,14 +13,15 @@
 // 因为那张表**已经**是"记账写什么"的唯一实现 —— 这里分叉会让草稿卡记出与记账页不同的账。
 // 映射与校验抽在 `draftData.ts`（纯函数，另有一份纯函数测试直接钉字段来源）。
 //
-// 与记账页的一处**刻意**差异：**不**再调 `round2` —— `tools.ts:778` 生成草稿时已经 `round2` 过，
+// 与记账页的一处**刻意**差异：**不**再调 `round2` —— `tools.ts:787` 生成草稿时已经 `round2` 过，
 // `transactionStore.add` 也不做金额变换 ⇒ 这里再 round 一次是**等价冗余**（不是防线）。
 // ⚠️ 内联编辑**改了**这条：编辑区是**用户输入**，进来的是任意字符串 ⇒ `applyDraftEdit` 里
 // 必须 `round2`（§4.4:162 / §10.7 点名复用 `utils/transaction.ts` 的规则），这不是冗余。
 //
-// ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面**只监听它**
-// 做 `dismissDraft`。曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把
-// `dismissDraft` 调两次（复审指出的两条会打架的契约）⇒ 已合并成一个。
+// ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面据此把
+// **决定**写进 payload（`aiChat.confirmDraft`）并**保留这张卡**（§4.4:164 的「已记账 ✓ + 撤销」）；
+// 曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把 `dismissDraft` 调两次
+// （复审指出的两条会打架的契约）⇒ 已合并成一个。
 //
 // ⚠️ **没有事件层守卫**（`if (saving) return` 之类）：`onConfirm` / `onReject` 的唯一入口是模板里
 // `:disabled` 的那两颗按钮，禁用态在真实浏览器的**事件派发层**就挡住点击（happy-dom 同样按
@@ -56,12 +57,23 @@ const props = withDefaults(
      * `undefined` = 调用方没判定（旧调用点）⇒ 跟随全局 `amountsHidden`，与 6d 之前完全一致。
      */
     masked?: boolean;
+    /**
+     * 库里那条消息上**已经持久化**的决定（收口 C-P1）。`undefined`（组件单独挂载 / 旧调用点）
+     * = 没有决定可恢复 ⇒ 当"待确认"，与 6c 之前完全一致。
+     *
+     * 它不是"页面越权管组件状态"：卡的状态机由卡自己走（`state`），这个 prop 只负责**播种**与
+     * **同步**（重进页面时把 `confirmed` 恢复成「已记账 ✓ + 撤销」）。不接它的话，重进页面后
+     * 那张卡会显示成"待确认"—— 用户再点一次就写**第二笔**。
+     */
+    status?: "pending" | "confirmed" | "rejected";
+    /** 已记账那笔的交易 id（`add` 的返回值，随决定一起落库）：重进页面后撤销仍要知道删哪一笔 */
+    transactionId?: string | null;
   }>(),
   // ⚠️ `masked: undefined` **必须显式写出来**：Vue 对 Boolean 类型 prop 有"缺席 ⇒ false"的强制转换
   // （`resolvePropValue`：没有 default 时，缺席的 Boolean prop 会被赋成 `false`），
   // 而这里"缺席"的语义是**没有判定**（跟随全局开关），不是"不遮"。显式给了 default 之后，
   // 缺席就保持 `undefined` ⇒ 下面 `?? amountsHidden.value` 才成立（实测：去掉它，跟随全局那条直接变"不遮"）。
-  { masked: undefined },
+  { masked: undefined, status: "pending", transactionId: null },
 );
 
 /** 对外契约 `confirm` 带新交易 id（撤销另有 `undo`，拒绝是 `reject`） */
@@ -90,9 +102,13 @@ const hidden = computed(() => props.masked ?? amountsHidden.value);
  * —— 加账在途仍是待确认视图（两颗按钮禁用），撤销在途必须**留在已记账视图**。
  * 曾共用一个 `"saving"`：点下「撤销」的同一帧卡片会翻回"待确认"，remove 落地才翻回来（复审 ③-1）。
  */
-const state = ref<"pending" | "saving" | "saved" | "undoing">("pending");
-/** 已记账那笔的 id（`add` 的返回值）。撤销只用它。 */
-const savedId = ref("");
+const state = ref<"pending" | "saving" | "saved" | "undoing">(
+  // 播种**持久化的决定**（收口 C-P1）：重进页面那张卡一上来就是「已记账 ✓ + 撤销」。
+  // `saving`/`undoing` 是**在途**态，永远不可能来自库（没有"在途"落库这一说）。
+  props.status === "confirmed" ? "saved" : "pending"
+);
+/** 已记账那笔的 id（`add` 的返回值，或从 payload 恢复回来的那个）。撤销只用它。 */
+const savedId = ref(props.transactionId ?? "");
 const error = ref("");
 
 /**
@@ -171,6 +187,21 @@ watch(() => props.draft, () => {
   editedFields.value = null;
   editedIds.value = null;
   editing.value = false;
+});
+
+/**
+ * 跟随**持久化的决定**（收口 C-P1）：同一张草稿的 `status` 从 `confirmed` 变回 `pending`
+ * （用户撤销了，`aiChat.undoDraft` 写回 payload）⇒ 卡回到"待确认"，用户可以重新确认一次。
+ *
+ * ⚠️ 这里**不能**清 `savedId`：`applyDraftDecision` 是"先写库、后改内存"，`status` 变 `pending`
+ * 与 `savedId` 清空发生在同一次 await 之后 —— 撤销在途（`state === "undoing"`）时若把
+ * `savedId` 清掉，`onUndo` 里那次 `remove` 的收尾就会对着一个空 id。真正的清空在 `onUndo` 成功之后。
+ *
+ * ⚠️ 反向（`pending → confirmed`）不在这里处理：那一路是**卡自己**确认的（`onConfirm` 已经进了
+ * 已记账态），重复置位会把状态机踩回去。
+ */
+watch(() => props.status, (next) => {
+  if (next === "pending" && state.value !== "pending") resetForNewDraft();
 });
 
 /** 打开编辑区：从**当前**草稿播种表单（改过就是改后的值，没改过就是 props） */
@@ -258,8 +289,8 @@ function onConfirm(): void {
 
 /** 撤销刚才那笔（§4.4：确认后仍可反悔）。id 用 `onConfirm` 拿到的那个，不重算、不猜。 */
 function onUndo(): void {
-  // ⚠️ 这里**没有**空 id 守卫：`savedId` 只可能被 `onConfirm` 写入，而撤销按钮只在
-  // `state === "saved"` 时渲染，两者是一体的（`resetForNewDraft` 会把它们一起清掉）。
+  // ⚠️ 这里**没有**空 id 守卫：`savedId` 只可能被 `onConfirm` 写入或由 `transactionId` prop 播种，
+  // 而撤销按钮只在 `state === "saved" | "undoing"` 时渲染，两者是一体的。
   // 原 `if (savedId.value === "") return;` 变异实测全绿 = 走不到的等价防御，按 Ruling 35 删。
   const removeId = savedId.value;
   error.value = "";
@@ -268,7 +299,8 @@ function onUndo(): void {
   void (async () => {
     try {
       await transactionStore.remove(removeId);
-      // 撤销成功 ⇒ 这张卡回到"待确认"，用户可以重新确认（commit/rollback 的语义）
+      // 撤销成功 ⇒ 这张卡回到"待确认"（**先**清本地，再发事件：页面的 `undoDraft` 会把 status
+      // 同步回 `pending`，下面那个 watch 不会把状态机踩回去）
       resetForNewDraft();
       emit("undo", removeId);
     } catch (e) {
