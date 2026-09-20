@@ -212,6 +212,42 @@ func TestRouter_AIStatusDoesNotConsumeDailyQuota(t *testing.T) {
 	}
 }
 
+// **分钟级限流器只有一份**：/ai/chat 与 /ai/status 共用同一个"每用户每分钟"桶。
+// 因果：第 3 个请求必须落在**同一个**桶里才会被拒——两次 status 已把 limit=2 的桶用满，
+// 紧接着的 chat 因此必须被分钟级拒掉（429 ai_rate_limited）。
+// 若两个组各注册一次 LimitBy，chat 会落进它自己那个**空**桶 → 被放行到 handler → 503
+// ⇒ 这条断言正是用来区分"一个桶"与"两个桶"的：两个桶会让 /ai/* 每分钟总量静默翻倍，
+// 属安全/成本性质，且没有别的用例会响。
+func TestRouter_AIMinuteLimitIsSharedAcrossEndpoints(t *testing.T) {
+	r := newTestRouter(t, 2, 100) // 分钟级 2、日配额 100，让日配额不干扰
+	tokenA := mintAccessToken(t, "user-a")
+
+	getStatus := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/ai/status", nil)
+		req.Header.Set("Authorization", "Bearer "+tokenA)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 两次 status 把分钟桶用满（limit=2）
+	for i := 0; i < 2; i++ {
+		if rec := getStatus(); rec.Code != http.StatusOK {
+			t.Fatalf("第 %d 次 /ai/status: got %d, want 200（分钟级额度应为 2，桶应被用满）", i+1, rec.Code)
+		}
+	}
+
+	// 第 3 个请求换成另一个端点：必须撞在同一个桶上
+	rec := postChat(r, tokenA)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("桶已满后的 chat: got %d, want 429——两个端点各有一个分钟桶？"+
+			"分钟级限流器必须只有一份（否则 /ai/* 每分钟总量静默翻倍）", rec.Code)
+	}
+	if body := rec.Body.String(); !bytes.Contains([]byte(body), []byte("ai_rate_limited")) {
+		t.Errorf("桶已满后的 chat 响应体应是分钟级 ai_rate_limited；实际: %s", body)
+	}
+}
+
 // refresh token（typ=refresh）不得访问受保护路由。
 // **这条断言响应体而不是仅状态码**：handler 自身的 userID 兜底也返回 401，
 // 只有 "invalid token type" 才能唯一证明 AuthMiddleware 真的挂在链上
