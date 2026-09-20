@@ -152,9 +152,6 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 	return d
 }
 
-// AIEnabled 报告 AI 功能是否配置可用。AI_API_KEY 是唯一开关（规格 §6.2）。
-func (c *Config) AIEnabled() bool { return c.AIAPIKey != "" }
-
 // AIHost 从 AI_BASE_URL 解析出供应商域名，用于 /ai/status 回给客户端展示。
 // 这是隐私说明卡里要告诉用户"数据发往哪里"的值（规格 §6.1/§7.3），只能由后端给。
 // 解析失败返回空串——客户端此时不得展示隐私卡、也不得允许开启（§7.3）。

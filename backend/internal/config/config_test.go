@@ -164,8 +164,13 @@ func TestLoad_AIKeyEmpty_DoesNotFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AI_API_KEY 为空时 Load 不应报错，实际: %v", err)
 	}
-	if cfg.AIEnabled() {
-		t.Error("AI_API_KEY 为空时 AIEnabled() 应为 false")
+	// 断言**同样的意图**："没配 key ⇒ 后端判定 AI 不可用"。
+	// 口径是 key 字段本身（AI_API_KEY 是唯一开关，规格 §6.2）——
+	// 服务端判定这件事的唯一真相是 service.Enabled()，它读的就是这个字段。
+	// （不在这里 import service 断言：config 不该反向依赖使用方；
+	//  service.Enabled() 与 key 的绑定由 service/ai_test.go 的禁用态用例守着。）
+	if cfg.AIAPIKey != "" {
+		t.Error("AI_API_KEY 为空时 Load 出来的 key 必须是空串（否则后端会以为配了 key ⇒ 误判可用、去外联真实上游）")
 	}
 }
 
@@ -220,8 +225,9 @@ func TestLoad_AIExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.AIEnabled() {
-		t.Error("配了 key 时 AIEnabled() 应为 true")
+	// 同一意图的另一半："配了 key ⇒ 可用"（口径同上，断言 key 字段本身）。
+	if cfg.AIAPIKey != "sk-test" {
+		t.Errorf("配了 AI_API_KEY 时 Load 出来的 key = %q, want sk-test（key 是唯一开关，丢了就等于功能静默不可用）", cfg.AIAPIKey)
 	}
 	if cfg.AIBaseURL != "https://api.moonshot.cn/v1" {
 		t.Errorf("AIBaseURL 末尾斜杠未被规范化: %q", cfg.AIBaseURL)
