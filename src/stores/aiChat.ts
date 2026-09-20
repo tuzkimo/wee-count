@@ -15,7 +15,7 @@
 //   所以除了 `abort()` 还需要轮次令牌 `runSeq`，否则旧轮的答案会插到新轮后面。
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
-import { getCurrentUserId, getTeamMembers } from "@/db/userDb";
+import { getCurrentUserId, getTeamMembers, getUserDb } from "@/db/userDb";
 import { useAuthStore } from "@/stores/auth";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
@@ -39,6 +39,10 @@ import {
 } from "@/services/ai/agent";
 import { createTransport } from "@/services/ai/transport";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
+// ⚠️ 草稿形状的**唯一真相**在 `tools.ts` 的草稿工具产出里（Ruling 66 R3）：store 侧只 `import type`
+// 引入（类型擦除 ⇒ 不会把 `@/db/userDb` 拉进本 store 的运行期模块图），绝不重声明第二份 ——
+// 字段改名的漂移后果是**静默**的（`readDrafts` 把草稿当"形状不全"跳过，草稿卡不显示、不报错）。
+import type { NormalizedDraft, ResolvedDraftIds } from "@/services/ai/tools";
 import { ACCOUNT_TYPE_LABELS } from "@/types";
 
 /** `agent.ts` 的 `AgentSession` 结构上就是 session.ts 这四项 —— 显式列出来，别让它悄悄少一项 */
@@ -62,25 +66,14 @@ export interface UiMessage {
   createdAt: string;
 }
 
-/** 草稿字段（形状由 `tools.ts` 的草稿工具产出；那里是私有的，故此处重声明一份） */
-export interface AiDraftFields {
-  type: "expense" | "income" | "transfer";
-  amount: number;
-  category: string | null;
-  fromAccount: string | null;
-  toAccount: string | null;
-  occurredAt: string;
-  note: string | null;
-  tags: string[];
-}
+/**
+ * 草稿字段。**别名**，不是第二份声明：形状由 `tools.ts` 的 `NormalizedDraft` 定义（R3）。
+ * 保留这个名字是因为 UI 侧已经按它取用（`DraftCard` / `draftData`）。
+ */
+export type AiDraftFields = NormalizedDraft;
 
-/** 草稿里名字解析出的**本地** id（给记账用，绝不上行） */
-export interface AiDraftIds {
-  categoryId: string | null;
-  fromAccountId: string | null;
-  toAccountId: string | null;
-  tagIds: string[];
-}
+/** 草稿里名字解析出的**本地** id（给记账用，绝不上行）—— 同上，别名 `ResolvedDraftIds` */
+export type AiDraftIds = ResolvedDraftIds;
 
 /** 一条"待确认"的草稿。`messageId` 指向产生它的 assistant 消息（UI 用来定位草稿卡） */
 export interface PendingDraft {
@@ -174,6 +167,19 @@ function readDrafts(payload: AiMessagePayload | null, messageId: string): Pendin
 }
 
 // ---------------------------------------------------------------------------
+// 文案
+// ---------------------------------------------------------------------------
+
+/**
+ * store 兜住"agent 契约被改坏"（`runAgent` 抛）时的文案。
+ *
+ * ⚠️ **不得复用 `DB_FAILURE_TEXT`**：那一句说的是"本地数据出了点问题"，而 `catch` 到这里的原因
+ * 未必是 DB（可能是 agent 里的任何 TypeError）⇒ 让用户看到的成因与真实成因一致；技术细节在
+ * `console.warn` 里（复审 Minor：`fail(DB_FAILURE_TEXT)` 被两条不同的路共用，文案误导）。
+ */
+export const AGENT_FAILURE_TEXT = "AI 助手出了点问题，这次没能回答。稍后再试试。";
+
+// ---------------------------------------------------------------------------
 // store
 // ---------------------------------------------------------------------------
 
@@ -200,6 +206,14 @@ export const useAiChatStore = defineStore("aiChat", () => {
 
   /** 在途那一轮的取消句柄（同时只允许一轮） */
   let inFlight: AbortController | null = null;
+  /**
+   * **已开始、尚未落定**的轮次（含被后续 `send` 取代的那一轮）。
+   *
+   * `clear()` 必须 `await` 它：`abort()` 只挡得住**内存投影**（靠 `runSeq`），挡不住已经进
+   * `await` 的落库 —— `agent.ts:462` 检查 `signal.aborted` 之后 :476 就调 `persistAssistant`，
+   * 而 `session.appendMessage` 不再看 signal。不等的后果见 `clear()`。
+   */
+  const inFlightRuns = new Set<Promise<void>>();
   /** 轮次令牌：被取代的那一轮 settle 时**不得**再动状态 */
   let runSeq = 0;
   /** 加载令牌：旧账本的响应可能后到，不能覆盖新账本的消息（账本隔离） */
@@ -208,6 +222,33 @@ export const useAiChatStore = defineStore("aiChat", () => {
   // -------------------------------------------------------------------------
   // 读既有会话
   // -------------------------------------------------------------------------
+
+  /**
+   * **只读**查找当前账本的会话行（R4：打开页面不该建会话）。
+   *
+   * 只 SELECT、不 `ensureConversation`：后者在没有会话行时会 `INSERT`（复审 P2 实测：空账本首屏
+   * 就多一行 `ai_conversations`），而"用户一句话都没说过"与"库不可用"在这里都该是**空列表**。
+   * 会话的创建推迟到首次发送（那是 agent 的 `ensureConversation`，它同时负责复活软删行）。
+   *
+   * ⚠️ 这是本 store 里**唯一**一处直接碰 SQL 的地方，且**只读**（写路径仍全在 `session.ts`：
+   * `appendMessage` / `setTitleIfEmpty` / `clearConversation`）；软删的会话行**不在这里复活**
+   * —— 复活是下一次发言的事（`loadMessages` 自己按 `is_deleted = 0` 过滤，读到空列表）。
+   */
+  async function findConversationId(ledgerId: string): Promise<string | null> {
+    const db = getUserDb();
+    if (db === null) return null;
+    try {
+      const rows = await db.select<{ id: string }[]>(
+        "SELECT id FROM ai_conversations WHERE ledger_id = ? LIMIT 1",
+        [ledgerId]
+      );
+      return rows.length > 0 ? rows[0]!.id : null;
+    } catch (e) {
+      // 读失败降级成"还没有会话"（Ruling 13：DB 未就绪 / 查询失败都不抛给 UI），但必须留痕
+      console.warn("[ai/store] 读会话行失败：", e);
+      return null;
+    }
+  }
 
   /** 读当前账本的既有消息。DB 未就绪时降级成空列表（Ruling 13），不抛。 */
   async function load(): Promise<void> {
@@ -225,11 +266,12 @@ export const useAiChatStore = defineStore("aiChat", () => {
         return;
       }
 
-      const convId = await ensureConversation(ledgerId, new Date());
+      const convId = await findConversationId(ledgerId);
       if (seq !== loadSeq) return;
       conversationId.value = convId;
       if (convId === null) {
-        // `getUserDb()` 为 null（冷启动 / 未登录，Ruling 13）是**预期**降级，不是错误
+        // 这个账本还没说过话（或 `getUserDb()` 为 null：冷启动 / 未登录，Ruling 13）。
+        // 两种形态都是**预期**降级、都不是错误；共同点是**一条会话行都不许建**（R4）。
         messages.value = [];
         pendingDrafts.value = [];
         return;
@@ -267,11 +309,32 @@ export const useAiChatStore = defineStore("aiChat", () => {
     const seq = ++runSeq;
     const controller = new AbortController();
     inFlight = controller;
+    const run = runTurn(seq, controller, userText);
+    // 登记这一轮（`send` 自己 await 它、`clear()` 也要等它落定）。两个 handler 是为了让这次
+    // 登记不产生 unhandled rejection —— `runTurn` 契约上不 reject，这里只是不让记账变成风险。
+    inFlightRuns.add(run);
+    void run.then(
+      () => inFlightRuns.delete(run),
+      () => inFlightRuns.delete(run)
+    );
+    await run;
+  }
+
+  /** 一轮对话的**全部**副作用（抽出来是为了让 `send` 把这轮的 promise 登记给 `clear` 等） */
+  async function runTurn(
+    seq: number,
+    controller: AbortController,
+    userText: string
+  ): Promise<void> {
     sending.value = true;
     error.value = null;
 
     const ledgerId = ledgerStore.currentLedgerId;
     messages.value.push({
+      // ⚠️ 内存消息的 id 与库里 `ai_messages.id` 是**两套独立身份**：这里（以及 `appendAssistant`）
+      // 用自己造的 UUID，agent 落库时另造一个。同一条消息"刚发完"与"重开读回来"的 id 因此不同
+      // ⇒ 任何 UI 都**不许**把内存 id 当库键用（`pendingDrafts[].messageId` 只在同一会话的
+      // 内存投影内自洽）；重开一次换成库里的 id（`load()` 用 `r.id`）。
       id: crypto.randomUUID(),
       role: "user",
       content: userText,
@@ -303,9 +366,10 @@ export const useAiChatStore = defineStore("aiChat", () => {
     } catch (e) {
       // agent 的契约是"永不抛"，这里只兜住契约被改坏的那一天（照 agent 兜 buildLookupContext 的写法）。
       // **必须打日志**：这是唯一能看到抛出原因的地方。
+      // ⚠️ 文案必须是 AGENT_FAILURE_TEXT（这一路未必是 DB 故障）—— 与"没有账本"那条分开。
       console.warn("[ai/store] send 意外抛出：", e);
       if (seq !== runSeq) return;
-      fail(DB_FAILURE_TEXT);
+      fail(AGENT_FAILURE_TEXT);
     } finally {
       if (seq === runSeq) sending.value = false;
       if (inFlight === controller) inFlight = null;
@@ -363,15 +427,26 @@ export const useAiChatStore = defineStore("aiChat", () => {
    * 清空当前账本的会话。**真删消息 + 软删会话行**由 `clearConversation(ledgerId, now)` 负责
    * （Ruling 7：只清内存的话，重开 App 消息又回来了）；会话行 id 不变，`ensureConversation`
    * 复活的是同一行。
+   *
+   * ⚠️ 三步的顺序都是必需的：**掐在途 → 等它落定 → 才 clearConversation**。
    */
   async function clear(): Promise<void> {
     const ledgerId = ledgerStore.currentLedgerId;
-    // 先掐在途：它的结果不能落进刚清空的会话
+    // ① 先掐在途：`runSeq` 递增后，被取代的那一轮 settle 时不得再动内存（`appendTurn` 进不来）
     cancelInFlight();
+    // 内存投影立刻清（UI 不用等落库）；迟到的写只可能进库，进不了列表
     messages.value = [];
     pendingDrafts.value = [];
     error.value = null;
+    // ② 再等这些轮次**真正落定**：`abort()` 拦不住已经进 `await` 的落库 —— `agent.ts:462`
+    //    检查 `signal.aborted` 之后，:476 仍会调 `persistAssistant`，而 `session.appendMessage`
+    //    自己不看 signal。不等它，迟到的写会落在下面 `clearConversation` **之后**：消息行写进
+    //    已被软删的会话行，下一次发言 `ensureConversation` 复活同一行 ⇒ **幽灵消息**重新出现。
+    //    ⚠️ 等的是 `inFlightRuns` 全体（不止 `inFlight` 那一个）：被后续 `send` 取代的那一轮
+    //    同样可能正卡在这次落库的 await 里。
+    await Promise.all([...inFlightRuns].map((run) => run.catch(() => undefined)));
     if (ledgerId === null) return;
+    // ③ 最后真删消息 + 软删会话行
     await clearConversation(ledgerId, new Date());
   }
 
@@ -448,8 +523,14 @@ export const useAiChatStore = defineStore("aiChat", () => {
     return table;
   }
 
-  // 切账本即切会话（Ruling 14：`ai_conversations.ledger_id` UNIQUE，会话必须跟账本绑定）
-  watch(() => ledgerStore.currentLedgerId, () => { void load(); });
+  // 切账本即切会话（Ruling 14：`ai_conversations.ledger_id` UNIQUE，会话必须跟账本绑定）。
+  // ⚠️ 必须**一并掐掉在途那一轮**：`runSeq` 只由 `cancelInFlight()` 递增 ⇒ 不掐的话，上一账本
+  //    那一轮的终稿/草稿在 settle 时 `seq === runSeq` 仍成立，会直接 append 进**新账本**的列表
+  //    （危害不止显示：6b 的草稿卡"确认"按**当前账本**调 `transactionStore.add` ⇒ 拿 A 的数据往 B 记账）。
+  watch(() => ledgerStore.currentLedgerId, () => {
+    cancelInFlight();
+    void load();
+  });
 
   return {
     messages,

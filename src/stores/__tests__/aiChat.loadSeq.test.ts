@@ -3,6 +3,10 @@
 // 单独一个文件、单独一套 mock：这里要验的是**旧账本的响应后到**这一形态（账本隔离），
 // 而 aiChat.test.ts 跑的是真 SQLite —— 真库的两次查询没法确定性地乱序，所以那边注不进
 // 这个 fixture。宁可多一个文件，也不把真库那套证据掺进 mock。
+//
+// ⚠️ R4 之后 `load()` 不再 `ensureConversation`（那会 INSERT 会话行，且 `ensureConversation`
+// 的 mock 就变成了"load 会建会话"的假前提）⇒ 会话查找走**只读**的那个口：本文件用假
+// `getUserDb()` 按账本回一行会话，`loadMessages` 仍由 mock 控制乱序。
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
@@ -11,7 +15,15 @@ vi.mock("@/db/userDb", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/db/userDb")>();
   return {
     ...actual,
-    getUserDb: () => null,
+    // 只读会话查找（`load()` 里唯一的直连 SQL）：按 ledger_id 回 `conv-<ledgerId>`。
+    // 其余语句一律空结果 —— 这条 mock 不实现任何写路径，写路径由 session 的真实现负责。
+    getUserDb: () => ({
+      select: async (sql: string, params: unknown[] = []) => {
+        if (!sql.includes("FROM ai_conversations")) return [];
+        return [{ id: `conv-${String(params[0])}` }];
+      },
+      execute: async () => undefined,
+    }),
     getCurrentUserId: () => "local-1",
     getTeamMembers: async () => [],
   };
@@ -27,7 +39,7 @@ vi.mock("@/services/ai/agent", async (importOriginal) => {
   return { ...actual, runAgent: vi.fn() };
 });
 
-import { ensureConversation, loadMessages, type AiMessageRow } from "@/services/ai/session";
+import { loadMessages, type AiMessageRow } from "@/services/ai/session";
 import { useAiChatStore } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
 import type { Ledger } from "@/types";
@@ -63,7 +75,6 @@ beforeEach(() => {
 
 describe("切账本时的加载竞态（账本隔离）", () => {
   it("旧账本的读后到时不得覆盖新账本的消息（杀手：去掉 load 的 seq 守卫 → 显示上一个账本的对话）", async () => {
-    vi.mocked(ensureConversation).mockImplementation(async (ledgerId: string) => `conv-${ledgerId}`);
     const slowL1 = deferred<AiMessageRow[]>();
     vi.mocked(loadMessages)
       .mockImplementationOnce(() => slowL1.promise) // L1：挂在半路
@@ -75,6 +86,8 @@ describe("切账本时的加载竞态（账本隔离）", () => {
 
     const store = useAiChatStore();
     const p1 = store.load(); // 这一次读 L1，会被挂住
+    await flushPromises(); // 让 L1 的会话查找先落定、`loadMessages` 真的发出去（并挂在半路）
+    expect(vi.mocked(loadMessages).mock.calls.map((c) => c[0])).toEqual(["conv-L1"]); // 前提①：第一次读已发出
     ledgerStore.currentLedgerId = "L2"; // 触发 watch ⇒ 第二次 load（seq 递增）
     await flushPromises();
 

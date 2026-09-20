@@ -609,7 +609,15 @@ function normalizeOccurredAt(v: unknown, now: Date): { ok: true; value: string }
   return { ok: true, value: m[2] === undefined ? `${m[1]}T00:00` : v.trim() };
 }
 
-interface NormalizedDraft {
+/**
+ * 草稿的**规范形状**（`create_transaction_draft` 的产出）。
+ *
+ * ⚠️ 导出它是为了让 store 侧**不再重声明第二份**（Ruling 66 R3）：`stores/aiChat.ts` 用
+ * `import type` 引它（类型擦除 ⇒ 不会把本文件的 `@/db/userDb` 拖进 store 的运行期模块图）。
+ * 两份手写形状一旦漂移是**静默**的 —— store 的 `readDrafts` 会把形状不全的草稿直接跳过，
+ * 表现是"草稿卡不显示"而不是报错。
+ */
+export interface NormalizedDraft {
   type: AiTxType;
   amount: number;
   category: string | null;
@@ -695,7 +703,8 @@ function resolveDraftNames(
   return { ok: true, resolved: { categoryId, fromAccountId, toAccountId, tagIds } };
 }
 
-interface ResolvedDraftIds {
+/** 草稿里"名字 → **本地** id"的解析结果（给记账用，绝不上行）。导出理由同 `NormalizedDraft` */
+export interface ResolvedDraftIds {
   categoryId: string | null;
   fromAccountId: string | null;
   toAccountId: string | null;

@@ -38,7 +38,7 @@ import {
   runAgent,
   type AgentTurn,
 } from "@/services/ai/agent";
-import { useAiChatStore } from "@/stores/aiChat";
+import { AGENT_FAILURE_TEXT, useAiChatStore } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
@@ -133,6 +133,16 @@ function setLedger(id: string, over: Partial<Ledger> = {}): void {
 
 function countRows(sqlite: DatabaseSync, table: string): number {
   return (sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+}
+
+/**
+ * 记录到 `execute` 上的**写语句**（INSERT/UPDATE/DELETE）。
+ * "store 零写入"这类断言的唯一读法：读语句（SELECT）不算写，也不该被算进去。
+ */
+function writeSqls(db: ReturnType<typeof asTauriDb>): string[] {
+  return db.execute.mock.calls
+    .map(([sql]) => String(sql))
+    .filter((sql) => /INSERT|UPDATE|DELETE/i.test(sql));
 }
 
 interface Deferred<T> {
@@ -398,8 +408,11 @@ describe("失败", () => {
     // 杀手：去掉 send 里的 try/catch → 这一句变成 rejects
     await expect(store.send("这个月花了多少")).resolves.toBeUndefined();
 
-    expect(store.messages[1]).toMatchObject({ role: "assistant", content: DB_FAILURE_TEXT });
-    expect(store.error).toBe(DB_FAILURE_TEXT);
+    expect(store.messages[1]).toMatchObject({ role: "assistant", content: AGENT_FAILURE_TEXT });
+    expect(store.error).toBe(AGENT_FAILURE_TEXT);
+    // 文案与成因一致：这条路的成因是"agent 意外抛出"，**未必**是本地库故障 ⇒ 不得复用 DB 那句
+    // （杀手：把 catch 里的文案换回 `DB_FAILURE_TEXT` → 上面两条红；"没有账本"那条用例仍绿）
+    expect(AGENT_FAILURE_TEXT).not.toBe(DB_FAILURE_TEXT);
     expect(store.sending).toBe(false);
     expect(warn).toHaveBeenCalled(); // 不能静默：这是唯一能看到抛出原因的地方
     warn.mockRestore();
@@ -440,10 +453,35 @@ describe("load / clear", () => {
     expect(store.messages[0]!.payload).toBeNull();
     expect(store.pendingDrafts.map((d) => [d.draftId, d.messageId])).toEqual([["d-1", "m2"]]);
 
-    // load 是只读的：一次写语句都不许发（UPDATE 软删会话行之类会让"只是打开页面"产生副作用）
-    const writes = db.execute.mock.calls.map(([sql]) => String(sql)).filter((sql) => /INSERT|UPDATE|DELETE/i.test(sql));
-    expect(writes).toEqual([]);
+    // ⚠️ 这一形态**只能**钉"复用已有会话、不插第二条"：`:417` 已经 ensure 过 ⇒ 会话行存在时
+    // 任何实现都不会 INSERT。""load() 是只读的"这句话的判别力在**空账本**那一形态上，
+    // 由下一条用例负责（把只读断言写在这里 = 前提把唯一会写的形态排除掉，恒真 ✗ —— 复审第 3 节）。
     expect(countRows(sqlite, "ai_conversations")).toBe(1); // 复用已有会话，不插第二条（Ruling 14）
+  });
+
+  it("空账本 load() 是只读的（R4）：一条会话行都不建，会话推迟到首次发送才建", async () => {
+    const { sqlite, db } = await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = useAiChatStore();
+    db.execute.mockClear();
+
+    await store.load();
+
+    // 杀手：`load()` 里调 `ensureConversation`（修前实现）→ 下面两条红（INSERT 发出去了 / 库里多一行）
+    expect(writeSqls(db)).toEqual([]);
+    expect(countRows(sqlite, "ai_conversations")).toBe(0);
+    expect(store.conversationId).toBeNull();
+    expect(store.loading).toBe(false);
+    expect(store.messages).toEqual([]);
+    expect(store.pendingDrafts).toEqual([]);
+
+    // 第四条写路径（复审第 8.3 条）：`watch → load()` 与上面是**同一处代码** ⇒ 空账本切账本
+    // 同样不许建会话（这两条断言与上面共用同一条防线，显式声明，不计作两条）。
+    setLedger("L2");
+    await flushPromises();
+    expect(store.conversationId).toBeNull();
+    expect(writeSqls(db)).toEqual([]);
+    expect(countRows(sqlite, "ai_conversations")).toBe(0);
   });
 
   it("payload 是坏 JSON ⇒ 消息**不消失**（content 照常读出），payload 降级为 null", async () => {
@@ -491,6 +529,36 @@ describe("load / clear", () => {
     expect(store.conversationId).toBe(cid);
   });
 
+  it("clear() 先掐在途那一轮：被掐掉的终稿与草稿不得在清空之后落回状态", async () => {
+    await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = useAiChatStore();
+    const pending = deferred<AgentTurn>();
+    runMock().mockReturnValueOnce(pending.promise);
+
+    const sending = store.send("这个月花了多少");
+    await flushPromises(); // 让 send 走到 runAgent
+    const signal = runMock().mock.calls[0]![0].signal;
+
+    const clearing = store.clear(); // 掐在途 → 等它落定 → clearConversation
+    await flushPromises();
+    expect(signal.aborted).toBe(true); // 前提：取消真的送达（与下面那条是 cancelInFlight 的**两条**子机制）
+
+    // 被取代的那一轮**可能在被 abort 之前就拿到终稿**（abort 落在 persistAssistant 的 await 里）
+    pending.resolve(turn({ text: "被掐掉的答案", drafts: [RAW_DRAFT] }));
+    await clearing;
+    await sending;
+
+    // 杀手①：删掉 `clear()` 里的 `cancelInFlight()`（复审变异 M2）⇒ 令牌没作废、也没 abort，
+    //   "被掐掉的答案"+草稿卡就落进刚清空的列表（下面两条红）。修前交付用例 14 条全绿 = 空的保证。
+    // 杀手②：只删 `cancelInFlight` 的 `runSeq++`（保留 abort，M2b）⇒ `signal.aborted` 那条**仍绿**，
+    //   而下面两条红 ⇒ 证明它们不是搭 abort 那条断言的便车。
+    expect(store.messages).toEqual([]);
+    expect(store.pendingDrafts).toEqual([]);
+    expect(store.error).toBeNull();
+    expect(store.sending).toBe(false);
+  });
+
   it("切账本 ⇒ 会话跟着切（Ruling 14）：messages 重载成新账本的会话，且不为任何账本建第二条会话行", async () => {
     const { sqlite } = await useRealDb();
     const c1 = (await ensureConversation("L1", new Date(T0)))!;
@@ -510,6 +578,46 @@ describe("load / clear", () => {
     expect(store.conversationId).toBe(c2);
     expect(store.messages.map((m) => m.content)).toEqual(["L2 的问"]);
     expect(countRows(sqlite, "ai_conversations")).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 切账本：在途那一轮必须被掐掉（Ruling 14 的账本隔离不只在"读"，也在"写回内存"）
+// ---------------------------------------------------------------------------
+
+describe("切账本掐在途", () => {
+  it("切走后 A 那一轮才 settle：终稿与草稿不得落进 B 的列表（杀手：watch 里去掉 cancelInFlight）", async () => {
+    const { sqlite } = await useRealDb();
+    // L2 自己**已经有**会话与消息：A 的答案若漏进来，会追加在 L2 的消息之后（复审 P1 的形态）
+    const c2 = (await ensureConversation("L2", new Date(T0)))!;
+    await appendMessage({ id: "m2", conversation_id: c2, role: "user", content: "L2 的问", created_at: T0 });
+
+    setLedger("L1");
+    const store = useAiChatStore();
+    const pending = deferred<AgentTurn>();
+    runMock().mockReturnValueOnce(pending.promise);
+
+    const sending = store.send("L1 的问");
+    await flushPromises(); // 让 send 走到 runAgent（L1 那一轮在飞）
+    expect(runMock()).toHaveBeenCalledTimes(1);
+
+    setLedger("L2"); // 触发 watch
+    await flushPromises();
+    expect(store.conversationId).toBe(c2); // 前提：真的切过去了（否则下面的断言可能只是因为压根没切）
+
+    // A 那一轮现在才拿到终稿（LLM 的数秒窗口里离开 AI 页切一次账本即可复现）
+    pending.resolve(turn({ text: "L1 的答案", drafts: [RAW_DRAFT] }));
+    await sending;
+
+    // 杀手：watch 只 `void load()`、不 `cancelInFlight()`（修前实现）⇒ 轮次令牌没作废，
+    //   settle 时 `seq === runSeq` 仍成立 ⇒ 下面两条红（"L1 的答案"落进 L2 列表、草稿卡跨账本存活）。
+    //   危害不止显示：6b 的草稿卡"确认"按**当前账本**调 transactionStore.add ⇒ 拿 A 的数据往 B 记账。
+    expect(store.messages.map((m) => [m.role, m.content])).toEqual([["user", "L2 的问"]]);
+    expect(store.pendingDrafts).toEqual([]);
+    expect(store.sending).toBe(false); // 被取代的那一轮不得把发送态又立起来
+    // L1 那一轮的会话行是**真 agent** 建的；这里 agent 被 mock 掉 ⇒ 一条都没建。切账本本身
+    // 也不建（R4：`load()` 只读）⇒ 总数仍是 L2 那一条。
+    expect(countRows(sqlite, "ai_conversations")).toBe(1);
   });
 });
 
