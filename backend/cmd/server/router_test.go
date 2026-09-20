@@ -141,6 +141,29 @@ func TestRouter_AIDailyQuotaIsPerUser(t *testing.T) {
 	}
 }
 
+// 两条限流**同时**超限时，用户看到的必须是日配额那条（`ai_quota_exceeded`）。
+// 这条钉的是「**外层是日配额**」这个顺序决定本身，不是笼统的"限流优先级"：
+// 日配额与分钟级都设 1 制造"同时超限"，第二次的响应体只由外层决定——
+// 把 router.go 里那两条 r.Use 对调后，只有这条会红。
+// 文案不同 ⇒ 用户下一步动作不同：报日配额是"今天别试了"，
+// 报分钟级会把人引去等一分钟、然后继续撞日配额。
+func TestRouter_AIDailyQuotaIsOuter(t *testing.T) {
+	r := newTestRouter(t, 1, 1)
+	tokenA := mintAccessToken(t, "user-a")
+
+	if rec := postChat(r, tokenA); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("A 第 1 次请求: got %d, want 503", rec.Code)
+	}
+	// 第 2 次：两条都超了 ⇒ 必须由外层（日配额）说话
+	rec := postChat(r, tokenA)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("A 第 2 次请求: got %d, want 429", rec.Code)
+	}
+	if body := rec.Body.String(); !bytes.Contains([]byte(body), []byte("ai_quota_exceeded")) {
+		t.Errorf("两条同时超限时应报外层（日配额）ai_quota_exceeded；实际: %s", body)
+	}
+}
+
 // refresh token（typ=refresh）不得访问受保护路由。
 // **这条断言响应体而不是仅状态码**：handler 自身的 userID 兜底也返回 401，
 // 只有 "invalid token type" 才能唯一证明 AuthMiddleware 真的挂在链上
