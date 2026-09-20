@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 /**
  * 同步 / 备份隔离：AI 会话两张表**绝不能**进同步，也绝不能进备份。
  *
- * 五条断言全部是**行为级**的（不读源码文本）：要么调真实函数看它的返回值/发出的 SQL，
- * 要么打开被钉住的白名单看它的内容。每条都能回答"改哪一行会让它红"，见各自的注释。
+ * 四条断言全部是**行为级**的（不读源码文本）：要么调真实函数看它的返回值/发出的 SQL，
+ * 要么调真实函数看它有没有发 AI 表的 SQL。每条都能回答"改哪一行会让它红"，见各自的注释。
  */
 const getCurrentUserId = vi.fn(() => "u1");
 
@@ -32,7 +32,6 @@ vi.mock("@/stores/auth", () => ({
 
 import { emptyPayload, performSync, applyRemoteChanges, setLastSyncedAt, clearPendingSync } from "@/services/sync";
 import type { SyncPayload } from "@/services/sync";
-import { BACKUP_TABLES } from "@/services/backup/types";
 import { firstFullSync } from "@/services/migration";
 
 /**
@@ -40,12 +39,6 @@ import { firstFullSync } from "@/services/migration";
  * 这份副本就是哨兵，往 `emptyPayload()` /  push 体里加表必须同时改这里，不能悄悄加。
  */
 const SYNC_KEYS = ["ledgers", "accounts", "tags", "categories", "transactions", "member_aliases"];
-
-/** 备份白名单原文（逐字照抄 src/services/backup/types.ts:11-14，含 9 张表、顺序即写入顺序） */
-const BACKUP_TABLES_GOLDEN = [
-  "ledgers", "accounts", "categories", "tags", "transactions",
-  "transaction_tags", "team_members", "member_aliases", "app_kv",
-];
 
 beforeEach(() => {
   localStorage.clear();
@@ -66,12 +59,12 @@ describe("① 同步 payload 的键集被钉死", () => {
   });
 });
 
-describe("② 备份白名单被钉死", () => {
-  it("BACKUP_TABLES 恰为 9 张表（不含 AI 会话表）", () => {
-    // 变异：往 BACKUP_TABLES 里加 "ai_messages" → 本条红（备份与恢复会开始搬运聊天明文）
-    expect([...BACKUP_TABLES]).toEqual(BACKUP_TABLES_GOLDEN);
-  });
-});
+/**
+ * ② 备份白名单（§8.F 的备份半边）**不在这里重复抄 9 张表的 golden**：
+ * 那条不变量由 `src/services/backup/__tests__/types.test.ts:61-67` 守卫（同一份 9 表清单，含顺序）。
+ * 实测两处断言的变异 kill set 完全重合（往 `BACKUP_TABLES` 加 `"ai_messages"` 同时杀掉两边）
+ * ⇒ 抄第二份只是维护陷阱：将来合法新增一张备份表要改两处，且没人知道该改哪处（Ruling 10）。
+ */
 
 describe("③ push 请求体不带 AI 表", () => {
   it("POST /sync 的 local_changes 键恰为那 6 个", async () => {

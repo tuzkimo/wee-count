@@ -21,7 +21,7 @@ vi.mock("@/db/userDb", async (importOriginal) => {
 import { initUserTables } from "@/db/userDb";
 import {
   ensureConversation, appendMessage, loadMessages, recentTurns, clearConversation,
-  type AiMessagePayload,
+  setTitleIfEmpty, type AiMessagePayload,
 } from "@/services/ai/session";
 
 const T0 = "2026-03-01T00:00:00.000Z";
@@ -57,19 +57,26 @@ beforeEach(() => {
 });
 
 describe("DB 未就绪（getUserDb() 返回 null，Ruling 13）", () => {
-  it("五个函数都不抛，各自降级成 null / false / []", async () => {
-    // 去掉任一函数第一行的 `if (!db) return …`，这条就会以 TypeError 红
+  it("六个函数都不抛、各自降级成 null / false / []，且一次 warn 都不打（null 是预期状态）", async () => {
+    // DB 未就绪是**预期**降级路径（冷启动 / 未登录还没开库），不是异常 ⇒ 不该 warn。
+    // 这条是本组守卫的**唯一**独立杀手：删掉任一函数第一行的 `if (!db) return …` 之后，
+    // 余下的 try/catch 会吃掉随之而来的 TypeError、交出**同样的降级值**（所以返回值断言仍绿），
+    // 但它会打一次 warn ⇒ 下面 `not.toHaveBeenCalled()` 变红。
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(ensureConversation("L1", new Date())).resolves.toBeNull();
     await expect(appendMessage(msg())).resolves.toBe(false);
     await expect(loadMessages("c1")).resolves.toEqual([]);
     await expect(recentTurns("c1")).resolves.toEqual([]);
-    await expect(clearConversation("L1")).resolves.toBeUndefined();
+    await expect(clearConversation("L1", new Date())).resolves.toBeUndefined();
+    await expect(setTitleIfEmpty("c1", "这个月花了多少")).resolves.toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
 describe("ensureConversation", () => {
   it("已有会话时只 SELECT、不 INSERT（第二次调用绝不能撞 ledger_id UNIQUE）", async () => {
-    const db = fakeDb({ select: vi.fn().mockResolvedValue([{ id: "c-existing" }]) });
+    const db = fakeDb({ select: vi.fn().mockResolvedValue([{ id: "c-existing", is_deleted: 0 }]) });
     state.db = db;
 
     await expect(ensureConversation("L1", new Date(T0))).resolves.toBe("c-existing");
@@ -111,7 +118,9 @@ describe("ensureConversation", () => {
 describe("appendMessage", () => {
   it("execute 抛异常时返回 false 且只 console.warn —— 绝不冒到编排循环", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const db = fakeDb({ execute: vi.fn().mockRejectedValue(new Error("UNIQUE constraint failed: ai_conversations.ledger_id")) });
+    // 用这张表**真会抛**的错：ai_messages 只有 `id TEXT PRIMARY KEY`，重复 id 报的就是这条
+    // （真库覆盖在下面的 `同一 id 重复入库` 用例）。`ledger_id UNIQUE` 属于 ai_conversations，appendMessage 打不到它。
+    const db = fakeDb({ execute: vi.fn().mockRejectedValue(new Error("UNIQUE constraint failed: ai_messages.id")) });
     state.db = db;
 
     // 去掉 appendMessage 的 try/catch，这条会变成 rejects → 红
@@ -144,17 +153,23 @@ describe("appendMessage", () => {
   });
 });
 
-describe("loadMessages / recentTurns / clearConversation 的读侧降级", () => {
-  it("select 抛异常时返回 []（不抛），clear 的 execute 抛也不抛", async () => {
+describe("loadMessages / recentTurns / clearConversation / setTitleIfEmpty 的读侧降级", () => {
+  it("select/execute 真抛时才 warn：每次失败恰好一次，且不抛", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     state.db = fakeDb({
       select: vi.fn().mockRejectedValue(new Error("no such table: ai_messages")),
       execute: vi.fn().mockRejectedValue(new Error("no such table: ai_messages")),
     });
 
+    // 与上一条（DB 为 null 不打 warn）配对：**真异常**才 warn，且每条失败恰好一次（不是零次、也不是刷屏）
     await expect(loadMessages("c1")).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
     await expect(recentTurns("c1")).resolves.toEqual([]);
-    await expect(clearConversation("L1")).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(2);
+    await expect(clearConversation("L1", new Date(T0))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(3);
+    await expect(setTitleIfEmpty("c1", "问")).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(4);
     warn.mockRestore();
   });
 });
@@ -231,9 +246,9 @@ describe("session.ts 接真实 node:sqlite（SQL 真的能执行）", () => {
       { role: "user", content: "问4" }, { role: "assistant", content: "答4" },
     ]);
 
-    await clearConversation("L1");
+    await clearConversation("L1", new Date(base.getTime() + 30 * 60_000));
     expect(await loadMessages(cid!)).toEqual([]);
-    // 清空后同一账本仍复用同一条会话行（不是删会话再建 —— 否则 UNIQUE 之外的语义会漂）
+    // 清空后同一账本仍复用同一条会话行（软删行被 ensureConversation 复活，不是删会话再建 —— 否则 UNIQUE 之外的语义会漂）
     expect(await ensureConversation("L1", base)).toBe(cid);
 
     sqlite.close();
@@ -264,6 +279,140 @@ describe("session.ts 接真实 node:sqlite（SQL 真的能执行）", () => {
 
     await expect(ensureConversation("L1", new Date(T0))).resolves.toBe("preexisting");
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM ai_conversations").get()).toEqual({ n: 1 });
+
+    sqlite.close();
+  });
+});
+
+/** 手工造"软删会话 + 残留消息行"这种状态：正常代码路径已经删不出它，只能直接往真库里塞 */
+function seedSoftDeletedConversation(sqlite: DatabaseSync, convId: string, msgId: string) {
+  sqlite.prepare(
+    `INSERT INTO ai_conversations (id, ledger_id, title, created_at, updated_at, is_deleted)
+     VALUES (?, ?, NULL, ?, ?, 1)`,
+  ).run(convId, `L-${convId}`, T0, T0);
+  sqlite.prepare(
+    `INSERT INTO ai_messages (id, conversation_id, role, content, payload, created_at)
+     VALUES (?, ?, 'user', '残留消息', NULL, ?)`,
+  ).run(msgId, convId, T0);
+}
+
+function titleOf(sqlite: DatabaseSync, convId: string) {
+  return sqlite.prepare("SELECT title FROM ai_conversations WHERE id = ?").get(convId);
+}
+
+describe("is_deleted 语义（Ruling 7 / 计划修正 7）", () => {
+  it("软删会话的消息读不出来：loadMessages / recentTurns 都按所属会话 is_deleted = 0 过滤", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    seedSoftDeletedConversation(sqlite, "c-del", "m-del");
+    // 正对照：同一条消息挂在**未删**会话上必须读得出来 —— 否则"读不出来"可能只是 SQL 写坏了（空转）
+    sqlite.prepare(
+      `INSERT INTO ai_conversations (id, ledger_id, title, created_at, updated_at, is_deleted)
+       VALUES ('c-live', 'L-live', NULL, ?, ?, 0)`,
+    ).run(T0, T0);
+    sqlite.prepare(
+      `INSERT INTO ai_messages (id, conversation_id, role, content, payload, created_at)
+       VALUES ('m-live', 'c-live', 'user', '在册消息', NULL, ?)`,
+    ).run(T0);
+
+    // 去掉 loadMessages 里的 `is_deleted = 0` 过滤 → 本条红
+    expect(await loadMessages("c-del")).toEqual([]);
+    // 去掉 recentTurns 里的 → 本条红
+    expect(await recentTurns("c-del")).toEqual([]);
+    expect((await loadMessages("c-live")).map((m) => m.id)).toEqual(["m-live"]);
+    expect((await recentTurns("c-live")).map((t) => t.content)).toEqual(["在册消息"]);
+
+    sqlite.close();
+  });
+
+  it("clearConversation(ledgerId, now)：真删消息行 + 软删会话行（is_deleted = 1、updated_at = 注入的 now）", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    const cid = await ensureConversation("L1", new Date(T0));
+    await appendMessage({ id: "m1", conversation_id: cid!, role: "user", content: "问", created_at: T0 });
+    const clearAt = new Date("2026-03-02T10:00:00.000Z");
+
+    await clearConversation("L1", clearAt);
+
+    // 消息行必须**真的没了**（直接查库、不经过读路径）：只把会话标删的实现会在这里红
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM ai_messages WHERE conversation_id = ?").get(cid!)).toEqual({ n: 0 });
+    // 会话行留着但已软删；updated_at 必须是**注入**的 now（改回 `new Date()` → 本条红）
+    expect(sqlite.prepare("SELECT title, is_deleted, updated_at FROM ai_conversations WHERE id = ?").get(cid!))
+      .toEqual({ title: null, is_deleted: 1, updated_at: clearAt.toISOString() });
+
+    sqlite.close();
+  });
+
+  it("杀手：清空后即使会话被复活，旧消息也**不得复活**（逼出「真删消息行」）", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    const base = new Date(T0);
+    const cid = await ensureConversation("L1", base);
+    await appendMessage({ id: "m1", conversation_id: cid!, role: "user", content: "旧问", created_at: T0 });
+    await appendMessage({ id: "m2", conversation_id: cid!, role: "assistant", content: "旧答", created_at: T0 });
+
+    await clearConversation("L1", new Date("2026-03-02T10:00:00.000Z"));
+    expect(await loadMessages(cid!)).toEqual([]);
+
+    const reviveAt = new Date("2026-03-03T08:00:00.000Z");
+    // 复活同一条会话行：ledger_id UNIQUE 决定了不能插第二行
+    expect(await ensureConversation("L1", reviveAt)).toBe(cid);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM ai_conversations").get()).toEqual({ n: 1 });
+    // 去掉复活（只回查 id）→ is_deleted 仍是 1，本条红
+    expect(sqlite.prepare("SELECT is_deleted, updated_at FROM ai_conversations WHERE id = ?").get(cid!))
+      .toEqual({ is_deleted: 0, updated_at: reviveAt.toISOString() });
+
+    // 会话已复活（读路径不再被 is_deleted 挡住）⇒ 旧消息还读得到就只能说明"没真删"。
+    // 只软删会话、不删消息的实现在这两条上红。
+    expect(await loadMessages(cid!)).toEqual([]);
+    expect(await recentTurns(cid!)).toEqual([]);
+
+    sqlite.close();
+  });
+});
+
+describe("setTitleIfEmpty（规格 §4.5：标题取首条用户消息前 20 字，不覆盖已有）", () => {
+  const LONG = "一二三四五六七八九十一二三四五六七八九十一二三"; // 23 字
+
+  it("首条设置标题并截断到 20 字", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    const cid = await ensureConversation("L1", new Date(T0));
+    expect(LONG.length).toBeGreaterThan(20); // 没有它，"截断"断言在 20 字以内也恒真（空转）
+
+    await setTitleIfEmpty(cid!, LONG);
+
+    // 去掉 `.slice(0, 20)` → 存进去 23 字，本条红
+    expect(titleOf(sqlite, cid!)).toEqual({ title: LONG.slice(0, 20) });
+    expect((titleOf(sqlite, cid!) as { title: string }).title).toHaveLength(20);
+
+    sqlite.close();
+  });
+
+  it("第二条不覆盖已有标题", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    const cid = await ensureConversation("L1", new Date(T0));
+
+    await setTitleIfEmpty(cid!, "第一条消息");
+    await setTitleIfEmpty(cid!, "第二条消息");
+
+    // 去掉 SQL 里的 `(title IS NULL OR title = '')` 守卫 → 被覆盖成"第二条消息"，本条红
+    expect(titleOf(sqlite, cid!)).toEqual({ title: "第一条消息" });
+
+    sqlite.close();
+  });
+
+  it("title 是空串也算空（会被填上）", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    const cid = await ensureConversation("L1", new Date(T0));
+    sqlite.prepare("UPDATE ai_conversations SET title = '' WHERE id = ?").run(cid!);
+
+    await setTitleIfEmpty(cid!, "空标题也要填");
+
+    // 去掉守卫里的 `OR title = ''` → 空串被当成"已有标题"，本条红
+    expect(titleOf(sqlite, cid!)).toEqual({ title: "空标题也要填" });
 
     sqlite.close();
   });

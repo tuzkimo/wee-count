@@ -167,6 +167,11 @@ export async function initUserTables(db: Database): Promise<void> {
     )
   `)
 
+  // ⚠️ 本仓**没有任何地方**开启 `PRAGMA foreign_keys`（SQLite 默认 OFF；测试用的 `node:sqlite`
+  // 适配器下 FK 不强制）⇒ 下面这条 `REFERENCES ai_conversations(id)` 在**本仓的执行环境**里
+  // 只是声明、不是运行时约束（表结构测试钉的也是声明：`PRAGMA foreign_key_list`）。
+  // M3 **不依赖 FK 做完整性**：所有写入都经 `session.ts` 显式给 id。这里**不要**加
+  // `PRAGMA foreign_keys=ON` —— 会全局改变既有表的行为，超出 M3 范围。
   await db.execute(`
     CREATE TABLE IF NOT EXISTS ai_messages (
       id TEXT PRIMARY KEY,

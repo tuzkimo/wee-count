@@ -79,7 +79,8 @@ describe("initUserTables 建出的 AI 会话两张表（真 node:sqlite）", () 
   it("约束也在：ledger_id NOT NULL、is_deleted 默认 0、messages 声明了指向会话表的外键", async () => {
     const sqlite = await freshDb();
     // 杀掉"只抄列名、丢掉 NOT NULL/DEFAULT"的 DDL 变体：去掉 NOT NULL → notnull 变 0；
-    // 去掉 `DEFAULT 0` → dflt_value 变 null（v1 读会话一律 `is_deleted = ?`，默认值丢了会写进 NULL 行）
+    // 去掉 `DEFAULT 0` → dflt_value 变 null（读路径按会话行的 `is_deleted = 0` 过滤，见 session.ts：
+    // 默认值丢了、或让新会话落进 NULL 行，这条会话的消息就会被当成软删而读不出来）
     expect(colMeta(sqlite, "ai_conversations", "ledger_id")).toEqual({ notnull: 1, dflt: null });
     expect(colMeta(sqlite, "ai_conversations", "is_deleted")).toEqual({ notnull: 0, dflt: "0" });
 
