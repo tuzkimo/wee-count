@@ -78,21 +78,17 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 				r.Post("/teams/join", h.team.Join)
 			})
 
-			// AI：**限流必须在 AuthMiddleware 之后**（上面那行），
+			// AI：**两条限流都必须在 AuthMiddleware 之后**（上面那行），
 			// 否则 GetUserID 返回空串、所有用户共用一个桶（规格 §6.3）。
+			//
+			// 日配额注册在分钟级之前（更外层）：同时超两条时，用户该看到的是
+			// "今日 AI 次数已用完"（有明确的下一步——明天再来），而不是
+			// "请求太频繁，稍后再试"（会把人引向过一会儿再来、然后继续撞墙）。
 			r.Group(func(r chi.Router) {
-				r.Use(httprate.LimitBy(cfg.AIRateLimit, time.Minute,
-					func(r *http.Request) (string, error) {
-						return mw.GetUserID(r.Context()), nil
-					},
-					// httprate 默认的 429 响应体是纯文本，不是我们的错误形状；
-					// 客户端按 code 映射文案，所以这里必须改成 ai_rate_limited。
-					httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusTooManyRequests)
-						_, _ = w.Write([]byte(`{"error":"` + service.AICodeRateLimited + `"}`))
-					}),
-				))
+				r.Use(httprate.LimitBy(cfg.AIDailyLimit, 24*time.Hour, aiKeyFn,
+					httprate.WithLimitHandler(aiLimitHandler(service.AICodeQuotaExceeded))))
+				r.Use(httprate.LimitBy(cfg.AIRateLimit, time.Minute, aiKeyFn,
+					httprate.WithLimitHandler(aiLimitHandler(service.AICodeRateLimited))))
 				r.Post("/ai/chat", h.ai.Chat)
 				r.Get("/ai/status", h.ai.Status)
 			})
@@ -100,6 +96,24 @@ func newRouter(cfg *config.Config, h handlers) http.Handler {
 	})
 
 	return r
+}
+
+// aiKeyFn 是 AI 两条限流（分钟级 + 日配额）共用的 key：必须是 userID。
+// 它读的是 AuthMiddleware 写进 ctx 的值，所以两条限流都必须在 AuthMiddleware
+// 之后注册，否则这里返回空串、所有用户共用一个桶（规格 §6.3）。
+func aiKeyFn(r *http.Request) (string, error) {
+	return mw.GetUserID(r.Context()), nil
+}
+
+// aiLimitHandler 产出限流错误响应。httprate 默认的 429 响应体是纯文本
+// （"Too Many Requests"），不是我们的 `{"error":"<code>"}` 形状，
+// 而客户端是按 code 映射中文文案的，所以每条限流都必须显式换成这个。
+func aiLimitHandler(code string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"` + code + `"}`))
+	}
 }
 
 // clientIPKey 从 r.RemoteAddr 提取限流 key。未启用 TRUST_PROXY 时，r.RemoteAddr 是
