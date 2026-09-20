@@ -39,7 +39,9 @@ export async function openRestoreUserDb(userId: string): Promise<Database> {
   return db
 }
 
-async function initUserTables(db: Database): Promise<void> {
+// 导出仅为可测：两张 AI 会话表的形状必须能在真 node:sqlite 上跑真实 DDL 核对（见
+// src/services/ai/__tests__/sessionSchema.test.ts）。调用方仍只有 openUserDb / openRestoreUserDb。
+export async function initUserTables(db: Database): Promise<void> {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS ledgers (
       id TEXT PRIMARY KEY,
@@ -147,6 +149,32 @@ async function initUserTables(db: Database): Promise<void> {
     CREATE TABLE IF NOT EXISTS app_kv (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    )
+  `)
+
+  // --- AI 会话两张表（规格 §4.5）：只存会话历史，**不参与同步、不进备份** ---
+  // 放在既有建表段之后、migrateUserTables 之前：新表没有历史列需要迁移，所以不动 migrateUserTables。
+  // ledger_id UNIQUE = v1 每账本单会话（切账本即切会话，见 Ruling 14）；
+  // 时间戳由调用方用 now.toISOString() 写入（UTC，与 transactions 同口径，不要用 datetime('now')）。
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id TEXT PRIMARY KEY,
+      ledger_id TEXT NOT NULL UNIQUE,
+      title TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      is_deleted INTEGER DEFAULT 0
+    )
+  `)
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES ai_conversations(id),
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      payload TEXT,
+      created_at TEXT NOT NULL
     )
   `)
 

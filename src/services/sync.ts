@@ -40,7 +40,9 @@ let syncQueued = false;
 // 不清空又会把 A 的变更串到 B 账号。按 uid 隔离 + 持久化从根上同时解决这两点。
 const pendingByUid = new Map<string, SyncPayload>();
 
-function emptyPayload(): SyncPayload {
+// 导出仅为可测：同步 payload 的键集是"新表不得进同步"的哨兵（见
+// src/services/__tests__/aiSyncIsolation.test.ts 的 ①③）。调用方仍在本文件内。
+export function emptyPayload(): SyncPayload {
   return { ledgers: [], accounts: [], tags: [], categories: [], transactions: [], member_aliases: [] };
 }
 
