@@ -781,6 +781,32 @@ describe("fetchAiStatus（⑨）", () => {
     warn.mockRestore();
   });
 
+  it("形状坏（不是对象 / `enabled` 不是布尔）⇒ 带 failure:invalid_response", async () => {
+    // 上层（`aiChat.refreshStatus`）靠这个 `failure` 把「这次探测不可判定」与
+    // 「服务端明确说没配」分开：前者要**保留上一次已知状态**（第 47 条，否则 429 会把
+    // 已确认可用的 tab 关掉），后者才关 tab。
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    useFetchQueue(jsonRes(200, "ok"));
+    await expect(fetchAiStatus()).resolves.toEqual({
+      enabled: false,
+      model: null,
+      host: null,
+      failure: { kind: "invalid_response" },
+    });
+
+    // 旧版服务端回了空 body：`enabled` 缺字段时 `readStatusData` 会默默给 false，
+    // 那会被上层读成「明确说没配」⇒ 一个空 body 就能关掉用户的 tab ✗
+    useFetchQueue(jsonRes(200, {}));
+    await expect(fetchAiStatus()).resolves.toEqual({
+      enabled: false,
+      model: null,
+      host: null,
+      failure: { kind: "invalid_response" },
+    });
+    warn.mockRestore();
+  });
+
   it("只发一次请求：不轮询（status 与 chat 共用一个每分钟桶）", async () => {
     const mock = useFetchQueue(jsonRes(200, { enabled: true, model: "m", host: "h" }));
 

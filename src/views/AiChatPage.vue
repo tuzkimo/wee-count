@@ -68,10 +68,10 @@ async function scrollToBottom(): Promise<void> {
 }
 
 onMounted(async () => {
-  // 探一次能力（**不轮询**，M2 契约第 4 条）。`refreshStatus` 永不抛 ⇒ 不需要守卫；
-  // 页面已经打开时探测失败只会让 tab 消失，不影响本页。
-  void ai.refreshStatus();
-
+  // ⚠️ 这里**不许**再探一次能力（第 47 条）：自动探针只有 `App.vue` 启动那一处。
+  // `/ai/status` 与 `/ai/chat` 共用一个每分钟桶 ⇒ 用户刚问完一句再进本页，第二次探测会吃
+  // `ai_rate_limited`，而一个不可判定的探测结果**不该**把已经确认可用的 AI tab 关掉
+  // （`refreshStatus` 对这类失败保留上一次已知状态；要刷新只能由用户显式触发）。
   await ledgerStore.init();
   const ledgerId = ledgerStore.currentLedger?.id;
   if (ledgerId !== undefined) {
@@ -100,7 +100,7 @@ onMounted(async () => {
  * 或"列表里最后一张"：`transactionStore.add` 在途期间草稿列表可能被重建（新的一轮、清空、
  * `load()`），而 `confirm` 是**这张卡**发出来的 —— 收错人的后果是另一张草稿被**静默**收起
  * （用户以为它记上了，或它其实没记上却从列表里消失了）。
- * 配套的第一道防线是 `:key="draftId"`（同一个实例绝不换草稿）。
+ * 同一实例换草稿由卡内自清兜住（`DraftCard.vue:78-84`），跨草稿的身份由下面的 `:key` 钉住。
  */
 function onDraftDismissed(draftId: string): void {
   ai.dismissDraft(draftId);

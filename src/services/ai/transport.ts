@@ -490,8 +490,15 @@ export async function fetchAiStatus(): Promise<AiStatus> {
   }
 
   const status = readStatusData(res.data);
-  // `enabled: true` 但形状不对 ⇒ 不是"没启用"而是"响应坏了"，两者都要 enabled:false，
-  // 但排障时能分开：这条警告是唯一能区分它们的地方
-  if (!isRecord(res.data)) logFailure("status", { kind: "invalid_response" });
+  // 形状不对 ⇒ 不是"没启用"而是"响应坏了"：两者都要 `enabled:false`（安全的一侧 —— 绝不把
+  // 坏响应当成"已启用"），但**必须**把 `failure` 带出去：上层（`aiChat.refreshStatus`）只有
+  // 看得见它，才能把"服务端明确说没配"（200 + `enabled:false`）与"这次探测不可判定"分开，
+  // 后者要**保留上一次已知状态**（第 47 条：拿不到结论不能把已确认可用的 tab 关掉）。
+  // `enabled` 不是布尔值同属"形状坏"：缺字段时 `readStatusData` 会默默给 false，
+  // 那会被上层读成"服务端明确说没配" —— 一个旧版服务端的空 body 就能关掉用户的 tab。
+  if (!isRecord(res.data) || typeof res.data.enabled !== "boolean") {
+    logFailure("status", { kind: "invalid_response" });
+    return { ...status, failure: { kind: "invalid_response" } };
+  }
   return status;
 }

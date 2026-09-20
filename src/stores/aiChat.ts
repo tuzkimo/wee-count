@@ -466,7 +466,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
   // -------------------------------------------------------------------------
 
   /**
-   * `/ai/status` 的**一次**探测结果。`null` = 还没探过（**不是**"没启用"）。
+   * 最近一次**可判定**的探测结果。`null` = 还没有过可判定的结果（**不是**"没启用"）。
    *
    * ⚠️ 存整份 `AiStatus` 而不是三个独立 ref：探测是**一次**原子结果，拆成三个字段就多了
    * "只更新一半"的形态（`enabled: true` 配着上一轮的 `host`）。下面三个 computed 是它的视图
@@ -475,21 +475,47 @@ export const useAiChatStore = defineStore("aiChat", () => {
    */
   const status = ref<AiStatus | null>(null);
 
-  /** tab 门控的**唯一**依据：拿不到能力（含探测失败）= 不显示 AI 入口（安全的那一侧） */
-  const enabled = computed(() => status.value?.enabled === true);
+  /**
+   * 探过，但这次探测**给不出结论**（网络 / 超时 / 429 / 形状坏 / 401 / 5xx）。
+   *
+   * 第 47 条：未知**不关** tab。与 `status === null`（还没探过）分开，是因为两者必须可区分：
+   * - 还没探（启动那一瞬间）⇒ `enabled=false`，不闪一个可能点进去就报错的入口；
+   * - 探了但没结论 ⇒ `enabled=true`，否则断网冷启动的用户**再也进不去** AI 页
+   *   （自动探针只有 `App.vue` 启动那一处，没有第二次机会）。
+   */
+  const statusUnknown = ref(false);
+
+  /** tab 门控的**唯一**依据：已知 ⇒ 服务端说什么是什么；未知 ⇒ 保持可用；还没探 ⇒ 不显示 */
+  const enabled = computed(() =>
+    status.value === null ? statusUnknown.value : status.value.enabled
+  );
   /** 处理数据的服务器；`null` = 不可知（此时不许开开关） */
   const host = computed(() => status.value?.host ?? null);
   /** 回答用的模型名 */
   const model = computed(() => status.value?.model ?? null);
 
   /**
-   * 探一次 AI 能力。**不轮询**（M2 契约第 4 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶）。
-   * 调用点是**启动**（`App.vue`：tab 存不存在取决于它）与**进入 AI 页**（页面首屏各一次）。
+   * 探一次 AI 能力。**不轮询**（M2 契约第 4 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶），
+   * 自动调用点**只有一处**：`App.vue` 的启动钩子（tab 存不存在取决于它）。
    *
-   * **永不抛**（`fetchAiStatus` 的契约）：探测失败一律 `enabled=false` + `host/model=null`。
+   * ⚠️ 页面**不许**再自动探一次：用户刚问完一句再进 AI 页，第二次探测会吃 `ai_rate_limited`
+   * （同一个每分钟桶），而一个给不出结论的探测**不该**把已经确认可用的入口关掉（第 47 条）。
+   * 要刷新只能由**用户显式**触发（`refreshStatus` 仍然可调：任务 7 的隐私区就该由用户点）。
+   *
+   * **永不抛**（`fetchAiStatus` 的契约），但**只有服务端明确表态才改已知状态**：
+   * - 请求成功（无 `failure`）⇒ 服务端说的 `enabled` 就是答案（没配 AI 是 200 + `enabled:false`）；
+   * - `failure.kind === "disabled"`（503 `ai_disabled`）⇒ 明确关闭；
+   * - 其它失败（网络 / 超时 / 429 / 形状坏 / 401 / 5xx）⇒ 这次探测**不可判定** ⇒ 保留上一次已知状态。
    */
   async function refreshStatus(): Promise<void> {
-    status.value = await fetchAiStatus();
+    const next = await fetchAiStatus();
+    if (next.failure === undefined || next.failure.kind === "disabled") {
+      status.value = next;
+      statusUnknown.value = false;
+      return;
+    }
+    // 不可判定：上一次已知的 `status`（含 host/model）原样留着；从没有过已知状态 ⇒ 记成"未知"
+    if (status.value === null) statusUnknown.value = true;
   }
 
   // -------------------------------------------------------------------------

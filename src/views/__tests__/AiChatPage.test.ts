@@ -442,10 +442,48 @@ describe("草稿卡接线", () => {
     expect(messages.length).toBe(2);
     expect(messages[0]!.find('[data-test="draft-card"]').exists()).toBe(false);
     expect(messages[1]!.find('[data-test="draft-card"]').exists()).toBe(true);
-    // `:key` 必须**就是** draftId：同实例换草稿是"防删旧账"那条保证的第一道防线
+    // `:key` 必须**就是** draftId（跨草稿的身份钉）。
+    // ⚠️ 别把它记成"防同实例换草稿的唯一防线"：页面上真正**先出手**的是 `load()` 期间
+    // `loading` 的 `v-if/v-else` 把整段列表卸载重建（下面那条用例钉着它），
+    // 而"同实例换内容"由卡内自清兜住（`DraftCard.vue:78-84`，6b 的用例钉着）。
     const cards = wrapper.findAllComponents(DraftCard);
     expect(cards.length).toBe(1);
     expect(cards[0]!.vm.$.vnode.key).toBe("d-1");
+  });
+
+  it("load 期间整段列表被卸载重建（`loading` 互斥 = 防「同实例换草稿」的那道行为防线）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    // 库里有**两张**草稿卡：一张在会话里，一张在下面 load 后再出现（槽位不同）
+    const convId = await ensureConversation(LEDGER_ID, new Date(T0));
+    await appendMessage({
+      id: "m-1",
+      conversation_id: convId!,
+      role: "assistant",
+      content: "这张草稿先落库",
+      created_at: T0,
+      payload: { drafts: [DRAFT_A] },
+    });
+
+    const wrapper = await mountPage();
+    expect(wrapper.findAll('[data-test="draft-card"]').length).toBe(1);
+
+    // 再读一次会话（真实触发点：进页面 / 换账本 / 清空后的 load）
+    gate = deferred<void>();
+    void useAiChatStore().load();
+    await flushPromises();
+
+    // 杀手：把 `<template v-else>` 改成 `<template>`（loading 时也渲染列表）⇒ 下面两条自己红：
+    // 整个列表连同草稿卡实例被卸载重建 ⇒ 旧的卡**不可能**把新草稿接管过去
+    expect(wrapper.find('[data-test="ai-loading"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="ai-message"]').length).toBe(0);
+    expect(wrapper.findAll('[data-test="draft-card"]').length).toBe(0);
+
+    gate.resolve();
+    gate = null;
+    await flushPromises();
+
+    expect(wrapper.findAll('[data-test="draft-card"]').length).toBe(1);
   });
 
   it("确认的是第二张 ⇒ 收起的也必须是第二张（不能收'当前第一张'）", async () => {
