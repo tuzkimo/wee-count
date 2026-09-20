@@ -12,6 +12,13 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://tauri.localhost}
       # 服务位于可信反向代理（Caddy 等）之后时设为 true；直连暴露 8080 时保持 false（默认）。
       TRUST_PROXY: ${TRUST_PROXY:-false}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.deepseek.com/v1}
+      AI_MODEL: ${AI_MODEL:-deepseek-chat}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-1024}
+      AI_TIMEOUT: ${AI_TIMEOUT:-60s}
+      AI_RATE_LIMIT: ${AI_RATE_LIMIT:-20}
+      AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-200}
     depends_on:
       postgres:
         condition: service_healthy

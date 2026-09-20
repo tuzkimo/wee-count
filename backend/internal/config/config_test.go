@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -316,4 +317,140 @@ func TestAIHost(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---- 部署配置守卫（规格 §6.2 / §6.7）----
+//
+// 这几条用例是**可执行的部署契约**。AI 不在 config.Load 的必填校验里（任务 1 已钉住），
+// 但 compose 与 .env.example 写错，后果和把它写进必填校验一样难查：
+// 没配 AI 的自托管实例起不来，或者 AI 静默失效而没人知道为什么。
+
+// aiEnvVars 是 AI 的全部环境变量，与 config.go 的 Load() 逐一对应。
+// 顺序与 .env.example / docker-compose.yml 的书写顺序一致，便于对照。
+var aiEnvVars = []string{
+	"AI_API_KEY", "AI_BASE_URL", "AI_MODEL",
+	"AI_MAX_TOKENS", "AI_TIMEOUT", "AI_RATE_LIMIT", "AI_DAILY_LIMIT",
+}
+
+// apiServiceBlock 截出 docker-compose.yml 里 `api:` 服务的定义段。
+// 守卫必须落在**这个服务的 environment 上**：文件里"某处出现过 ${AI_API_KEY:-}"
+// 并不等于它被透传进了 api 容器——把行贴进 postgres 段，按整份文件做 Contains
+// 照样是绿的，而容器里根本没有这个变量。
+func apiServiceBlock(t *testing.T, text string) string {
+	t.Helper()
+	lines := strings.Split(text, "\n")
+	start := -1
+	for i, line := range lines {
+		if line == "  api:" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("docker-compose.yml 里找不到 `  api:` 服务定义（改了缩进就要同步改本测试）")
+	}
+	indent := func(s string) int { return len(s) - len(strings.TrimLeft(s, " ")) }
+	for j := start + 1; j < len(lines); j++ {
+		// api 服务的键缩进 4 空格（environment 的项 6 空格）。出现缩进 < 4 的非空行，
+		// 说明已经进入下一个服务或顶层键，api 段到此为止。
+		if strings.TrimSpace(lines[j]) != "" && indent(lines[j]) < 4 {
+			return strings.Join(lines[start:j], "\n")
+		}
+	}
+	return strings.Join(lines[start:], "\n")
+}
+
+// 规格 §6.2 的硬要求：docker-compose.yml 里 AI 变量必须用 ${VAR:-} 空默认。
+// 写成 ${VAR:?}（未设置即报错）会让**所有没配 AI 的实例起不来**；
+// 写死一个值则让部署时改不动该变量，AI_API_KEY 写死更是把密钥写进部署配置。
+// 所以这条不能只写在文档里。
+func TestCompose_AIVarsUseEmptyDefault(t *testing.T) {
+	raw, err := os.ReadFile("../../docker-compose.yml")
+	if err != nil {
+		t.Fatalf("读取 docker-compose.yml 失败: %v", err)
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	api := apiServiceBlock(t, text)
+
+	for _, v := range aiEnvVars {
+		prefix := v + ":"
+		found := false
+		for _, line := range strings.Split(api, "\n") {
+			line = strings.TrimSpace(line)
+			// 注释行不算透传：只在注释里提变量名，容器里拿不到值。
+			if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			found = true
+			value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if strings.Contains(value, "${"+v+":?") {
+				t.Errorf("%s 用了 ${%s:?}——未配置即启动失败，必须用 ${%s:-}；实际: %s",
+					v, v, v, line)
+				continue
+			}
+			if !strings.Contains(value, "${"+v+":-") {
+				t.Errorf("api 服务的 %s 未使用 ${%s:-} 形式；实际: %s", v, v, line)
+			}
+		}
+		if !found {
+			t.Errorf("docker-compose.yml 的 api 服务 environment 里没有 %s 这一行（未透传）", v)
+		}
+	}
+}
+
+// .env.example 的 AI 段必须齐全，否则运维不知道有这些开关可配。
+// 只在注释里提到变量名不算数——所以这里逐行找 `VAR=` 赋值行，而不是对整份文件做 Contains。
+func TestEnvExample_AISectionPresent(t *testing.T) {
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("读取 .env.example 失败: %v", err)
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+
+	for _, v := range aiEnvVars {
+		if !envExampleHasAssignment(text, v) {
+			t.Errorf(".env.example 缺少 %s= 赋值行（只在注释里提到不算）", v)
+		}
+	}
+}
+
+// AI_API_KEY 必须留空：它是唯一开关，填了样例值会让人以为"必须填"，
+// 更糟的是模板里出现形似密钥的串，会被误当成真 key 提交。
+func TestEnvExample_AIKeyIsEmpty(t *testing.T) {
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("读取 .env.example 失败: %v", err)
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+
+	found := false
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "AI_API_KEY=") {
+			continue
+		}
+		found = true
+		if got := strings.TrimSpace(strings.TrimPrefix(line, "AI_API_KEY=")); got != "" {
+			t.Errorf("AI_API_KEY 在 .env.example 里必须留空，实际: %q", got)
+		}
+	}
+	// 没有赋值行时上面循环一次都不执行。不钉住这一点，把整段 AI 配置删掉后这条用例
+	// 依然"绿"——只要注释里还留着 AI_API_KEY 这几个字。
+	if !found {
+		t.Error(".env.example 里没有 AI_API_KEY= 赋值行（只在注释里提到不算）")
+	}
+}
+
+// envExampleHasAssignment 报告 .env.example 里是否存在生效的 `VAR=` 赋值行（注释行不算）。
+func envExampleHasAssignment(text, name string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, name+"=") {
+			return true
+		}
+	}
+	return false
 }

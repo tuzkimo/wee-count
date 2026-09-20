@@ -107,6 +107,81 @@ docker compose up -d --build
 
 > **限流信任模型**：登录/注册/入组按 IP 限流 10 次/分钟。`TRUST_PROXY=false`（默认）时取 socket peer 地址，客户端无法伪造；仅当 API 位于可信反向代理之后时设 `true`，否则攻击者可伪造 `X-Forwarded-For` 绕过限流。
 
+## 启用 AI（可选）
+
+AI 是**可选**功能。不配置 `AI_API_KEY` 时：后端照常启动（其余变量全都不用管），`GET /api/v1/ai/status` 返回 `{"enabled":false,...}`，App 不显示 AI 入口。启用只需要一个供应商的 key。
+
+变量表（全部可选，非法值一律回落默认值，不会让服务起不来）：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `AI_API_KEY` | 空（= 禁用） | **唯一开关**。留空即整个 AI 功能禁用，其余 `AI_*` 全部无效 |
+| `AI_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容接口地址，末尾斜杠会被规范化掉 |
+| `AI_MODEL` | `deepseek-chat` | 模型名，填该供应商的模型 ID |
+| `AI_MAX_TOKENS` | `1024` | 单次回复的 token 上限 |
+| `AI_TIMEOUT` | `60s` | 上游调用超时（Go duration 格式：`30s`、`2m`） |
+| `AI_RATE_LIMIT` | `20` | 每用户每分钟请求数上限 |
+| `AI_DAILY_LIMIT` | `200` | 每用户每日请求数上限 |
+
+只支持 **OpenAI 兼容协议**，换供应商只需改 `AI_BASE_URL`（+ `AI_MODEL`）：
+
+| 供应商 | `AI_BASE_URL` |
+|--------|---------------|
+| DeepSeek（默认） | `https://api.deepseek.com/v1` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| Kimi | `https://api.moonshot.cn/v1` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` |
+
+方式二（源码构建）的 `backend/docker-compose.yml` **已经透传**这 7 个变量，且全部是 `${VAR:-}` 空默认——把值写进同目录的 `.env` 即可，不配也能起来。方式一（免克隆）请在自己的 `compose.yml` 的 `api` 服务 `environment` 下补上同样几行：
+
+```yaml
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.deepseek.com/v1}
+      AI_MODEL: ${AI_MODEL:-deepseek-chat}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-1024}
+      AI_TIMEOUT: ${AI_TIMEOUT:-60s}
+      AI_RATE_LIMIT: ${AI_RATE_LIMIT:-20}
+      AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-200}
+```
+
+> 不要写成 `${AI_API_KEY:?}` 那种"必须设置"的形式：那会让**所有没配 AI 的实例起不来**，而 AI 是可选的。
+
+Key 只存在于服务器进程内存里，由服务端注入到上游请求头。**客户端拿不到它，`/ai/status` 也不返回它**。
+
+### 数据边界（请如实告知使用者）
+
+- **账目数据不经过服务器。** 服务端只是个**无状态代理**：注入 key、把这一轮对话所需的请求转发给供应商，**不读也不存任何账目数据**。AI 回答要用的统计数字（汇总值，以及最多 20 条明细的日期/金额/分类名/账户名/备注截断）是**客户端在本地算好后放进对话里**的，服务端不主动查数据。
+- **只发当前这次请求需要的内容**：用户输入原文；分类/账户/标签/成员的名称；本轮工具返回的汇总数字。完整流水、账户余额、初始余额、其他账本数据、备份密码都不发。
+- 用户问的每一句话都会发往 `AI_BASE_URL` 指向的供应商，请在隐私说明里告知使用者。App 首次开启 AI 前会展示一张说明卡，卡片里的供应商域名取自 `/api/v1/ai/status` 的 `host` 字段（由 `AI_BASE_URL` 解析而来，**不含 key**）；取不到 `host` 时 App 不会允许开启。
+- 启用是**两层开关**：服务端 `AI_API_KEY` 非空只是"能力可用"；App「我的 → 隐私」里还有一个**默认关闭**的独立开关，用户看过说明卡并同意后才真正发送。
+- 服务端日志**只记** `user_id`、耗时、上下游状态码与 token 用量（prompt/completion），**不记**对话内容、工具结果或任何账目数字。上游返回的原始错误体也不会下发或写进日志。
+
+### 配额：多实例时按实例各算一份
+
+分钟级限流与日配额都由 `httprate` 实现，计数器在**进程内存**里（滑动窗口），不是共享存储：
+
+- 单实例自托管：就是配置的 `AI_RATE_LIMIT` / `AI_DAILY_LIMIT`，够用。
+- **多实例部署时每个实例各有一份配额。** 例如 3 个副本 + `AI_DAILY_LIMIT=200`，实际日上限约 **3 × 200 = 600/日**；分钟级同样按实例各算一份。**不要把它当成全局配额来估算成本。**
+- 日配额是**滚动 24 小时窗口**（从该用户当天的第一次请求起算），不是自然日 0 点重置。
+- 前置反代做负载均衡时，同一用户在不同实例间漂移会使计数更分散。
+- 需要跨实例的精确配额，请部署为单实例，或改用 Redis 实现（v1 未提供，见设计文档 §6.3）。
+
+### 故障对照
+
+客户端按响应体里的 `error` 值映射中文文案，排障时请把状态码和 `error` 一起看：
+
+| 现象 | HTTP | 响应 `error` | 处理 |
+|------|------|--------------|------|
+| `AI_API_KEY` 未配置 | 503 | `ai_disabled` | 填 key 后重启（App 端表现为 AI 功能未启用） |
+| key 无效 / 无权限（上游 401、403） | 502 | `ai_upstream_auth` | 检查 key 与 `AI_BASE_URL` 是否配套 |
+| 上游自己限流（上游 429） | 429 | `ai_rate_limited` | 等上游恢复或换更高档位 |
+| 本实例每分钟配额用尽 | 429 | `ai_rate_limited` | 调大 `AI_RATE_LIMIT` |
+| 本实例每日配额用尽 | 429 | `ai_quota_exceeded` | 调大 `AI_DAILY_LIMIT`；多实例记得按实例数折算 |
+| 上游 5xx，或调用超时 | 504 | `ai_upstream_timeout` | 调大 `AI_TIMEOUT`，或查看供应商状态页 |
+| 网络不可达 / DNS 解析失败 | 502 | `ai_unreachable` | 检查容器出网与 `AI_BASE_URL` 域名 |
+| 上游其它 4xx（模型名写错等） | 502 | `ai_upstream_error` | 检查 `AI_MODEL` |
+| 单次请求体超过 256KB | 413 | `request body too large` | 正常使用不会触发；会话历史异常长时才可能 |
+
 ## App 对接
 
 App「我的」页 → 在线同步 → 填入 API 地址：
