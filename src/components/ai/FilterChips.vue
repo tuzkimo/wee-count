@@ -10,13 +10,18 @@
 //
 // 标签：日期优先用 `buildPresetRange` + `PRESETS` 的中文标签（「本月」），对不上就显式区间；
 // 其余字段用解析出的**名字**（不是 id）。全部对不上时退回字段名，绝不显示裸 id。
+//
+// ⚠️ 金额上下界（`≥500`）也是**金额出口**（§7.4）：历史消息的芯片跟着遮罩走（`masked` prop，
+// 由页面按 `revealed` 判定后传入）。跳转用的 `applied` 里仍然是真数字 —— 遮的是"屏幕上的字"，
+// 不是"能不能下钻到那批流水"（点进流水页本来就是用户主动去看原始数据）。
 import { computed } from "vue";
 import { useRouter } from "vue-router";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 import { appliedToQuery } from "@/services/ai/filterQuery";
 import type { AppliedFilter } from "@/services/ai/resolve";
 import { PRESETS, buildPresetRange, formatRangeLabel } from "@/utils/dateRange";
 
-const props = defineProps<{ chips: unknown[] }>();
+const props = defineProps<{ chips: unknown[]; masked?: boolean }>();
 
 const router = useRouter();
 
@@ -116,9 +121,12 @@ function otherLabels(a: AppliedFilter): string[] {
   for (const t of a.tags) out.push(t.name);
   for (const m of a.members) out.push(m.name);
   if (a.merchant !== null) out.push(`备注：${a.merchant}`);
-  if (a.amountMin !== null && a.amountMax !== null) out.push(`${a.amountMin}-${a.amountMax}`);
-  else if (a.amountMin !== null) out.push(`≥${a.amountMin}`);
-  else if (a.amountMax !== null) out.push(`≤${a.amountMax}`);
+  // 金额上下界：`masked` 时整条换成占位符（`≥••••` / `••••-••••` / `≤••••`）—— 保留比较符号，
+  // 用户仍看得出"这是个金额条件"，但看不出是多少
+  const bound = (n: number): string => (props.masked === true ? AMOUNT_PLACEHOLDER : String(n));
+  if (a.amountMin !== null && a.amountMax !== null) out.push(`${bound(a.amountMin)}-${bound(a.amountMax)}`);
+  else if (a.amountMin !== null) out.push(`≥${bound(a.amountMin)}`);
+  else if (a.amountMax !== null) out.push(`≤${bound(a.amountMax)}`);
   return out;
 }
 

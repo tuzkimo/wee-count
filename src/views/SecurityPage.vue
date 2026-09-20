@@ -4,14 +4,17 @@ import { computed, nextTick, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import AppHeader from "@/components/AppHeader.vue";
 import SetLockDialog from "@/components/lock/SetLockDialog.vue";
+import AiPrivacyCard from "@/components/ai/AiPrivacyCard.vue";
 import { useLockStore } from "@/stores/lock";
 import { usePrivacyStore } from "@/stores/privacy";
+import { useAiChatStore } from "@/stores/aiChat";
 import { AUTO_LOCK_OPTIONS } from "@/utils/autoLock";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
 
 const router = useRouter();
 const lock = useLockStore();
 const privacy = usePrivacyStore();
+const ai = useAiChatStore();
 
 const dialogOpen = ref(false);
 const dialogMode = ref<"set" | "change">("set");
@@ -21,9 +24,12 @@ const saveError = ref("");
 const clearing = ref(false);
 /** 截屏防护落盘进行中：期间禁用开关，避免连续快速切换造成状态交错。 */
 const savingScreenshot = ref(false);
+/** AI 意愿层开关落盘进行中：同上 */
+const savingAiSending = ref(false);
 /** 两个受控 checkbox 的模板引用：落盘失败时用它把 DOM 勾选态拉回真相。 */
 const lockToggleEl = ref<HTMLInputElement | null>(null);
 const screenshotToggleEl = ref<HTMLInputElement | null>(null);
+const aiSendingToggleEl = ref<HTMLInputElement | null>(null);
 
 /**
  * 本页**不**在这里重新读盘（R71）。
@@ -203,6 +209,43 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
     saveError.value = "截屏防护设置失败，请重试";
   }
 }
+
+/**
+ * 切换 AI 助手意愿层开关（§7.3）。
+ *
+ * 三步都不许颠倒：
+ * 1. **`host === null` 时这个开关根本不渲染**（模板里的 `v-if`）—— §7.3 的硬门槛是
+ *    "拿不到 host 不得允许开启"，而不是"允许点但打不开"。store 里另有一道同样的守卫。
+ * 2. 先落盘、后改内存（`ai.setSendingEnabled` 内部就是 `writeSetting` → 再改 ref），
+ *    失败即 reject ⇒ 这里显示失败并把 DOM 勾选态拉回真相（与截屏防护同一手法）。
+ * 3. `await nextTick()` 之前不写成功提示。
+ *
+ * ⚠️ 关闭方向**不**受 `host` 限制：关永远是安全的，哪怕这次探测拿不到 host。
+ */
+async function toggleAiSending(enabled: boolean): Promise<void> {
+  saveError.value = "";
+  savingAiSending.value = true;
+  try {
+    await ai.setSendingEnabled(enabled);
+  } catch {
+    saveError.value = "设置保存失败，请重试";
+    syncCheckbox(aiSendingToggleEl.value, ai.sendingEnabled);
+    return;
+  } finally {
+    savingAiSending.value = false;
+  }
+  await nextTick();
+}
+
+/** 说明卡「知道了」：先落盘再改内存；失败如实提示（卡片留在原地） */
+async function onAiPrivacyDismiss(): Promise<void> {
+  saveError.value = "";
+  try {
+    await ai.dismissPrivacyCard();
+  } catch {
+    saveError.value = "设置保存失败，请重试";
+  }
+}
 </script>
 
 <template>
@@ -306,6 +349,38 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
         </div>
         <p class="px-4 py-2 text-xs text-text-secondary">
           与「应用锁」无关：不开应用锁也能单独开关。
+        </p>
+      </div>
+
+      <!--
+        AI 助手意愿层开关（§7.3）。**`host === null` 时整块（说明卡 + 开关）都不渲染**：
+        不知道数据发往哪里就不该让用户同意，也不该给一个点不开的开关。
+        说明卡复用 AI 页那一个组件：在能开启的地方就把"发什么、发给谁、历史是明文"摆在开关前面。
+      -->
+      <div v-if="ai.host !== null" class="mt-3" data-test="ai-privacy-group">
+        <p class="px-4 py-2 text-xs font-medium uppercase text-text-secondary">AI 助手</p>
+        <AiPrivacyCard :host="ai.host" :seen="ai.privacyCardSeen" @dismiss="onAiPrivacyDismiss" />
+        <div class="border-y border-gray-100 bg-surface">
+          <label class="flex items-center gap-3 px-4 py-3">
+            <span class="flex-1">
+              <span class="block text-text">允许发送给 AI 助手</span>
+              <span class="block text-xs text-text-secondary">
+                开启后提问与汇总数字会发送到 {{ ai.host }}
+              </span>
+            </span>
+            <input
+              ref="aiSendingToggleEl"
+              data-test="ai-sending-enabled"
+              type="checkbox"
+              class="h-5 w-5"
+              :checked="ai.sendingEnabled"
+              :disabled="savingAiSending"
+              @change="toggleAiSending(($event.target as HTMLInputElement).checked)"
+            />
+          </label>
+        </div>
+        <p class="px-4 py-2 text-xs text-text-secondary">
+          关闭后停止发送（不删历史记录）；会话历史本身是明文落盘的。
         </p>
       </div>
 

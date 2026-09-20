@@ -58,6 +58,7 @@ import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useLedgerStore } from "@/stores/ledger";
 import { useTagStore } from "@/stores/tag";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import DraftCard from "@/components/ai/DraftCard.vue";
 import AiChatPage from "@/views/AiChatPage.vue";
@@ -202,6 +203,9 @@ async function mountPage(): Promise<VueWrapper> {
   });
   await router.push("/ai");
   await router.isReady();
+  // §7.3 意愿层开关默认关闭 ⇒ 不置位的话输入框禁用、`send` 也不发。本文件钉的是页面接线
+  // （名表加载 / 消息流 / 草稿归位 / 遮罩），门控本身在 `aiChat.privacy.test.ts` 里钉。
+  useAiChatStore().sendingEnabled = true;
   const wrapper = mount(AiChatPage, { global: { plugins: [pinia, router] } });
   await flushPromises();
   return wrapper as VueWrapper;
@@ -306,7 +310,7 @@ describe("首屏：页面的名表加载责任", () => {
 // ---------------------------------------------------------------------------
 
 describe("消息流", () => {
-  it("首屏读既有会话（load）：占位符按 refs 回填后上屏", async () => {
+  it("首屏读既有会话（load）：占位符按 refs 回填后上屏（历史消息按 §7.4 遮罩）", async () => {
     const sqlite = await useRealDb();
     seedLedger(sqlite);
     const convId = await ensureConversation(LEDGER_ID, new Date(T0));
@@ -333,7 +337,12 @@ describe("消息流", () => {
     const wrapper = await mountPage();
 
     // 杀手：删掉 onMounted 里的 `await ai.load()` ⇒ 这里只剩空态
-    expect(bubbleTexts(wrapper)).toEqual(["这个月花了多少", "这个月花了 128 元"]);
+    // §7.4 乙方案：`load()` 读回来的是**历史消息**（不在 `revealed` 里）⇒ 跟随遮罩。
+    // ⚠️ 本条**原先**期望 `这个月花了 128 元` —— 那是规格前的行为，按 Ruling 49
+    //    先改断言（它编码的正是 §7.4 要消灭的那件事），再改实现。
+    expect(bubbleTexts(wrapper)).toEqual(["这个月花了多少", `这个月花了 ${AMOUNT_PLACEHOLDER} 元`]);
+    // 反向断言（遮罩测试的通病是"只断言了占位符在"）：这条消息里唯一的真值是 128，它一个字符都不许上屏
+    expect(wrapper.findAll('[data-test="message-bubble-text"]')[1]!.text()).not.toContain("128");
   });
 
   it("发送后追加两条（user + assistant）", async () => {
@@ -346,6 +355,22 @@ describe("消息流", () => {
 
     expect(bubbleTexts(wrapper)).toEqual(["这个月花了多少", "这个月花了 128 元"]);
     expect(wrapper.findAll('[data-test="ai-message"]').length).toBe(2);
+  });
+
+  it("本轮问出来的回答显示**真值**（§7.4 的另一半：遮罩不能把刚问的数字也遮掉）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    // 真实 agent 的形态：`content` 里是占位符，真值在 refs 里
+    runMock().mockResolvedValue(
+      turn({ text: "这个月花了 {{q1.total}} 元", refs: { "q1.total": "128" } }),
+    );
+    const wrapper = await mountPage();
+
+    await ask(wrapper, "这个月花了多少");
+
+    // 杀手：页面把 `isMasked()` 写成"只按全局 amountsHidden 判"（不看 revealed）⇒ 这条红
+    //      （历史那条仍绿），也就是"问一句也看不到数字"——§7.4 明说不接受
+    expect(bubbleTexts(wrapper)).toEqual(["这个月花了多少", "这个月花了 128 元"]);
   });
 
   it("失败是消息流里的一条 assistant 消息，不是对话框（§5.3）", async () => {
@@ -529,5 +554,121 @@ describe("草稿卡接线", () => {
     expect(useAiChatStore().pendingDrafts).toEqual([]);
     expect(tx.add).not.toHaveBeenCalled();
     expect(wrapper.find('[data-test="draft-card"]').exists()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §7.3 / §7.4 的**页面接线**（判定只有一处 `isMasked()`，但要逐个出口确认它真的传下去了）
+// ---------------------------------------------------------------------------
+
+describe("隐私：说明卡、意愿层门控、三个金额出口", () => {
+  it("历史消息的**三个出口**同时遮：正文、芯片的金额条件、草稿卡的金额", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const convId = await ensureConversation(LEDGER_ID, new Date(T0));
+    await appendMessage({
+      id: "m-hist",
+      conversation_id: convId!,
+      role: "assistant",
+      content: "上月买菜花了 {{q1.total}} 元",
+      created_at: T0,
+      payload: {
+        refs: { "q1.total": "128" },
+        drafts: [DRAFT_A],
+        chips: [
+          {
+            dateFrom: null,
+            dateTo: null,
+            type: "expense",
+            categories: [],
+            account: null,
+            tags: [],
+            members: [],
+            merchant: null,
+            amountMin: 500,
+            amountMax: null,
+          },
+        ],
+      },
+    });
+    await useLedgerStore().init();
+    const wrapper = await mountPage();
+
+    // 出口 1：正文
+    expect(bubbleTexts(wrapper)[0]).toBe(`上月买菜花了 ${AMOUNT_PLACEHOLDER} 元`);
+    // 出口 2：芯片的金额条件（杀手：模板上漏传 `:masked` ⇒ 这条红）。
+    // 标签里的"支出"照旧 ⇒ 遮的是金额、不是整条条件。
+    expect(wrapper.get('[data-test="filter-chip"]').text()).toBe(`支出 · ≥${AMOUNT_PLACEHOLDER}`);
+    // 出口 3：草稿卡的金额（同一个杀手）
+    const cardText = wrapper.get('[data-test="draft-card"]').text();
+    expect(cardText).toContain(AMOUNT_PLACEHOLDER);
+    // 反向：三个出口里都不许出现真值（128 是正文的真值、500 是芯片的真值、128 也是卡的真值）
+    const all = wrapper.text();
+    expect(all).not.toContain("128");
+    expect(all).not.toContain("500");
+  });
+
+  it("意愿层关着 ⇒ 输入框与发送键都禁用 + 页面说明为什么（§7.3）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const wrapper = await mountPage(); // mountPage 会先打开门控（本文件其余用例要能发问）
+    const store = useAiChatStore();
+    await store.refreshStatus(); // 有 host ⇒ 文案是"去隐私设置打开"那一版
+    store.sendingEnabled = false;
+    await flushPromises();
+
+    // 杀手：`ChatComposer` 不接 `enabled`（只传 sending）⇒ 前两条红
+    expect(wrapper.get('[data-test="composer-input"]').element).toHaveProperty("disabled", true);
+    expect(wrapper.get('[data-test="composer-send"]').element).toHaveProperty("disabled", true);
+    expect(wrapper.get('[data-test="ai-sending-off-hint"]').text()).toContain("我的 → 隐私");
+
+    store.sendingEnabled = true;
+    await flushPromises();
+    expect(wrapper.get('[data-test="composer-input"]').element).toHaveProperty("disabled", false);
+  });
+
+  it("拿不到 host ⇒ 说明卡不出现（M2→M3 硬约束在页面这一层也成立）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const wrapper = await mountPage();
+    const store = useAiChatStore();
+    // 页面**不会**自己探能力（第 47 条）⇒ 没探过时 host 是 null
+    expect(store.host).toBeNull();
+    // 杀手：把 `:host="ai.host"` 换成写死的字符串 ⇒ 这条红（会给一个不知道发给谁的同意书）
+    expect(wrapper.find('[data-test="ai-privacy-card"]').exists()).toBe(false);
+  });
+
+  it("host 可知且未看过 ⇒ 卡片渲染；点「知道了」⇒ store 记住（下次不再弹）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const wrapper = await mountPage();
+    const store = useAiChatStore();
+    await store.refreshStatus();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="ai-privacy-host"]').text()).toBe("h");
+    await wrapper.get('[data-test="ai-privacy-card-dismiss"]').trigger("click");
+    await flushPromises();
+
+    // 杀手：`onPrivacyDismiss` 里不调 `dismissPrivacyCard` ⇒ 这两条红
+    expect(store.privacyCardSeen).toBe(true);
+    expect(wrapper.find('[data-test="ai-privacy-card"]').exists()).toBe(false);
+  });
+
+  it("本轮问出来的草稿卡显示**真金额**（`:masked` 真的传到了卡上，不是靠全局默认）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    runMock().mockResolvedValue(turn({ text: "给你一张草稿", drafts: [DRAFT_A] }));
+    const wrapper = await mountPage();
+
+    await ask(wrapper, "记一笔");
+
+    // ⚠️ 这条断言是**唯一**能钉住"页面把 `:masked` 传给 DraftCard"的地方：
+    // 历史那条（上面"三个出口"）在漏传时**照绿** —— 因为全局默认就是"遮"，
+    // 卡片自己回落到 `amountsHidden` 也能得出同样的结果（变异实测 m7-12 是 MISS）。
+    // 反过来这里要的是"不遮"：全局默认遮着，只有真的传了 `masked=false` 才可能显示 128。
+    const cardText = wrapper.get('[data-test="draft-card"]').text();
+    expect(cardText).toContain("128");
+    expect(cardText).not.toContain(AMOUNT_PLACEHOLDER);
   });
 });

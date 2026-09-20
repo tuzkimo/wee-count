@@ -158,6 +158,22 @@ function deferred<T>(): Deferred<T> {
 
 const runMock = () => vi.mocked(runAgent);
 
+/**
+ * 建 store 并打开 §7.3 的**意愿层门控**（它默认关闭 ⇒ 不打开的话 `send` 一个请求都不发）。
+ *
+ * 本文件钉的是"谁去落库 / 快照给什么 / 取消 / 切账本 / 失败也是消息"，门控自身
+ * （默认 `false`、关闭时 transport 零调用、`host` 门槛、持久化）在 `aiChat.privacy.test.ts` 里钉。
+ *
+ * ⚠️ 调用点必须留在各用例原本的位置（`setLedger()` **之后**）：store 里那个账本 watch 会在
+ * `currentLedgerId` 变化时 `cancelInFlight()` —— 提前建 store 会让用例里那次 `setLedger`
+ * 掐掉紧接着的第一个 `send`（实测：消息流空、`runAgent` 没被调）。
+ */
+function openGate(): ReturnType<typeof useAiChatStore> {
+  const store = useAiChatStore();
+  store.sendingEnabled = true;
+  return store;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.db = null;
@@ -178,7 +194,7 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
   it("传 ledgerId / 白名单快照 / session 四件套 / AbortSignal；返回的一条文本 + 草稿落进状态", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     await store.load();
 
     useCategoryStore().categories = [cat()];
@@ -240,7 +256,7 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
   it("空串 / 纯空白：不发请求，也不留一条空气泡", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
 
     await store.send("   ");
     await store.send("");
@@ -252,7 +268,7 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
 
   it("没有账本时不拿空串去建会话（Ruling 14）：不调 runAgent，给一条失败消息 + error 态", async () => {
     const { sqlite } = await useRealDb();
-    const store = useAiChatStore(); // 没调 setLedger ⇒ currentLedgerId 为 null
+    const store = openGate(); // 没调 setLedger ⇒ currentLedgerId 为 null
 
     await store.send("这个月花了多少");
 
@@ -273,7 +289,7 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
       { team_id: "T1", user_id: "local-1", username: "me", nickname: "我", avatar_url: null, role: "owner", updated_at: T0 },
     ];
     setLedger(LEDGER_ID, { type: "team", team_id: "T1" });
-    const store = useAiChatStore();
+    const store = openGate();
     runMock().mockResolvedValue(turn({ text: "答" }));
 
     await store.send("谁花得最多");
@@ -301,7 +317,7 @@ describe("取消不是错误", () => {
   it("cancel()：立刻复位发送态；在途那一轮 settle 后**不追加** assistant 消息，也不设 error", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     const pending = deferred<AgentTurn>();
     runMock().mockReturnValueOnce(pending.promise);
 
@@ -325,7 +341,7 @@ describe("取消不是错误", () => {
   it("取消判决只看 `turn.aborted`：取消那一轮即便带着非空文本，也**不得**渲染成消息/错误", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     // 防御性 fixture：真实的 agent 取消时 text 是空串，但 store 该看的是**判决**而不是"文本是否为空"
     runMock().mockResolvedValue(turn({ text: CANCELED_TEXT, aborted: true }));
 
@@ -340,7 +356,7 @@ describe("取消不是错误", () => {
   it("生成中又发一条：掐掉在途那一轮（signal 真的 aborted），被取代的终稿不得插进列表、也不得复位发送态", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     const first = deferred<AgentTurn>();
     const second = deferred<AgentTurn>();
     runMock().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
@@ -385,7 +401,7 @@ describe("失败", () => {
   it("agent 返回的失败文本就是一条 assistant 消息（error 态不重复一份）", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     runMock().mockResolvedValue(turn({ text: DB_FAILURE_TEXT }));
 
     await store.send("这个月花了多少");
@@ -401,7 +417,7 @@ describe("失败", () => {
   it("runAgent 抛（契约被改坏）⇒ 兜成一条失败消息 + error 态，绝不 reject 到调用方", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     runMock().mockRejectedValue(new Error("boom"));
 
@@ -436,7 +452,7 @@ describe("load / clear", () => {
     };
     await appendMessage({ id: "m2", conversation_id: cid, role: "assistant", content: "这个月花了 {{q1.total}} 元", payload, created_at: T0 });
 
-    const store = useAiChatStore();
+    const store = openGate();
     // `initUserTables` 与造数据用的是同一条 execute ⇒ 先清掉，剩下的才是 load 自己发的
     db.execute.mockClear();
     await store.load();
@@ -462,7 +478,7 @@ describe("load / clear", () => {
   it("空账本 load() 是只读的（R4）：一条会话行都不建，会话推迟到首次发送才建", async () => {
     const { sqlite, db } = await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     db.execute.mockClear();
 
     await store.load();
@@ -492,7 +508,7 @@ describe("load / clear", () => {
       .prepare("INSERT INTO ai_messages (id, conversation_id, role, content, payload, created_at) VALUES ('m9', ?, 'assistant', '答', '{{{不是 JSON', ?)")
       .run(cid, T0);
 
-    const store = useAiChatStore();
+    const store = openGate();
     await store.load();
 
     expect(store.messages.map((m) => [m.id, m.content])).toEqual([["m9", "答"]]);
@@ -506,7 +522,7 @@ describe("load / clear", () => {
     const cid = (await ensureConversation(LEDGER_ID, new Date(T0)))!;
     await appendMessage({ id: "m1", conversation_id: cid, role: "user", content: "问", created_at: T0 });
 
-    const store = useAiChatStore();
+    const store = openGate();
     await store.load();
     expect(store.messages).toHaveLength(1);
 
@@ -532,7 +548,7 @@ describe("load / clear", () => {
   it("clear() 先掐在途那一轮：被掐掉的终稿与草稿不得在清空之后落回状态", async () => {
     await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     const pending = deferred<AgentTurn>();
     runMock().mockReturnValueOnce(pending.promise);
 
@@ -567,7 +583,7 @@ describe("load / clear", () => {
     await appendMessage({ id: "m2", conversation_id: c2, role: "user", content: "L2 的问", created_at: T0 });
 
     setLedger("L1");
-    const store = useAiChatStore();
+    const store = openGate();
     await store.load();
     expect(store.messages.map((m) => m.content)).toEqual(["L1 的问"]);
 
@@ -593,7 +609,7 @@ describe("切账本掐在途", () => {
     await appendMessage({ id: "m2", conversation_id: c2, role: "user", content: "L2 的问", created_at: T0 });
 
     setLedger("L1");
-    const store = useAiChatStore();
+    const store = openGate();
     const pending = deferred<AgentTurn>();
     runMock().mockReturnValueOnce(pending.promise);
 
@@ -629,7 +645,7 @@ describe("草稿待确认（store 不得写库）", () => {
   it("send 收下草稿、dismissDraft 只把它移出列表：全程 db.execute 一次都不调", async () => {
     const { db } = await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     await store.load();
     // runAgent 是 mock ⇒ 这一步之后的任何一条写语句都只可能来自 store 自己
     db.execute.mockClear();

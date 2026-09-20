@@ -65,6 +65,8 @@ vi.mock("@/stores/account", () => ({
 }));
 
 import DraftCard from "@/components/ai/DraftCard.vue";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
+import { usePrefsStore } from "@/stores/prefs";
 import type { AiDraftFields, AiDraftIds } from "@/stores/aiChat";
 
 // 真 UUID：编辑区选中的 id 会进 `add`，用 "c2" 这类假串会让"id 从下拉来"的断言恒真（Ruling 13）
@@ -110,6 +112,10 @@ beforeEach(() => {
     { id: ACC_DELETED, name: "已删账户", is_deleted: 1, owner_id: "local-user-1" },
   ];
   stores.ledgerType = "personal";
+  // 全局金额遮蔽的默认值是"遮"（`stores/prefs.ts`），而遮蔽态下编辑区**故意不回填金额**
+  // （§7.4：不许把刚遮住的数字摆回屏幕正中）⇒ 不打开它，本文件那些"改字段"的用例第一步就
+  // 卡在"金额要大于 0"上。本文件钉的是编辑与遮罩**判定**，逐条自己声明遮蔽态（见下面的 §7.4 块）。
+  usePrefsStore().showAmounts();
 });
 
 describe("DraftCard 内联可改（§4.4:162）", () => {
@@ -242,5 +248,42 @@ describe("DraftCard 内联可改（§4.4:162）", () => {
     await flushPromises();
     // 杀手：watch 里不清 `editedFields` ⇒ 这里仍是 999（写的是上一张草稿的值）
     expect(addSpy.mock.calls[0]![0].amount).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §7.4：草稿卡的金额（含它的**编辑区输入框**）也是金额出口
+// ---------------------------------------------------------------------------
+describe("DraftCard 金额遮罩（§7.4）", () => {
+  it("masked=true 压过全局开关：卡上不出现真金额，编辑区也不预填真金额", async () => {
+    // 全局把遮蔽关掉（用户手动点开过）—— `masked` 仍必须赢：这是**历史消息**，跟着遮罩走
+    const prefs = usePrefsStore();
+    prefs.amountsHidden = false;
+
+    const w = mount(DraftCard, { props: { ...props, masked: true } });
+    // 杀手：`maskCurrency(fields.amount, hidden)` 换回不传 hidden（只读全局）⇒ 两条都红
+    expect(w.get('[data-test="draft-card"]').text()).not.toContain("128");
+    expect(w.get('[data-test="draft-card"]').text()).toContain(AMOUNT_PLACEHOLDER);
+
+    await w.get('[data-test="draft-edit"]').trigger("click");
+    // 杀手：`onStartEdit` 里 `amount: hidden ? "" : String(...)` 换回无条件 `String(...)`
+    // ⇒ 编辑区把刚遮住的数字又摆回屏幕正中（同一屏、同一个数字）
+    expect((w.get('[data-test="draft-edit-amount"]').element as HTMLInputElement).value).toBe("");
+    expect((w.get('[data-test="draft-edit-amount"]').element as HTMLInputElement).placeholder).toBe(
+      "请输入金额",
+    );
+  });
+
+  it("masked=false ⇒ 显示真值（本轮问出来的那张卡），未传时跟随全局开关", () => {
+    const prefs = usePrefsStore();
+    prefs.amountsHidden = true;
+
+    // 本轮：`masked=false` 压过全局的"遮" —— 两个方向都要能赢，才算真的按消息判
+    const shown = mount(DraftCard, { props: { ...props, masked: false } });
+    expect(shown.get('[data-test="draft-card"]').text()).toContain("128.5");
+
+    // 旧调用点（不传 masked）：跟随全局（默认就是遮）
+    const legacy = mount(DraftCard, { props });
+    expect(legacy.get('[data-test="draft-card"]').text()).toContain(AMOUNT_PLACEHOLDER);
   });
 });

@@ -38,6 +38,14 @@ import {
   type AgentTurn,
 } from "@/services/ai/agent";
 import { createTransport, fetchAiStatus, type AiStatus } from "@/services/ai/transport";
+import {
+  readPrivacyCardSeen,
+  readSendingEnabled,
+  writePrivacyCardSeen,
+  writeSendingEnabled,
+  AI_PRIVACY_CARD_SEEN_DEFAULT,
+  AI_SENDING_ENABLED_DEFAULT,
+} from "@/services/aiPrivacySettings";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
 // ⚠️ 草稿形状的**唯一真相**在 `tools.ts` 的草稿工具产出里（Ruling 66 R3）：store 侧只 `import type`
 // 引入（类型擦除 ⇒ 不会把 `@/db/userDb` 拉进本 store 的运行期模块图），绝不重声明第二份 ——
@@ -304,6 +312,11 @@ export const useAiChatStore = defineStore("aiChat", () => {
     const userText = text.trim();
     if (userText === "") return;
 
+    // §7.3 的**意愿层**：开关关着一个请求都不发。UI 那边同时禁用输入框（`ChatComposer` 的
+    // `enabled`），但执行点在这里 —— 页面忘了禁用、或将来多一个调用方，都漏不出去。
+    // 默认是关的（`AI_SENDING_ENABLED_DEFAULT=false`），所以"还没读过配置"也走这条 return。
+    if (!sendingEnabled.value) return;
+
     // 生成中又发一条 ⇒ 掐掉在途那一轮（§5.2）。丢弃的是**结果**，不是用户已经说出口的话
     cancelInFlight();
     const seq = ++runSeq;
@@ -330,7 +343,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
     error.value = null;
 
     const ledgerId = ledgerStore.currentLedgerId;
-    messages.value.push({
+    const userMessage: UiMessage = {
       // ⚠️ 内存消息的 id 与库里 `ai_messages.id` 是**两套独立身份**：这里（以及 `appendAssistant`）
       // 用自己造的 UUID，agent 落库时另造一个。同一条消息"刚发完"与"重开读回来"的 id 因此不同
       // ⇒ 任何 UI 都**不许**把内存 id 当库键用（`pendingDrafts[].messageId` 只在同一会话的
@@ -340,7 +353,10 @@ export const useAiChatStore = defineStore("aiChat", () => {
       content: userText,
       payload: null,
       createdAt: new Date().toISOString(),
-    });
+    };
+    messages.value.push(userMessage);
+    // §7.4 乙方案：**本轮主动问出来的**消息显示真值 ⇒ 这条用户消息也算（它就是用户刚说的话）
+    revealed.value.add(userMessage.id);
 
     try {
       if (ledgerId === null) {
@@ -416,6 +432,9 @@ export const useAiChatStore = defineStore("aiChat", () => {
       createdAt: new Date().toISOString(),
     };
     messages.value.push(message);
+    // §7.4 乙方案：本次会话新产生的回答显示真值（重开 App 后 `revealed` 清空 ⇒ 全部回到遮蔽态）。
+    // 失败消息（`fail`）也走这里：它没有金额，标记与否都不影响隐私，但省一条分叉。
+    revealed.value.add(message.id);
     return message;
   }
 
@@ -497,6 +516,68 @@ export const useAiChatStore = defineStore("aiChat", () => {
   const host = computed(() => status.value?.host ?? null);
   /** 回答用的模型名 */
   const model = computed(() => status.value?.model ?? null);
+
+  // -------------------------------------------------------------------------
+  // 隐私：意愿层开关 + 一次性说明卡 + §7.4 的 revealed
+  // -------------------------------------------------------------------------
+
+  /**
+   * **意愿层**开关（§7.3）：默认关闭。`true` 才允许发请求（`send` 的第一道门控）。
+   *
+   * 与能力层（`enabled`，来自 `/ai/status`）是**两件事**：能力层说"服务端配没配"，
+   * 这一层说"用户愿不愿意把数据发到 `host`"。两层都成立才发得出去。
+   */
+  const sendingEnabled = ref(AI_SENDING_ENABLED_DEFAULT);
+
+  /** 说明卡看过没有（`true` ⇒ 不再自动弹）。**不参与**任何权限判定，只决定弹不弹。 */
+  const privacyCardSeen = ref(AI_PRIVACY_CARD_SEEN_DEFAULT);
+
+  /**
+   * §7.4 乙方案：**本轮主动问出来的**消息（内存 Set，**不落库、不持久化**）。
+   *
+   * - 不在这里的（= 从库里读回来的历史消息）⇒ 遮罩，渲染 `••••`
+   * - 在这里的 ⇒ 显示真值
+   *
+   * ⚠️ 键是**内存消息 id**（与本文件里那两处 `crypto.randomUUID()` 同一套身份，见 `runTurn` 的
+   * 注释）⇒ 它与库里 `ai_messages.id` 不是一回事，**任何持久化都不该拿它当键**。
+   * 冷启动后 store 重建 ⇒ 空集 ⇒ 全部回到遮蔽态（`§7.4`：重开 App 后清空）。
+   */
+  const revealed = ref<Set<string>>(new Set());
+
+  /**
+   * 读一次意愿层开关与说明卡状态（**永不抛**：两个 reader 的契约都是"读不到回落从严默认值"）。
+   *
+   * 调用点**只有冷启动那一处**（`main.ts` 的引导）。页面**不许**再读一遍：R71 的教训是
+   * "读失败会回落默认值，于是把本会话里已经生效的状态静默覆盖掉"——`sendingEnabled` 的
+   * 默认值是"关"，覆盖成关就等于用户明明开了却发不出去，且没有任何提示。
+   */
+  async function loadPrivacySettings(): Promise<void> {
+    sendingEnabled.value = await readSendingEnabled();
+    privacyCardSeen.value = await readPrivacyCardSeen();
+  }
+
+  /**
+   * 翻转意愿层开关。**先落盘、后改内存**（照 `stores/privacy.ts:23-31` 的 R57 规则）：
+   * 写失败即 reject，绝不让界面显示一个没写进去的状态。
+   *
+   * ⚠️ **开启**这条路上还有 §7.3 的硬门槛：`host === null`（不知道数据发往哪）时**不得允许开启**。
+   * UI 那边连开关都不渲染（briefing 的 M2→M3 硬约束），这里是第二层 —— 它保证"能不能开"
+   * 只由 host 决定，而不由"哪个调用方"决定。关闭方向不受限（关永远是安全的）。
+   */
+  async function setSendingEnabled(enabled: boolean): Promise<void> {
+    if (enabled && host.value === null) {
+      console.warn("[ai/store] 拿不到 host，不允许开启 AI 助手（§7.3）");
+      return;
+    }
+    await writeSendingEnabled(enabled);
+    sendingEnabled.value = enabled;
+  }
+
+  /** 用户点「知道了」：先落盘再改内存（失败即 reject ⇒ 卡片留着，调用方如实提示） */
+  async function dismissPrivacyCard(): Promise<void> {
+    await writePrivacyCardSeen();
+    privacyCardSeen.value = true;
+  }
 
   /**
    * 探一次 AI 能力。**不轮询**（M2 契约第 4 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶），
@@ -604,11 +685,17 @@ export const useAiChatStore = defineStore("aiChat", () => {
     enabled,
     host,
     model,
+    sendingEnabled,
+    privacyCardSeen,
+    revealed,
     load,
     send,
     cancel,
     clear,
     dismissDraft,
     refreshStatus,
+    loadPrivacySettings,
+    setSendingEnabled,
+    dismissPrivacyCard,
   };
 });

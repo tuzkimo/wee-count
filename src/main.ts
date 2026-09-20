@@ -5,6 +5,7 @@ import router from "@/router";
 import "@/assets/main.css";
 import { useLockStore } from "@/stores/lock";
 import { usePrivacyStore } from "@/stores/privacy";
+import { useAiChatStore } from "@/stores/aiChat";
 import { SCREENSHOT_PROTECTION_DEFAULT } from "@/services/privacySettings";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
 
@@ -57,6 +58,19 @@ async function bootstrap(): Promise<void> {
       screenshotProtection = privacy.screenshotProtection;
     } catch (cause) {
       console.error("读取隐私设置失败，按默认值处理", cause);
+    }
+
+    /*
+      AI 意愿层开关与说明卡状态（§7.3）。和截屏防护同一条理由（R71）：**只在冷启动读一次**，
+      页面不许再读 —— 读失败会回落"从严默认值"（这里是**关闭**），页面里读一次就等于把用户
+      本会话里特意打开的开关静默关掉。默认关闭是规格要求，所以"还没读"与"读不到"都落在安全的一侧。
+
+      再单开一个 try：AI 这块读失败不该把应用锁/截屏防护一起降级。
+    */
+    try {
+      await useAiChatStore().loadPrivacySettings();
+    } catch (cause) {
+      console.error("读取 AI 隐私开关失败，按默认值处理", cause);
     }
 
     // 锁已就位，现在才让 router install：初始导航的守卫因此能读到真实的 isLocked。

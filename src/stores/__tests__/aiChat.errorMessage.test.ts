@@ -103,6 +103,17 @@ beforeEach(async () => {
   await useRealDb();
 });
 
+/**
+ * 建 store 并打开 §7.3 的**意愿层门控**（默认关闭 ⇒ 不打开的话 `send` 一个请求都不发、
+ * 也就没有任何 error 可言）。门控自身在 `aiChat.privacy.test.ts` 里钉。
+ * ⚠️ 必须在 `setLedger()` **之后**调（见 `aiChat.test.ts` 里 `openGate` 的注释）。
+ */
+function openGate(): ReturnType<typeof useAiChatStore> {
+  const store = useAiChatStore();
+  store.sendingEnabled = true;
+  return store;
+}
+
 afterEach(() => {
   for (const sqlite of opened.splice(0)) sqlite.close();
   state.db = null;
@@ -110,7 +121,7 @@ afterEach(() => {
 
 describe("error 的双写不变量：非 null ⇒ 消息流里必有一条同样的 assistant 消息", () => {
   it("没有账本 ⇒ error = DB_FAILURE_TEXT，且那条消息真的在流里（不是只设状态）", async () => {
-    const store = useAiChatStore();
+    const store = openGate();
 
     await store.send("记一笔");
 
@@ -122,7 +133,7 @@ describe("error 的双写不变量：非 null ⇒ 消息流里必有一条同样
     setLedger(LEDGER_ID);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     runMock().mockRejectedValue(new Error("agent 契约被改坏了"));
-    const store = useAiChatStore();
+    const store = openGate();
 
     await store.send("记一笔");
     warn.mockRestore();

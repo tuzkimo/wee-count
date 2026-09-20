@@ -20,6 +20,8 @@ import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useTagStore } from "@/stores/tag";
+import { useAmountMask } from "@/composables/useAmountMask";
+import { shouldMaskAmounts } from "@/components/ai/amountMask";
 import type { AiMessagePayload } from "@/services/ai/session";
 import AppHeader from "@/components/AppHeader.vue";
 import MessageBubble from "@/components/ai/MessageBubble.vue";
@@ -27,12 +29,14 @@ import FilterChips from "@/components/ai/FilterChips.vue";
 import DraftCard from "@/components/ai/DraftCard.vue";
 import ChatComposer from "@/components/ai/ChatComposer.vue";
 import ToolTrace from "@/components/ai/ToolTrace.vue";
+import AiPrivacyCard from "@/components/ai/AiPrivacyCard.vue";
 
 const ai = useAiChatStore();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const categoryStore = useCategoryStore();
 const tagStore = useTagStore();
+const { amountsHidden } = useAmountMask();
 
 /** 滚动容器（消息流自身滚动，输入栏固定在底部） */
 const scroller = ref<HTMLElement | null>(null);
@@ -59,6 +63,29 @@ function chipsOf(payload: AiMessagePayload | null): unknown[] {
 
 function traceOf(payload: AiMessagePayload | null): unknown[] {
   return payload?.trace ?? [];
+}
+
+/**
+ * 这条消息的金额要不要遮（§7.4 乙方案）。**判定只在这一处**：`revealed` 是 store 的内存集合
+ * （"本轮主动问出来的"），全局 `amountsHidden` 是遮罩本身的语义（默认不看、需要时点开）。
+ *
+ * 于是三个金额出口共用同一个判定：
+ *  - `MessageBubble` 的正文（回填后的汇总数字）
+ *  - `FilterChips` 的金额条件（`≥500`）
+ *  - `DraftCard` 的金额（含它的编辑区输入框）
+ * 用户消息不带 refs / chips / drafts（`content` 就是原文），因此这条判定对它没有副作用。
+ */
+function isMasked(messageId: string): boolean {
+  return shouldMaskAmounts(amountsHidden.value, ai.revealed.has(messageId));
+}
+
+/** 「知道了」：先落盘再改内存（失败即 reject）⇒ 失败时卡片留在原地，这里如实报出来 */
+async function onPrivacyDismiss(): Promise<void> {
+  try {
+    await ai.dismissPrivacyCard();
+  } catch (e) {
+    console.warn("[ai/page] 记录隐私说明卡已读失败：", e);
+  }
 }
 
 async function scrollToBottom(): Promise<void> {
@@ -142,6 +169,12 @@ watch(
       </template>
     </AppHeader>
 
+    <!--
+      §7.3 的一次性说明卡：`host === null` 时组件自己整个不渲染（拿不到 host 就不问用户同不同意）。
+      `seen` 是持久化标记（冷启动读一次），「知道了」由页面转给 store。
+    -->
+    <AiPrivacyCard :host="ai.host" :seen="ai.privacyCardSeen" @dismiss="onPrivacyDismiss" />
+
     <div ref="scroller" class="flex-1 overflow-auto px-4 py-4" data-test="ai-scroller">
       <p v-if="ai.loading" class="text-sm text-text-secondary" data-test="ai-loading">
         正在读取会话…
@@ -155,14 +188,19 @@ watch(
           问点什么吧，比如「上月买菜花了多少」
         </p>
         <div v-for="m in ai.messages" :key="m.id" class="mb-3 space-y-2" data-test="ai-message">
-          <MessageBubble :message="m" />
-          <FilterChips v-if="chipsOf(m.payload).length > 0" :chips="chipsOf(m.payload)" />
+          <MessageBubble :message="m" :masked="isMasked(m.id)" />
+          <FilterChips
+            v-if="chipsOf(m.payload).length > 0"
+            :chips="chipsOf(m.payload)"
+            :masked="isMasked(m.id)"
+          />
           <ToolTrace v-if="traceOf(m.payload).length > 0" :trace="traceOf(m.payload)" />
           <DraftCard
             v-for="d in draftsFor(m.id)"
             :key="d.draftId"
             :draft="d.draft"
             :resolved="d.resolved"
+            :masked="isMasked(m.id)"
             @confirm="onDraftDismissed(d.draftId)"
             @reject="onDraftDismissed(d.draftId)"
           />
@@ -170,6 +208,22 @@ watch(
       </template>
     </div>
 
-    <ChatComposer :sending="ai.sending" @send="onSend" @cancel="onCancel" />
+    <!--
+      意愿层关着时**必须让用户看见为什么发不出去**（§7.3）：两种情形文案不同 ——
+      没有 host = 服务端没配（能力层），有 host 但开关关着 = 去隐私设置里打开（意愿层）。
+    -->
+    <p
+      v-if="!ai.sendingEnabled && ai.enabled"
+      class="border-t border-gray-100 px-4 py-2 text-xs text-text-secondary"
+      data-test="ai-sending-off-hint"
+    >
+      {{
+        ai.host === null
+          ? "服务端未配置 AI：这台设备暂时用不了助手。"
+          : "AI 助手已关闭，去「我的 → 隐私」打开后才能发送。"
+      }}
+    </p>
+
+    <ChatComposer :sending="ai.sending" :enabled="ai.sendingEnabled" @send="onSend" @cancel="onCancel" />
   </div>
 </template>

@@ -8,16 +8,23 @@
 //  2. **绝不渲染 id**：payload 里的 `applied` / `ledgerId` / `chips[].id` 都是拿去跳转或记账的
 //     **本地**数据（§7.3）。这里是**白名单**渲染：模板只碰 `fillRefs` 的产物，一个字段名都不展开。
 //
-// ⚠️ 本组件**不做金额遮罩**：§7.4 的乙方案（`revealed` 内存 Set + `useAmountMask`）整体属于任务 7，
-// 这一层没有开关可读，也没有 id 可判 —— 现在去"顺手"遮蔽会让任务 7 多一条必须拆掉的分支。
+// ⚠️ 金额遮罩（§7.4 乙方案）由**调用方**按消息判定后传进来（`masked` prop）：
+// 判定要用 `revealed`（store 的内存 Set）与全局 `amountsHidden`，两者都不属于"一条气泡"。
+// 反过来在组件里读 store 会让本组件的测试必须挂 pinia —— 而那些测试钉的是回填与"绝不渲染 id"，
+// 与遮蔽无关（新增的遮罩测试单独一份 `MessageBubble.mask.test.ts`）。
 import { computed } from "vue";
-import { fillRefs } from "@/services/ai/prompt";
+import { maskMessageText } from "@/components/ai/amountMask";
 import type { UiMessage } from "@/stores/aiChat";
 
-const props = defineProps<{ message: UiMessage }>();
+const props = defineProps<{ message: UiMessage; masked?: boolean }>();
 
-/** 回填后的展示文本。键查不到时 `fillRefs` 保留原文并 warn（宁可暴露占位符，也不塞错数字）。 */
-const text = computed(() => fillRefs(props.message.content, props.message.payload?.refs ?? {}));
+/**
+ * 回填后的展示文本。键查不到时 `fillRefs` 保留原文并 warn（宁可暴露占位符，也不塞错数字）。
+ * 遮蔽是**回填的后一步**（`§4.5:483`）：金额键的值在回填前换成 `••••`，替换实现仍然只有一份。
+ */
+const text = computed(() =>
+  maskMessageText(props.message.content, props.message.payload?.refs ?? {}, props.masked === true),
+);
 
 const isUser = computed(() => props.message.role === "user");
 </script>

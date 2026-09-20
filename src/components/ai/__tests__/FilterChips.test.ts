@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import FilterChips from "@/components/ai/FilterChips.vue";
 import { appliedToQuery } from "@/services/ai/filterQuery";
+import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 import { buildPresetRange } from "@/utils/dateRange";
 import type { AppliedFilter } from "@/services/ai/resolve";
 
@@ -155,5 +156,44 @@ describe("FilterChips", () => {
       amountMin: "0",
       amountMax: "500",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §7.4：芯片上的金额条件也是**金额出口**（历史消息跟着遮）
+// ---------------------------------------------------------------------------
+describe("FilterChips 金额遮罩（§7.4）", () => {
+  it("masked ⇒ 上下界都换成占位符，比较符号保留（用户仍看得出「这是金额条件」）", () => {
+    const w = mount(FilterChips, {
+      props: { chips: [makeApplied({ amountMin: 500, amountMax: 2000 })], masked: true },
+    });
+    // 杀手：`otherLabels` 里不判 `masked`（照旧拼 `${a.amountMin}-${a.amountMax}`）⇒ 这条红
+    expect(w.get('[data-test="filter-chip"]').text()).toBe(`${AMOUNT_PLACEHOLDER}-${AMOUNT_PLACEHOLDER}`);
+    // 反向断言：真值一个字符都不许上屏（否则"只断言占位符在"可能恒真）
+    expect(w.get('[data-test="filter-chip"]').text()).not.toContain("500");
+
+    const single = mount(FilterChips, {
+      props: { chips: [makeApplied({ amountMin: 500 })], masked: true },
+    });
+    expect(single.get('[data-test="filter-chip"]').text()).toBe(`≥${AMOUNT_PLACEHOLDER}`);
+  });
+
+  it("masked=false / 未传（历史之外）⇒ 显示真数字，与今天完全一致", () => {
+    const plain = mount(FilterChips, {
+      props: { chips: [makeApplied({ amountMin: 500, amountMax: 2000 })], masked: false },
+    });
+    expect(plain.get('[data-test="filter-chip"]').text()).toBe("500-2000");
+    const legacy = mount(FilterChips, {
+      props: { chips: [makeApplied({ amountMin: 500, amountMax: 2000 })] },
+    });
+    expect(legacy.get('[data-test="filter-chip"]').text()).toBe("500-2000");
+  });
+
+  it("遮罩只改屏幕上的字，不改跳转条件（点进去仍是那批流水）", () => {
+    const chip = makeApplied({ amountMin: 500, amountMax: 2000 });
+    const w = mount(FilterChips, { props: { chips: [chip], masked: true } });
+    void w.get('[data-test="filter-chip"]').trigger("click");
+    // 杀手：顺手把 applied 也改了 ⇒ 这条红（下钻会跳到"筛掉一切"的空白流水页）
+    expect(push).toHaveBeenCalledWith({ path: "/", query: appliedToQuery(chip) });
   });
 });

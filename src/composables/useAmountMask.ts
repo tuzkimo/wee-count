@@ -24,20 +24,24 @@ const NUMBER_FORMAT: Intl.NumberFormatOptions = {
  *
  * 两个入口都接收 number 而不是格式化后的字符串：遮蔽判定发生在取绝对值与加符号
  * **之前**。否则 `-¥••••••` 会暴露「结余为负」这个信息，用字符串原语做不到。
+ *
+ * 可选的 `hidden` 覆盖参数（默认 = 全局 `amountsHidden`）：AI 聊天页的 §7.4 乙方案要求
+ * "本轮问出来的消息显示真值"，那是**逐条消息**的判定，不能靠全局开关表达。覆盖只改判定、
+ * 不改格式化 —— 真值的千分位/负号口径仍然只有这一份实现（不许在别处再拼一遍）。
  */
 export function useAmountMask() {
   const prefs = usePrefsStore();
   const { amountsHidden } = storeToRefs(prefs);
 
   /** 报表类场景：只要数字，不带货币符号。显示态保留 toLocaleString 自带的负号（负结余必须看得出是负的）；遮蔽态仍只输出占位符。 */
-  function maskNumber(n: number): string {
-    if (amountsHidden.value) return AMOUNT_PLACEHOLDER;
+  function maskNumber(n: number, hidden: boolean = amountsHidden.value): string {
+    if (hidden) return AMOUNT_PLACEHOLDER;
     return n.toLocaleString("zh-CN", NUMBER_FORMAT);
   }
 
   /** 账户类场景：带 ¥ 前缀；显示负值时输出 `-¥1,234.56`。 */
-  function maskCurrency(n: number): string {
-    if (amountsHidden.value) return `¥${AMOUNT_PLACEHOLDER}`;
+  function maskCurrency(n: number, hidden: boolean = amountsHidden.value): string {
+    if (hidden) return `¥${AMOUNT_PLACEHOLDER}`;
     const abs = Math.abs(n).toLocaleString("zh-CN", NUMBER_FORMAT);
     return n < 0 ? `-¥${abs}` : `¥${abs}`;
   }

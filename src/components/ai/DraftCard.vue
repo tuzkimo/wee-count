@@ -47,10 +47,22 @@ import {
 } from "@/components/ai/draftData";
 import type { AiDraftFields, AiDraftIds } from "@/stores/aiChat";
 
-const props = defineProps<{
-  draft: AiDraftFields;
-  resolved: AiDraftIds;
-}>();
+const props = withDefaults(
+  defineProps<{
+    draft: AiDraftFields;
+    resolved: AiDraftIds;
+    /**
+     * 金额遮罩（§7.4）：**历史消息**里的草稿卡跟随遮罩，本轮问出来的显示真值。
+     * `undefined` = 调用方没判定（旧调用点）⇒ 跟随全局 `amountsHidden`，与 6d 之前完全一致。
+     */
+    masked?: boolean;
+  }>(),
+  // ⚠️ `masked: undefined` **必须显式写出来**：Vue 对 Boolean 类型 prop 有"缺席 ⇒ false"的强制转换
+  // （`resolvePropValue`：没有 default 时，缺席的 Boolean prop 会被赋成 `false`），
+  // 而这里"缺席"的语义是**没有判定**（跟随全局开关），不是"不遮"。显式给了 default 之后，
+  // 缺席就保持 `undefined` ⇒ 下面 `?? amountsHidden.value` 才成立（实测：去掉它，跟随全局那条直接变"不遮"）。
+  { masked: undefined },
+);
 
 /** 对外契约 `confirm` 带新交易 id（撤销另有 `undo`，拒绝是 `reject`） */
 const emit = defineEmits<{
@@ -64,7 +76,14 @@ const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
 const categoryStore = useCategoryStore();
 const auth = useAuthStore();
-const { maskCurrency } = useAmountMask();
+const { maskCurrency, amountsHidden } = useAmountMask();
+
+/**
+ * 遮罩判定（§7.4）：调用方给了 `masked` 就用它（按消息判），没给就跟随全局开关。
+ * ⚠️ **编辑区的金额输入框也要跟着遮** —— 否则"历史消息遮住了金额"，用户一点「修改」,
+ * 输入框里就明明白白写着 128.5（同一个屏幕上、同一个数字）。做法见 `onStartEdit`。
+ */
+const hidden = computed(() => props.masked ?? amountsHidden.value);
 
 /**
  * `saving` / `undoing` 分开：两者都"有事在途"，但**视图不同**
@@ -158,7 +177,10 @@ watch(() => props.draft, () => {
 function onStartEdit(): void {
   error.value = "";
   form.value = {
-    amount: String(fields.value.amount),
+    // ⚠️ 遮罩态下**不把真金额填进输入框**（那等于把刚遮住的数字又摆到屏幕正中）。
+    // 代价是用户得重新输一遍金额 —— 遮蔽的语义本来就是"不该在屏幕上出现"，而不是"看不见但能编辑"。
+    // 其余四个字段（分类/账户/时间/备注）不是金额，照常回填。
+    amount: hidden.value ? "" : String(fields.value.amount),
     categoryId: ids.value.categoryId,
     fromAccountId: ids.value.fromAccountId,
     toAccountId: ids.value.toAccountId,
@@ -271,7 +293,7 @@ function onReject(): void {
   >
     <p class="mb-2 text-xs text-text-secondary">待确认的记账</p>
     <p class="text-sm font-medium text-text">
-      {{ TYPE_LABEL[fields.type] }} {{ maskCurrency(fields.amount) }}
+      {{ TYPE_LABEL[fields.type] }} {{ maskCurrency(fields.amount, hidden) }}
     </p>
 
     <!-- 编辑区（§4.4:162）：只列规格点名的五个字段，type / tags 不给改 -->
@@ -282,7 +304,7 @@ function onReject(): void {
           v-model="form.amount"
           type="text"
           inputmode="decimal"
-          placeholder="0.00"
+          :placeholder="hidden ? '请输入金额' : '0.00'"
           class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
           data-test="draft-edit-amount"
         />

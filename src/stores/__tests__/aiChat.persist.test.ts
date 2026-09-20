@@ -136,6 +136,17 @@ beforeEach(() => {
   setActivePinia(createPinia());
 });
 
+/**
+ * 建 store 并打开 §7.3 的**意愿层门控**（默认关闭 ⇒ 不打开的话 `send` 一个请求都不发，
+ * 也就没有可等的落库窗口）。门控自身在 `aiChat.privacy.test.ts` 里钉。
+ * ⚠️ 必须在 `setLedger()` **之后**调（见 `aiChat.test.ts` 里 `openGate` 的注释）。
+ */
+function openGate(): ReturnType<typeof useAiChatStore> {
+  const store = useAiChatStore();
+  store.sendingEnabled = true;
+  return store;
+}
+
 afterEach(() => {
   for (const sqlite of opened.splice(0)) sqlite.close();
   state.db = null;
@@ -145,7 +156,7 @@ describe("clear() 与在途那一轮的落库窗口", () => {
   it("被掐掉的那一轮在落库 await 里：clear() 等它落定后一起删掉 ⇒ 复活后没有幽灵消息", async () => {
     const { sqlite } = await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
     const held = holdAssistantPersist();
 
     const sending = store.send("这个月花了多少");
@@ -182,7 +193,7 @@ describe("内存消息 id 与库行 id", () => {
   it("是两套独立身份：谁都不许当对方的替代；重开后换成库里的 id，payload 往返整份相等", async () => {
     const { sqlite } = await useRealDb();
     setLedger(LEDGER_ID);
-    const store = useAiChatStore();
+    const store = openGate();
 
     await store.send("这个月花了多少");
 

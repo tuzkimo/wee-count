@@ -12,6 +12,7 @@
 //  2. **发送按钮**：`v-if="sending"` ⇒ sending 时它**根本不渲染**（换成了取消按钮）。
 //     它**没有** `:disabled="sending"` —— 那在 `v-else` 分支里**恒为假**（渲染时 `sending` 必为 false），
 //     是一条死的等价防御，按 Ruling 35 删掉（复审 m22 实测：留着它删掉它都全绿）。
+//     但 `:disabled="!enabled"`（§7.3 意愿层）在这个分支里**是活的** —— 它是另一件事，不冲突。
 // ⇒ 脚本里的 `if (sending) return` 也是同类走不到的防御（复审 m8 实测全绿），已删。
 // 没有第三条用户可达入口：无 `<form>` / 无 `@submit` / script setup 无 `expose`
 // （`vm.onSend()` 只有 dev/test 的代理能直调，不是生产入口）。
@@ -19,7 +20,14 @@ import { ref } from "vue";
 import { Send, Square } from "lucide-vue-next";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
 
-defineProps<{ sending: boolean }>();
+/**
+ * `enabled`（默认 `true`）：§7.3 的意愿层开关关着时**输入框与发送键都禁用**。
+ *
+ * 为什么不像 `sending` 那样只靠"入口不存在"：那个开关是**用户可见的状态**（"我的 → 隐私"里
+ * 明明关着），输入框却还能打字、还能点发送 —— 那不是防御问题，是界面在说谎。
+ * store 里 `send` 另有一道 `if (!sendingEnabled) return`：这里是"不让做"，那里是"做了也不发"。
+ */
+withDefaults(defineProps<{ sending: boolean; enabled?: boolean }>(), { enabled: true });
 
 const emit = defineEmits<{
   send: [text: string];
@@ -54,7 +62,7 @@ function onCancel(): void {
         v-model="text"
         type="text"
         class="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-text disabled:opacity-50"
-        :disabled="sending"
+        :disabled="sending || !enabled"
         placeholder="问点什么，比如「上月买菜花了多少」"
         data-test="composer-input"
         @keydown.enter.prevent="onSend"
@@ -71,7 +79,8 @@ function onCancel(): void {
       <button
         v-else
         type="button"
-        class="flex items-center gap-1 rounded-lg bg-primary px-3 py-2 text-sm text-white"
+        class="flex items-center gap-1 rounded-lg bg-primary px-3 py-2 text-sm text-white disabled:opacity-50"
+        :disabled="!enabled"
         data-test="composer-send"
         @click="onSend"
       >

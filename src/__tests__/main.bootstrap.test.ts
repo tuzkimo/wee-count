@@ -19,6 +19,10 @@ const state = vi.hoisted(() => ({
   routerInstallThrows: false,
   /** `SCREENSHOT_PROTECTION_DEFAULT` 的替身取值。 */
   defaultScreenshot: true,
+  /** AI 意愿层开关的启动读取：次数、是否发生在 mount 之后、是否抛错 */
+  aiPrivacyLoads: 0,
+  aiPrivacyAfterRender: false,
+  aiPrivacyThrows: false,
 }));
 
 vi.mock("@/App.vue", () => ({
@@ -86,6 +90,24 @@ vi.mock("@/stores/privacy", () => ({
   },
 }));
 
+/**
+ * AI 意愿层开关（§7.3）在冷启动读一次。
+ *
+ * ⚠️ 这个替身**不往 `state.order` 里推东西**：上面那些 `toEqual` 顺序断言钉的是
+ * "门禁 → router → mount"这条主干，AI 这一块是**并列**的第三段（§7.3 与截屏防护同族）。
+ * 硬把它插进顺序里会让几条既有断言全部重写，而它们要保护的东西并没有变 ——
+ * 这里改用"调用次数 + 调用时是否已经 render"两个哨兵，判别力一样、改动面小得多。
+ */
+vi.mock("@/stores/aiChat", () => ({
+  useAiChatStore: () => ({
+    loadPrivacySettings: async () => {
+      state.aiPrivacyLoads += 1;
+      if (state.order.includes("render")) state.aiPrivacyAfterRender = true;
+      if (state.aiPrivacyThrows) throw new Error("read ai privacy failed");
+    },
+  }),
+}));
+
 let errorSpy: ReturnType<typeof vi.spyOn>;
 let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -99,6 +121,9 @@ beforeEach(() => {
   state.screenshotFails = false;
   state.routerInstallThrows = false;
   state.defaultScreenshot = true;
+  state.aiPrivacyLoads = 0;
+  state.aiPrivacyAfterRender = false;
+  state.aiPrivacyThrows = false;
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -233,5 +258,23 @@ describe("main.ts 启动顺序", () => {
     await startApp();
 
     expect(state.order).toContain("screenshot:false");
+  });
+
+  it("AI 意愿层开关在冷启动读**一次**，且在 mount 之前（§7.3 / R71：页面不许再读）", async () => {
+    await startApp();
+
+    // 杀手：删掉 `main.ts` 里那段 `await useAiChatStore().loadPrivacySettings()` ⇒ 这条红
+    expect(state.aiPrivacyLoads).toBe(1);
+    expect(state.aiPrivacyAfterRender).toBe(false);
+  });
+
+  it("读 AI 隐私开关失败只降级这一块，不牵连应用锁/截屏防护，也不阻塞 mount", async () => {
+    state.aiPrivacyThrows = true;
+
+    await startApp();
+
+    expect(state.order).toContain("render");
+    expect(state.order).toContain("screenshot:true");
+    expect(errorSpy).toHaveBeenCalledWith("读取 AI 隐私开关失败，按默认值处理", expect.any(Error));
   });
 });
