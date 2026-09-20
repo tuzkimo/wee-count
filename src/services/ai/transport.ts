@@ -276,7 +276,17 @@ function classifyHttp(status: number, code: string | undefined): TransportFailur
  * - `"network error"`：fetch 自己抛的（断网 / DNS / TLS / 代理）⇒ `network` ✓
  *
  * ⚠️ 用户主动取消**正常到不了**这里：`chat()` 在 status 判定之前就用 `signal.aborted`
- * 拦掉了。这一档留 `aborted` 分支是兜底（例如取消恰好与兜底超时同时发生）。
+ * 拦掉了。
+ * ⚠️⚠️ 而 `"aborted"` 这个**值本身今天也产不出来**（step 0 处置死代码时实测；计划第 30 条的
+ * 更正只说了"别用 `signal.aborted` 猜"，没说这一层）：用户在途取消时 `onAbort` 让
+ * `controller.abort()`，fetch **同步**拒绝，catch 跑起来时 `timeoutFired` 还是 false
+ * ⇒ `api.ts` 不打标签 ⇒ 值是 `"network error"`。两个条件（兜底开火 ∧ 外部已 abort）互斥。
+ *
+ * 这条分支与 `api.ts` 的那个 `"aborted"` 标签**成对保留**（铁律：要么一起删、要么一起留，
+ * 别一处删一处留）：留着是**兜底 + 契约**（万一有人删掉 `chat()` 的取消前置判别、或把外部
+ * 取消改成走兜底超时，分类必须仍是 `cancelled`，不能滑成"网络似乎不太顺"）。另一半的理由
+ * 写在 `api.ts` 文件头。
+ *
  * ⚠️ `status:0` 的 `code` 可能是 `undefined`（`apiFetch` 两个 catch 都带 error 串，
  * 但别处调用可能不认这三档）⇒ 一律当网络层失败。
  */

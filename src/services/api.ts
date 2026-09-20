@@ -44,6 +44,20 @@ export function hasBaseUrl(): boolean {
 // `apiFetch 网络异常`、`status:0 ⇒ network`、`apiFetch reject` 三条会全红（它们用的是
 // "裸 fetch 抛 Error"的 mock，那种情况既不是超时也不是取消）。
 //
+// ⚠️ **`"aborted"` 这一档在今天的实现里打不出来**（step 0 处置死代码时的实测结论，两个
+// 条件互斥）：用户在途取消走 `onAbort` ⇒ `controller.abort()` ⇒ fetch **同步**拒 ⇒ catch
+// 运行时 `timeoutFired` 还是 false ⇒ 无标签 ⇒ 值是 `"network error"`，而不是 `"aborted"`。
+// 消费者一侧因此也拿不到它（见 `transport.ts` 的 `classifyZero`），用户看到"已取消"靠的是
+// transport 自己 `signal.aborted` 的前置判别 —— 那一层是**正常触发**的，不是这里。
+//
+// 保留这个标签而**不删**（与 `classifyZero` 的分支成对保留，铁律：要么一起删、要么一起留）：
+// ① `timeoutFired && externalWasAborted` 这个谓词本身表达"这次结束是被用户掐的"，
+//    一旦将来把外部取消改成"也走兜底超时"的形态就会真的命中；
+// ② 万一有人删掉 transport 的取消前置判别，`status:0` 会被判成 `network`（"网络似乎不太
+//    顺"）而不是"已取消" —— 留着它至少让那条错误分类在有人改回来时立刻正确。
+// ⛔ **别只删一半**：删掉这里而留着 `classifyZero` 的 `"aborted"` 分支，就变成"分支永远
+//    不可达且上游也不再产生"的纯误导（反向同理）。
+//
 // ⚠️ 也**不能**改用 `signal.aborted` 在别处猜：实测（假 timer 推进 15s、mock 在 abort
 // 事件里同步 reject）走到分类时那个 controller 的 `aborted` 还是 `false` ⇒ 真实超时会被
 // 判成 network。原因在产生它的那一层标出来才是最可靠的。
@@ -74,7 +88,10 @@ export async function fetchWithTimeout(
   try {
     return await fetch(input, { ...init, signal: controller.signal })
   } catch (err) {
-    // 只标 `Error`（原生 fetch 抛的两种都是 Error 的子类）；别的值原样抛，不改成 Error
+    // 只标 `Error`（原生 fetch 抛的两种都是 Error 的子类）；别的值原样抛，不改成 Error。
+    // ⚠️ `externalWasAborted` 在当前实现下**恒为 false**（外部 abort 会让 fetch 先同步拒绝，
+    //    catch 跑起来时 `timeoutFired` 还没置位）⇒ 这里实际只会打 `"timeout"`。保留整个谓词
+    //    的理由与"别只删一半"的警告写在文件头那段注释里。
     if (timeoutFired && err instanceof Error) {
       const reason = externalWasAborted ? "aborted" : "timeout"
       ;(err as ReasonedError).reason = reason
@@ -139,7 +156,10 @@ async function refreshAccessToken(): Promise<boolean> {
  *
  * 三个原因必须分开（AI 那条路要用，见 `transport.ts` 的 `classifyZero`）：
  * - `"timeout"`：本层的 15s 兜底把请求掐了 ⇒ 用户该看到「分析超时」
- * - `"aborted"`：外部 signal 主动取消（AI 的"取消生成"）⇒ 用户自己停的
+ * - `"aborted"`：外部 signal 主动取消（AI 的"取消生成"）⇒ 用户自己停的。
+ *   ⚠️ **今天产不出来**（见 `fetchWithTimeout` 的 catch 与文件头那段）：实测在途取消得到的是
+ *   `"network error"`，所以 `transport.ts` 的 `classifyZero` 那个 `"aborted"` 分支同样不可达 ——
+ *   用户看到"已取消"靠的是 transport 自己的 `signal.aborted` 前置判别。两者**成对保留**。
  * - `"network error"`：其余（断网 / DNS / TLS / 代理）⇒ 老的值，**不许变**（既有调用方依赖）
  *
  * ⚠️ 判据只有 `fetchWithTimeout` 挂的那个 `reason` 标签，**不看 `err.name`**：

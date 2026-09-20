@@ -152,3 +152,44 @@ describe("apiFetch 网络异常", () => {
     expect(res).toEqual({ ok: false, status: 0, error: "network error" });
   });
 });
+
+/**
+ * step 0：**两处 `"aborted"` 死代码的取证**（处置结论见 `api.ts` 文件头：成对保留）。
+ *
+ * 这条用例把"死"这个判断**实测钉住**：生产者在当前实现下打不出 `"aborted"` —— 在途取消
+ * 得到的是 `"network error"`；因此 `transport.ts` 的 `classifyZero` 那个分支也不可达，
+ * 用户看到"已取消"完全靠 transport 自己的 `signal.aborted` 前置判别
+ * （`transport.test.ts` 的"在途请求被 abort"已覆盖那一层）。
+ *
+ * 判别力：把 `api.ts` 的标签谓词从 `timeoutFired && externalWasAborted` 改成"取消就无条件
+ * 打 `aborted`"（或把 `onAbort` 改成先置 `timeoutFired`），这条立刻红。
+ */
+describe("外部取消打的是 network error 标签，不是 aborted（step 0 的死代码取证）", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("在途外部取消 ⇒ fetchWithTimeout 抛出的 error **不带** reason 标签（值为 network error）", async () => {
+    vi.stubGlobal("fetch", hangingFetch());
+    const api = await import("@/services/api");
+    api.setBaseUrl("http://x");
+
+    const controller = new AbortController();
+    const rejected = api
+      .fetchWithTimeout("http://x/api", { signal: controller.signal }, 15000)
+      .then(() => null, (e: unknown) => e);
+
+    controller.abort();
+
+    const err = await rejected;
+    expect(err).toBeInstanceOf(Error);
+    // ⚠️ mock 抛的消息本身就叫 "aborted"，所以判据**只能是** networkErrorReason 的返回值：
+    // 它读的是我们挂的 reason 标签，不是 message、也不是 err.name。
+    expect((err as Error).message).toBe("aborted");
+    expect(api.networkErrorReason(err)).toBe("network error");
+  });
+});
