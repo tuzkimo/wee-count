@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
-// ⚠️ 本文件要钉的是「草稿卡**本层零写入**」：它只许走既有记账入口，不许自己碰库、不许写 AI 会话表。
-// 所以下面每一个"不该被调"的函数都换成了**一调用即断言失败**的 spy
-// （不是"返回假值"，而是被调用本身就红 —— 照 runQuery.test.ts 里 `execute: 一调用即抛` 的做法）。
+// ⚠️ 本文件要钉的是「草稿卡**本层零写入**」与「撤销用的是 `add` 返回的那个 id」。
+// 所以"不该被调"的函数都换成 **一调用即断言失败** 的替身
+// （`getUserDb` 直接抛，不是返回假值 —— 照 runQuery.test.ts 里 `execute: 一调用即抛` 的做法）。
 const sessionSpy = vi.hoisted(() => ({
   ensureConversation: vi.fn(async () => null as string | null),
   recentTurns: vi.fn(async () => []),
@@ -15,15 +15,23 @@ const sessionSpy = vi.hoisted(() => ({
 }));
 
 /**
+ * `add` 返回的**新交易 id**。用真 UUID 形状：撤销那条断言要"只能来自 add 的返回"，
+ * 拿 `"tx-1"` 这种短串会让"猜一个 id"的变异同样通过（Ruling 13 的同族：夹具必须带真形状）。
+ */
+const ADDED_ID = "7f3a1c2e-9b4d-4e6f-8a1b-2c3d4e5f6a7b";
+/** transactionStore 里的"已有流水"：组件**不该**从这里找撤销对象（那是"猜最后一笔"） */
+const OTHER_ID = "deadbeef-0000-4000-8000-000000000001";
+
+/**
  * 记账入口的替身。**参数类型写在 mock 上**：不写的话 `mock.calls[0]` 是空元组，
  * "参数逐字相等"这条断言连编译都过不去（`vue-tsc` 实测抓到）——
  * 而它的类型故意收成 `Record<string, unknown>`：本组件只该把 `buildDraftData` 的产出原样递进去，
  * 测试不该依赖 `transactionStore.add` 的完整入参类型（那是另一个模块的契约）。
  */
 const addSpy = vi.hoisted(() =>
-  vi.fn<(data: Record<string, unknown>) => Promise<string>>(async () => "tx-1"),
+  vi.fn<(data: Record<string, unknown>) => Promise<string>>(async () => ADDED_ID),
 );
-const removeSpy = vi.hoisted(() => vi.fn(async () => {}));
+const removeSpy = vi.hoisted(() => vi.fn<(id: string) => Promise<void>>(async () => {}));
 
 vi.mock("@/services/ai/session", () => sessionSpy);
 vi.mock("@/db/userDb", () => ({
@@ -36,7 +44,12 @@ vi.mock("@/db/userDb", () => ({
   getMemberAlias: async () => null,
 }));
 vi.mock("@/stores/transaction", () => ({
-  useTransactionStore: () => ({ add: addSpy, remove: removeSpy, transactions: [] }),
+  useTransactionStore: () => ({
+    add: addSpy,
+    remove: removeSpy,
+    // 真实 store 有它。这里只放一条**别的**流水：实现若改成"猜最后一笔"，撤销的 id 就会是它 ⇒ 断言红
+    transactions: [{ id: OTHER_ID }],
+  }),
 }));
 vi.mock("@/stores/ledger", () => ({
   useLedgerStore: () => ({
@@ -69,12 +82,15 @@ const DRAFT: AiDraftFields = {
 };
 const IDS: AiDraftIds = { categoryId: CAT, fromAccountId: FROM, toAccountId: null, tagIds: ["t-1"] };
 
-const props = { draft: DRAFT, resolved: IDS, source: "draft" as const, messageId: "m-1" };
+// ⚠️ 只剩 draft / resolved 两个 prop：`source`（单字面量、无从分支）与 `messageId`（组件内零读取）
+// 都已按审查裁决删掉 —— 留着就是"空的保证"，且没有任何变异能因它们而红。
+const props = { draft: DRAFT, resolved: IDS };
 
 beforeEach(() => {
   setActivePinia(createPinia());
   addSpy.mockClear();
   removeSpy.mockClear();
+  addSpy.mockImplementation(async () => ADDED_ID);
   for (const fn of Object.values(sessionSpy)) fn.mockClear();
 });
 
@@ -85,7 +101,6 @@ describe("DraftCard", () => {
     expect(w.get('[data-test="draft-category"]').text()).toBe("买菜");
     expect(w.get('[data-test="draft-from"]').text()).toBe("招行");
     expect(w.get('[data-test="draft-note"]').text()).toBe("盒马");
-    // 真 id 只在本地，一个都不许渲染出来
     expect(w.get('[data-test="draft-card"]').text()).not.toContain(CAT);
     expect(w.get('[data-test="draft-card"]').text()).not.toContain(FROM);
   });
@@ -96,10 +111,51 @@ describe("DraftCard", () => {
     await flushPromises();
 
     expect(addSpy).toHaveBeenCalledTimes(1);
-    // 参数不是"看着差不多"：与纯映射的输出**逐字**相等（字段来源由 draftData.test.ts 钉）
     const [data] = addSpy.mock.calls[0]!;
     expect(data).toEqual(buildDraftData(DRAFT, IDS, "L1", "local-user-1"));
-    expect(w.emitted("confirm")).toHaveLength(1);
+  });
+
+  it("确认后渲染「已记账 ✓ + 撤销」，并把 `add` 返回的 id 带进 confirm/saved 事件", async () => {
+    const w = mount(DraftCard, { props });
+    await w.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+
+    // 已记账态：确认/不要 收起，换成 已记账 + 撤销（§4.4）
+    expect(w.find('[data-test="draft-saved"]').exists()).toBe(true);
+    expect(w.get('[data-test="draft-saved-text"]').text()).toContain("已记账");
+    expect(w.find('[data-test="draft-undo"]').exists()).toBe(true);
+    expect(w.find('[data-test="draft-confirm"]').exists()).toBe(false);
+    expect(w.find('[data-test="draft-reject"]').exists()).toBe(false);
+    // id 必须**是 add 的返回值**（页面拿它去 dismissDraft；撤销也才有落点）
+    expect(w.emitted("confirm")).toEqual([[ADDED_ID]]);
+    expect(w.emitted("saved")).toEqual([[ADDED_ID]]);
+    expect(w.emitted("undo")).toBeUndefined();
+  });
+
+  it("撤销调 `transactionStore.remove(ADDED_ID)` —— id 来自 `add` 的返回，不是猜最后一笔", async () => {
+    const w = mount(DraftCard, { props });
+    await w.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+    await w.get('[data-test="draft-undo"]').trigger("click");
+    await flushPromises();
+
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledWith(ADDED_ID);
+    // 反向钉：store 里那条**别的**流水（OTHER_ID）绝不能被当成撤销对象
+    expect(removeSpy).not.toHaveBeenCalledWith(OTHER_ID);
+    expect(w.emitted("undo")).toEqual([[ADDED_ID]]);
+  });
+
+  it("撤销成功后回到待确认态（可以再确认一次）", async () => {
+    const w = mount(DraftCard, { props });
+    await w.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+    await w.get('[data-test="draft-undo"]').trigger("click");
+    await flushPromises();
+
+    expect(w.find('[data-test="draft-saved"]').exists()).toBe(false);
+    expect(w.find('[data-test="draft-confirm"]').exists()).toBe(true);
+    expect(w.find('[data-test="draft-undo"]').exists()).toBe(false);
   });
 
   it("确认**不写** AI 会话表（草稿卡不是落库方，落库在 agent → session）", async () => {
@@ -114,13 +170,14 @@ describe("DraftCard", () => {
     expect(addSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("拒绝只发事件：一次记账调用都没有，也没有 DB 写入", async () => {
+  it("拒绝只发事件：add 与 remove 都未调用，也没有 DB 写入", async () => {
     const w = mount(DraftCard, { props });
     await w.get('[data-test="draft-reject"]').trigger("click");
     await flushPromises();
 
     expect(w.emitted("reject")).toHaveLength(1);
     expect(w.emitted("confirm")).toBeUndefined();
+    expect(w.emitted("undo")).toBeUndefined();
     expect(addSpy).not.toHaveBeenCalled();
     expect(removeSpy).not.toHaveBeenCalled();
     for (const fn of Object.values(sessionSpy)) expect(fn).not.toHaveBeenCalled();
@@ -134,9 +191,11 @@ describe("DraftCard", () => {
     expect(addSpy).not.toHaveBeenCalled();
     expect(w.get('[data-test="draft-error"]').text()).toContain("分类");
     expect(w.emitted("confirm")).toBeUndefined();
+    // 守卫拦下的失败**不能**进入已记账态（那会让用户以为记上了）
+    expect(w.find('[data-test="draft-saved"]').exists()).toBe(false);
   });
 
-  it("记账抛错时显示失败、不假装成功（也不吞掉）", async () => {
+  it("记账抛错时显示失败、回到可确认态、不进入已记账态", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     addSpy.mockRejectedValueOnce(new Error("db down"));
     const w = mount(DraftCard, { props });
@@ -145,14 +204,31 @@ describe("DraftCard", () => {
 
     expect(w.get('[data-test="draft-error"]').text()).toContain("记账失败");
     expect(w.emitted("confirm")).toBeUndefined();
+    expect(w.find('[data-test="draft-saved"]').exists()).toBe(false);
+    expect(w.find('[data-test="draft-confirm"]').exists()).toBe(true);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 
-  it("记账进行中按钮禁用（双击不该记两笔）", async () => {
+  it("撤销抛错时不假装撤销成功（仍留在已记账态、给出提示）", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    removeSpy.mockRejectedValueOnce(new Error("db down"));
+    const w = mount(DraftCard, { props });
+    await w.get('[data-test="draft-confirm"]').trigger("click");
+    await flushPromises();
+    await w.get('[data-test="draft-undo"]').trigger("click");
+    await flushPromises();
+
+    expect(w.get('[data-test="draft-error"]').text()).toContain("撤销失败");
+    expect(w.find('[data-test="draft-saved"]').exists()).toBe(true);
+    expect(w.emitted("undo")).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it("记账进行中按钮禁用，双击只记一笔", async () => {
     let release = (): void => {};
     addSpy.mockImplementationOnce(
-      () => new Promise<string>((res) => { release = () => res("tx-1"); }),
+      () => new Promise<string>((res) => { release = () => res(ADDED_ID); }),
     );
     const w = mount(DraftCard, { props });
     await w.get('[data-test="draft-confirm"]').trigger("click");
