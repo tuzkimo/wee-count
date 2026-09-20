@@ -124,6 +124,16 @@ func TestRouterE2E_AIChatFullGreenPath(t *testing.T) {
 		t.Fatalf("响应不是合法 JSON: %v；响应体: %s", err, rec.Body.String())
 	}
 
+	// ★★ 顶层键集哨兵（规格 §6.1:320-324）。这是"只补漏水点、没换桶"的那一处：
+	// 只钉 `tool_calls[0]` 的键集，给 `AIChatResponse` 加一个顶层字段（例如上游那种
+	// `"object":"chat.completion"`）仍然全绿——契约是**整个响应体**，顶层多一个键同样
+	// 是"上游字段名漏给了客户端"。所以顶层键集合必须**恰好**是这四个。
+	gotTopKeys := slices.Sorted(maps.Keys(wire))
+	if wantTopKeys := []string{"finish_reason", "text", "tool_calls", "usage"}; !slices.Equal(gotTopKeys, wantTopKeys) {
+		t.Errorf("响应顶层 JSON 键 = %v, want %v（规格 §6.1:320-324 只有这四个；"+
+			"多出的键说明上游形状从顶层漏给了客户端）；响应体: %s", gotTopKeys, wantTopKeys, rec.Body.String())
+	}
+
 	if wire["text"] != "" {
 		t.Errorf("text = %#v, want %q", wire["text"], "")
 	}
@@ -222,16 +232,29 @@ func TestRouterE2E_AIChatDisabledWhenKeyMissing(t *testing.T) {
 // e2eCfgFromEnv 是"从环境变量到路由"的公共前半段：t.Setenv 注入环境变量后走
 // **生产的 config.Load()** 拿 cfg，再走**生产的 newRouter** 装配。
 //
-// 为什么必须显式设满（而不是依赖开发者本机/进程环境）：测试不能依赖任何未跟踪的本地
-// 状态。AI_API_KEY 的显式取值由调用方给——**空的也必须显式写成空**，否则本机
-// backend/.env 或 shell 里残留的 key 会漏进来，让"禁用态"那条假绿。
+// 密闭性：`config.Load()` 只读**进程环境**（全仓无 godotenv/joho，go.mod 里也没有，
+// 它从不解析 .env 文件）⇒ 真实的残留来源是**调用方的 shell 环境**，不是某个未跟踪的
+// .env。所以这里把 7 个 `AI_*` **全部显式设死**：shell 里一个 `AI_TIMEOUT=1ns` 就足以
+// 把臂 1 打成 504，而"只设一部分"的实现根本看不见这种残留。
+//
+// `AI_API_KEY` 的取值由调用方给，但**默认也是显式设空**——空的必须真的 setenv，
+// 否则 shell 里残留的 key 会让"禁用态"那条假绿。
 func e2eCfgFromEnv(t *testing.T, upstreamURL string, aiEnv map[string]string) (*config.Config, http.Handler) {
 	t.Helper()
 	env := map[string]string{
 		"DATABASE_URL": "postgres://e2e",
 		"REDIS_URL":    "redis://e2e",
 		"JWT_SECRET":   testJWTSecret,
-		"AI_BASE_URL":  upstreamURL,
+		// 7 个 AI_* 全部显式给出（详见上面的密闭性说明）。
+		// 除 AI_API_KEY 外都取"确定的非空值"而非空串：空串会让 getEnv* 回落到默认值，
+		// 于是这条用例又变成在生产默认值上打转，默认值一旦被改坏就重新看不见了。
+		"AI_API_KEY":     "", // 调用方通常覆盖它；不覆盖时 = 显式禁用
+		"AI_BASE_URL":    upstreamURL,
+		"AI_MODEL":       "deepseek-chat",
+		"AI_MAX_TOKENS":  "1024",
+		"AI_TIMEOUT":     "5s",
+		"AI_RATE_LIMIT":  "20",
+		"AI_DAILY_LIMIT": "200",
 	}
 	for k, v := range aiEnv {
 		env[k] = v
