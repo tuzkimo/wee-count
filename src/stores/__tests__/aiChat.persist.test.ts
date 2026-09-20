@@ -64,6 +64,7 @@ vi.mock("@/services/ai/transport", async (importOriginal) => {
 
 import { initUserTables } from "@/db/userDb";
 import { ensureConversation, loadMessages } from "@/services/ai/session";
+import { PROMPT_VERSION } from "@/services/ai/prompt";
 import { useAiChatStore } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
 import type { Ledger } from "@/types";
@@ -74,9 +75,13 @@ const LEDGER_ID = "55555555-5555-4555-8555-555555555555";
 
 function asTauriDb(sqlite: DatabaseSync) {
   return {
+    // 形状照安装包产物：plugin-sql 的 `execute` 恒返回 `{ rowsAffected, lastInsertId }`
+    // （`dist-js/index.js:88-98`，2.4.0）—— 不是 `node:sqlite` 的 `{ changes }`（R86-2）。
     execute: vi.fn(
-      async (sql: string, params: unknown[] = []): Promise<unknown> =>
-        sqlite.prepare(sql).run(...(params as never[])),
+      async (sql: string, params: unknown[] = []): Promise<unknown> => {
+        const r = sqlite.prepare(sql).run(...(params as never[]));
+        return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
+      },
     ),
     select: vi.fn(
       async (sql: string, params: unknown[] = []): Promise<unknown> =>
@@ -221,5 +226,59 @@ describe("内存消息 id 与库行 id", () => {
     expect(store.messages.map((m) => m.id)).toEqual(dbIds);
     // payload 往返**整份**相等：换身份不许改内容（refs/chips/drafts/trace 全留着）
     expect(store.messages.map((m) => m.payload)).toEqual(memPayloads);
+  });
+
+  it("assistant 的 payload 落 `promptVersion`（§7.1:449）：真写一条 ⇒ 从库里读回 == 当前版本", async () => {
+    const { sqlite } = await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+
+    await store.send("这个月花了多少");
+    const cid = conversationId(sqlite, LEDGER_ID);
+
+    // ① 库里的那行：**直接从 SQLite 读原始 JSON**（不经 `loadMessages` 的解析，避免"解析层顺手补上"
+    //    把缺失掩盖掉）
+    const raw = sqlite
+      .prepare("SELECT payload FROM ai_messages WHERE conversation_id = ? AND role = 'assistant'")
+      .get(cid) as { payload: string } | undefined;
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw!.payload) as { promptVersion?: unknown };
+    // 杀手：`persistAssistant` 里不写 `promptVersion`（或写成 `prompt_version`）⇒ 这一条红
+    expect(parsed.promptVersion).toBe(PROMPT_VERSION);
+
+    // ② 读回来的那条消息也带着它（两边同源、谁都不许漂移）。
+    // ⚠️ `loadMessages` 返回的是**库行**：`payload` 是原始 JSON **字符串**（不是对象），
+    // 解析是 `load()` 那一步做的 —— 所以这里要自己 `JSON.parse`（写成 `row.payload.promptVersion`
+    // 会恒为 `undefined`，那是一条恒真的假断言）。
+    const rows = await loadMessages(cid);
+    const assistant = rows.find((r) => r.role === "assistant");
+    const rowPayload = JSON.parse(assistant!.payload!) as { promptVersion?: unknown };
+    expect(rowPayload.promptVersion).toBe(PROMPT_VERSION);
+    // ③ 内存里那份（乐观消息）同样带 —— 否则 `load()` 的往返整份相等会在上面那条用例里红
+    // ⚠️ 不用 `at(-1)`：`lib: ES2020` 没有它（vue-tsc 会红）
+    const last = store.messages[store.messages.length - 1];
+    expect(last?.payload?.promptVersion).toBe(PROMPT_VERSION);
+  });
+
+  it("老消息的 payload 里没有 `promptVersion` ⇒ 读回 `undefined`，不崩、不补写", async () => {
+    const { sqlite } = await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+    await store.send("这个月花了多少");
+    const cid = conversationId(sqlite, LEDGER_ID);
+
+    // 模拟"上一版落库的消息"：把那个键从 JSON 里摘掉（老 payload 的真实形态）
+    sqlite
+      .prepare(
+        `UPDATE ai_messages SET payload = json_remove(payload, '$.promptVersion')
+          WHERE conversation_id = ? AND role = 'assistant'`,
+      )
+      .run(cid);
+
+    await store.load();
+    const assistant = store.messages.find((m) => m.role === "assistant");
+    expect(assistant?.payload?.promptVersion).toBeUndefined();
+    expect(assistant?.payload?.refs).toBeDefined(); // 其余字段一个不少
+    expect(store.pendingDrafts).toEqual([]); // 不因为缺字段而抛出/丢消息
   });
 });

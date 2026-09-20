@@ -27,6 +27,7 @@
 import {
   buildSystemPrompt,
   fillRefs,
+  PROMPT_VERSION,
   type LedgerSnapshot,
 } from "@/services/ai/prompt";
 import {
@@ -506,7 +507,13 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
   }
 }
 
-/** 落 assistant 消息：`content` 是**占位符原文**，`payload` 带 chips/drafts/refs/trace（§4.5） */
+/**
+ * 落 assistant 消息：`content` 是**占位符原文**，`payload` 带 chips/drafts/refs/trace（§4.5）+
+ * `promptVersion`（§7.1:449：回答是哪版提示词问出来的，事后可查）。
+ *
+ * 写入点选在这里的唯一理由：**落库**的 payload 只在这一处产生（`appendTurn` 里那份是内存投影，
+ * 两边都从 `PROMPT_VERSION` 同一个常量取，不会漂移）。
+ */
 async function persistAssistant(
   p: Persist,
   content: string,
@@ -518,6 +525,7 @@ async function persistAssistant(
     drafts: state.drafts,
     refs: state.refs,
     trace,
+    promptVersion: PROMPT_VERSION,
   };
   await persistMessage(p, "assistant", content, payload);
 }

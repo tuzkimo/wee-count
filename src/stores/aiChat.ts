@@ -38,6 +38,9 @@ import {
   type AgentTurn,
 } from "@/services/ai/agent";
 import { createTransport, fetchAiStatus, type AiStatus } from "@/services/ai/transport";
+// ⚠️ 这里取的是**常量**（`PROMPT_VERSION`），不是把 prompt.ts 的模块图拖进来当依赖：
+// `agent.ts`（本文件上面那行就 import 了它）运行期本来就要 `buildSystemPrompt`，模块图早就在了。
+import { PROMPT_VERSION } from "@/services/ai/prompt";
 import {
   readPrivacyCardSeen,
   readSendingEnabled,
@@ -495,6 +498,10 @@ export const useAiChatStore = defineStore("aiChat", () => {
       drafts: ownJson(turn.drafts),
       refs: ownJson(turn.refs),
       trace: ownJson(turn.trace),
+      // 与 `agent.persistAssistant` 落库那份**同一个常量**（§7.1:449）：内存这份也必须带，否则
+      // `load()` 之后"库里那份有、内存那份没有"，同一条消息的 payload 往返不再整份相等
+      // （`aiChat.persist.test.ts:227` 钉着这条）。
+      promptVersion: PROMPT_VERSION,
     });
     allDrafts.value.push(...readDrafts(message.payload, message.id));
   }

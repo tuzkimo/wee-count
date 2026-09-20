@@ -38,6 +38,7 @@ import {
   runAgent,
   type AgentTurn,
 } from "@/services/ai/agent";
+import { PROMPT_VERSION } from "@/services/ai/prompt";
 import { AGENT_FAILURE_TEXT, useAiChatStore } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
@@ -96,11 +97,20 @@ function tag(over: Partial<TagWithUsage> = {}): TagWithUsage {
   };
 }
 
-/** 把真库包成 `@tauri-apps/plugin-sql` 的 `Database` 形状；两个口都是 spy，便于断言"零写入" */
+/**
+ * 把真库包成 `@tauri-apps/plugin-sql` 的 `Database` 形状；两个口都是 spy，便于断言"零写入"。
+ *
+ * ⚠️ `execute` 的返回值**照安装包产物**：插件恒返回 `{ lastInsertId, rowsAffected }`
+ * （`node_modules/@tauri-apps/plugin-sql/dist-js/index.js:88-98`，2.4.0；`index.d.ts` 的
+ * `QueryResult.rowsAffected: number`）。直接透传 `node:sqlite` 的 `{ changes, lastInsertRowid }`
+ * 是**另一个形状**，会让"调用方按 `rowsAffected` 判成败"的代码在测试里永远读不到值（R86-2）。
+ */
 function asTauriDb(sqlite: DatabaseSync) {
   const execute = vi.fn(
-    async (sql: string, params: unknown[] = []): Promise<unknown> =>
-      sqlite.prepare(sql).run(...(params as never[])),
+    async (sql: string, params: unknown[] = []): Promise<unknown> => {
+      const r = sqlite.prepare(sql).run(...(params as never[]));
+      return { rowsAffected: r.changes, lastInsertId: Number(r.lastInsertRowid) };
+    },
   );
   const select = vi.fn(
     async (sql: string, params: unknown[] = []): Promise<unknown> =>
@@ -241,11 +251,15 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
       ["assistant", "这个月花了 128 元"],
     ]);
     expect(store.messages[0]!.payload).toBeNull();
+    // ⚠️ 这一轮 payload **多了一个键** `promptVersion`（§7.1:449 的"回答是哪版提示词问出来的"）：
+    // 断言跟着**加强**（多要求一个必填键），不是放宽 —— 内存这份与 `agent.persistAssistant`
+    // 落库那份必须逐键相同，所以这里钉死整份形状。
     expect(store.messages[1]!.payload).toEqual({
       chips: [{ field: "categories", value: CAT_ID, label: "买菜" }],
       drafts: [RAW_DRAFT],
       refs: { "q1.total": "128" },
       trace: [],
+      promptVersion: PROMPT_VERSION,
     });
     expect(store.pendingDrafts.map((d) => d.draftId)).toEqual(["d-1"]);
     expect(store.pendingDrafts[0]!.messageId).toBe(store.messages[1]!.id);

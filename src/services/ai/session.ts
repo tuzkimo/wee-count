@@ -38,6 +38,15 @@ export interface AiMessagePayload {
   drafts?: unknown[]
   refs?: Record<string, string>
   trace?: unknown[]
+  /**
+   * 产生这条 assistant 消息时用的提示词版本（`prompt.PROMPT_VERSION`，§7.1:449 的"随消息落库"）。
+   *
+   * 可缺省是为了**老消息**：库里已经存在的 payload 里没有这个键 ⇒ 读回来是 `undefined`，渲染与
+   * 草稿解析都不看它，不崩、也不丢东西（没有"补写老消息"这种迁移 —— 那要动 schema/数据）。
+   * ⚠️ 别和 prompt **文本**里的 `prompt_version=`（`prompt.ts:73`）混为一谈：那行是发给模型的文本，
+   * 这里是**落库的元数据**；两者同源（同一个常量）但用途不同，谁都不能替代谁。
+   */
+  promptVersion?: number
 }
 
 /** 发给模型的上下文里的一条消息：**只有文本**，不带历史 tool 结果（§4.5） */
