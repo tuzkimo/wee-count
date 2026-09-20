@@ -277,10 +277,13 @@ function classifyHttp(status: number, code: string | undefined): TransportFailur
  *
  * ⚠️ 用户主动取消**正常到不了**这里：`chat()` 在 status 判定之前就用 `signal.aborted`
  * 拦掉了。
- * ⚠️⚠️ 而 `"aborted"` 这个**值本身今天也产不出来**（step 0 处置死代码时实测；计划第 30 条的
- * 更正只说了"别用 `signal.aborted` 猜"，没说这一层）：用户在途取消时 `onAbort` 让
+ * ⚠️⚠️ 而 `"aborted"` 这个**值本身实际也几乎产不出来**（step 0 处置死代码时实测；计划第 30
+ * 条的更正只说了"别用 `signal.aborted` 猜"，没说这一层）：用户在途取消时 `onAbort` 让
  * `controller.abort()`，fetch **同步**拒绝，catch 跑起来时 `timeoutFired` 还是 false
- * ⇒ `api.ts` 不打标签 ⇒ 值是 `"network error"`。两个条件（兜底开火 ∧ 外部已 abort）互斥。
+ * ⇒ `api.ts` 不打标签 ⇒ 值是 `"network error"`。唯一能让（兜底开火 ∧ 外部已 abort）同时成立
+ * 的窗口是**兜底开火之后、catch 跑起来之前**用户又取消（竞态，且良性：用户确实掐了请求）；但
+ * `api.ts` 读的是**发起请求之前**取的 `external.aborted` 快照，迟到的取消事件改不了它
+ * ⇒ 连这个窗口也合不上。
  *
  * 这条分支与 `api.ts` 的那个 `"aborted"` 标签**成对保留**（铁律：要么一起删、要么一起留，
  * 别一处删一处留）：留着是**兜底 + 契约**（万一有人删掉 `chat()` 的取消前置判别、或把外部
