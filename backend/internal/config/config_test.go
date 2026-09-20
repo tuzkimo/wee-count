@@ -294,6 +294,13 @@ func TestAIHost(t *testing.T) {
 		{"带端口", "http://127.0.0.1:8081/v1", "127.0.0.1:8081"},
 		{"非 URL", "not a url", ""},
 		{"空串", "", ""},
+		// 「未闭合 IPv6」是这张表里唯一能让 url.Parse 真的返回 err != nil 的输入
+		// （"not a url" 是合法的相对 URL 引用，err 为 nil、Host 为空）。
+		// 它钉住 AIHost 里 `err != nil || u.Host == ""` 的**双重承重**：
+		// 既挡空 Host，也挡 url.Parse 失败时返回的 nil *url.URL。
+		// 只删后半句而保留 err 判断，两版仍等价；但若有人把整个判断"简化"掉，
+		// u.Host 会 nil 解引用 panic——这条用例就是那时唯一会红的哨兵。
+		{"url.Parse 真报错（未闭合 IPv6）", "http://[::1", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
