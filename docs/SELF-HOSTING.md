@@ -185,8 +185,14 @@ M3 落地后，客户端会按响应体里的 `error` 值映射中文文案（�
 > 1. **契约错误码**（下表带 `ai_` 前缀的那些）：规格 §6.6 定义，客户端有对应中文文案。
 > 2. **限流中间件码**：`ai_rate_limited` / `ai_quota_exceeded` —— 它们和契约码**同样带前缀**，
 >    由 `router.go` 的限流处理器产出（同一个 `{"error":"<code>"}` 形状），客户端按码处理。
-> 3. **无前缀的直述消息**：`invalid request body`、`request body too large`、`unauthorized` ——
->    这些**不是错误码**，是**面向开发者的直述文本**（规格 §6.6 没有为它们定义码，本轮也不新增）。
+> 3. **无前缀的直述消息**（**不是错误码**，规格 §6.6 没有为它们定义码，本轮也不新增）：
+>    - 请求体问题（`handler/ai.go`，`application/json`）：`request body too large`、`invalid request body`
+>    - 鉴权问题（`middleware/auth.go:21/33/39/46/52`，经 `http.Error` 输出，注意是
+>      **`text/plain` + 尾换行**，响应体形如 `{"error":"..."}` 但 Content-Type 不是 JSON）：
+>      `missing or invalid Authorization header`、`invalid or expired token`、`invalid token claims`、
+>      `invalid token type`、`invalid user id in token`
+>    - 兜底：`handler/ai.go:31` 的 `unauthorized`（受保护组已过鉴权，正常到不了；只在 ctx 里
+>      userID 为空串这种边缘情形出现）
 >    **客户端不得把它们当码查表**（查不到）；带 `ai_` 前缀的一律按码表映射，其余一律走兜底文案
 >    （如「请求失败，请重试」）。判据就一条：**看有没有 `ai_` 前缀**。
 
@@ -202,7 +208,7 @@ M3 落地后，客户端会按响应体里的 `error` 值映射中文文案（�
 | 上游其它 4xx（模型名写错等） | 502 | `ai_upstream_error` | 检查 `AI_MODEL` |
 | 单次请求体超过 256KB | 413 | `request body too large` | 正常使用不会触发；会话历史异常长时才可能。**这不是错误码**，是直述消息（见上注） |
 | 请求体非法 JSON，或 `messages` 为空 | 400 | `invalid request body` | 通常是客户端组装 bug（M3 的请求体形状见规格 §6.1）。**这不是错误码**，是直述消息（见上注） |
-| 无 / 非法 access token | 401 | `unauthorized` | 走既有 refresh 单飞；失败则提示重新登录。**这不是错误码**，是直述消息 |
+| 无 / 非法 access token | 401 | 见上注第三类（5 条鉴权直述消息之一） | 走既有 refresh 单飞；失败则提示重新登录。**这些不是错误码**，是 `middleware/auth.go` 的直述消息（`text/plain`，见上注） |
 
 ## App 对接
 
