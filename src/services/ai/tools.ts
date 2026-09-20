@@ -30,6 +30,14 @@ import {
 } from "@/services/ai/resolve";
 import type { AiGroup, AiTotals, AiQueryItem } from "@/services/ai/querySql";
 import { runQuery, type RunQueryFailure } from "@/services/ai/runQuery";
+// 工具名来自**唯一来源**（Ruling 43）：schema 与 prompt 都从这里取值，不再各写一份。
+// 这里给常量取别名 `…_NAME`：本文件已有同名的 `QUERY_TOOL` / `DRAFT_TOOL`（ToolSchema 对象），
+// 别名把"名字"与"schema"两件事在代码里也区分开。
+import {
+  DRAFT_TOOL as DRAFT_TOOL_NAME,
+  QUERY_TOOL as QUERY_TOOL_NAME,
+  TOOL_NAMES,
+} from "@/services/ai/toolNames";
 import { getUserDb } from "@/db/userDb";
 import { toDateKey } from "@/utils/dateRange";
 import { localDateKeyToDate, toLocalDatetimeString } from "@/utils/datetime";
@@ -287,7 +295,7 @@ const QUERY_PROPERTIES: Record<string, unknown> = {
 const QUERY_TOOL: ToolSchema = {
   type: "function",
   function: {
-    name: "query_transactions",
+    name: QUERY_TOOL_NAME,
     description:
       "查询当前账本的流水，只返回汇总值（各桶总额 / 笔数 / 分组）与" +
       `最多 ${MAX_PROMPT_ITEMS} 条精简明细，绝不返回完整流水或账户余额。` +
@@ -315,7 +323,7 @@ const DRAFT_PROPERTIES: Record<string, unknown> = {
 const DRAFT_TOOL: ToolSchema = {
   type: "function",
   function: {
-    name: "create_transaction_draft",
+    name: DRAFT_TOOL_NAME,
     description:
       "生成一条待用户确认的草稿（金额、分类、账户、日期、备注），**不写库**。" +
       "草稿已生成，等待用户确认；你不得声称已经记账成功——用户点了「确认」之后才会真正入账。",
@@ -684,7 +692,7 @@ function createDraftTool(raw: Record<string, unknown>, ctx: ToolContext): ToolOu
     return {
       ok: false,
       error:
-        `不认识的字段 ${unknown.join("、")}：create_transaction_draft 只接受 ` +
+        `不认识的字段 ${unknown.join("、")}：${DRAFT_TOOL_NAME} 只接受 ` +
         `${DRAFT_FIELDS.join(" / ")}（备注写 note；日期写 occurredAt，不是 date；没有 merchant）`,
     };
   }
@@ -794,7 +802,10 @@ export async function executeTool(
   argsRaw: unknown,
   ctx: ToolContext,
 ): Promise<ToolOutcome> {
-  const known = TOOLS.map((t) => t.function.name);
+  // 显式标成 `string[]`：`TOOL_NAMES` 是 readonly 字面量元组，直接展开会推成
+  // `("query_transactions" | "create_transaction_draft")[]` ⇒ `known.includes(name)` 里
+  // 的 `name: string` 会报 TS2345（**类型门抓到的，测试全绿也看不见**）。
+  const known: string[] = [...TOOL_NAMES];
   if (!known.includes(name)) {
     return { ok: false, error: `未知工具 ${name}：可用工具只有 ${known.join("、")}。不要发明新工具` };
   }
@@ -803,7 +814,7 @@ export async function executeTool(
   if (!args.ok) return { ok: false, error: args.error };
 
   try {
-    if (name === "query_transactions") return await runQueryTool(args.value, ctx);
+    if (name === QUERY_TOOL_NAME) return await runQueryTool(args.value, ctx);
     return createDraftTool(args.value, ctx);
   } catch (e) {
     // 真库错误（database is locked、SQL 拼错…）也走"回给模型的一句话"，

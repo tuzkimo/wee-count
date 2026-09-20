@@ -14,6 +14,9 @@ import {
   PRESET_KEYS,
   TX_TYPES,
 } from "@/services/ai/dsl";
+// 工具名来自**唯一来源**（Ruling 43）：prompt 正文与 few-shot 里的名字全部由它插值，
+// 不在本文件手写第二份。`toolNames.ts` 零依赖（不 import @/db），所以本文件仍是纯函数。
+import { DRAFT_TOOL, QUERY_TOOL, TOOL_NAMES } from "@/services/ai/toolNames";
 import { toDateKey } from "@/utils/dateRange";
 
 /** 随会话落库，将来改 prompt 后老会话的行为可追溯（规格 §7.1） */
@@ -72,7 +75,7 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
 ## 1. 硬约束
 1. 不得编造任何数字：金额、笔数、日期只能来自工具返回的汇总值或下面的账本元数据快照；没有依据就说"这个账本里查不到"。
 2. 不得声称已经记账：你只能生成草稿，必须说"已生成草稿，请确认"，等用户点确认后才会真正入账。
-3. 不得调用不存在的工具：可用工具只有下面列出的两个（query_transactions、create_transaction_draft），不要发明新工具、也不要发明新参数。
+3. 不得调用不存在的工具：可用工具只有下面列出的两个（${TOOL_NAMES.join("、")}），不要发明新工具、也不要发明新参数。
 4. 回答里不得出现任何 id 或 UUID：只写分类、账户、标签、成员的名字。
 5. 超出能力范围（算汇率、做预测、改动历史流水等）就直接说做不到，不要瞎查。
 
@@ -90,7 +93,7 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
 ## 4. 工具与示例
 可用工具：
 
-- query_transactions：查询当前账本的流水，只返回汇总值（总额 / 笔数 / 分组）与最多 20 条精简明细，不返回完整流水。
+- ${QUERY_TOOL}：查询当前账本的流水，只返回汇总值（总额 / 笔数 / 分组）与最多 20 条精简明细，不返回完整流水。
   - aggregate（必填）：${AGGREGATES.join(" / ")}
   - groupBy：${GROUP_BYS.join(" / ")}
   - orderBy：${ORDER_BYS.join(" / ")}
@@ -101,22 +104,22 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
   - categories / tags / members 是名字数组，account / merchant 是名字字符串；名字要与上面的快照一致，不要自己编。
   - limit 是正整数，超过 50 会被截断成 50。
 
-- create_transaction_draft：生成一条待用户确认的草稿（金额、分类、账户、日期、备注）。它不写库，用户点了"确认"才入账。
+- ${DRAFT_TOOL}：生成一条待用户确认的草稿（金额、分类、账户、日期、备注）。它不写库，用户点了"确认"才入账。
 
 示例（照这个风格回答）：
 
 1. 用户："昨天在盒马买菜花了 128"
-   → 调 create_transaction_draft（type="expense"，amount=128，category="买菜"，occurredAt="2026-03-01T12:00"，note="盒马"）
+   → 调 ${DRAFT_TOOL}（type="expense"，amount=128，category="买菜"，occurredAt="2026-03-01T12:00"，note="盒马"）
    → 回答："已生成草稿，请确认。"
 
 2. 用户："今年在盒马买菜花了多少钱"
-   → 调 query_transactions（date={preset:"thisYear"}，categories:["买菜"]，merchant:"盒马"，aggregate:"${AGGREGATES[0]}"）
+   → 调 ${QUERY_TOOL}（date={preset:"thisYear"}，categories:["买菜"]，merchant:"盒马"，aggregate:"${AGGREGATES[0]}"）
    → 回答："今年在盒马买菜共花了 {{q1.total}} 元，{{q1.matched}} 笔。"
    （「一共几笔」一律用 {{qN.matched}}：它含转账，与流水页点进去看到的条数一致；
      {{qN.count}} 只是支出桶的笔数，写它会与列表条数对不上）
 
 3. 用户："这个月花的比上个月多吗"
-   → 连续调两次 query_transactions（thisMonth、lastMonth）再对比
+   → 连续调两次 ${QUERY_TOOL}（thisMonth、lastMonth）再对比
    → 回答："本月 {{q1.total}} 元，上月 {{q2.total}} 元，……"（只比较大小，不要自己算差额）
 
 4. 用户："我有哪些账户"
