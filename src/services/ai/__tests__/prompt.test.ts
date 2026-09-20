@@ -269,6 +269,22 @@ describe("prompt 的取值清单来自 dsl.ts 的导出常量", () => {
     // （示例不再跟着常量走），由上面 `golden === live` 与变异实验共同负责，不在这里制造恒真口子。
     expect(AGGREGATES).toContain(fewShotAggregate(prompt()));
   });
+
+  it('few-shot 文本里每一个 preset:"…" 字面量都属于 PRESET_KEYS（任务 2 收尾）', () => {
+    // F3 的 few-shot「取值」守卫只覆盖 aggregate 一处（上面那条），而示例里还有
+    // preset 字面量：它们同样是**手写的第二份真相**——常量改名后示例会教模型一个
+    // validateQuery 不认的 preset（bad_date_preset），而清单行断言看不见示例行。
+    //
+    // 正则形如 `preset:"xxx"`，字符类排除 `…`：工具说明里那处 `{preset:"…"}` 是
+    // **省略号形状示例**、不是取值，把它算进来会让断言恒假。
+    // 不用 `PRESET_KEYS[?]` 索引插值来"修好"示例：索引耦合，改常量顺序会静默错位 ✗。
+    const names = [...prompt().matchAll(/preset:"([A-Za-z][A-Za-z0-9]*)"/g)].map((m) => m[1]);
+    // 防空转：正则若因为措辞变化匹配不到任何东西，下面的循环一条断言都不跑
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(PRESET_KEYS as readonly string[]).toContain(name);
+    }
+  });
 });
 
 describe("prompt 的隐私边界（§7.3 绝不发的）", () => {
