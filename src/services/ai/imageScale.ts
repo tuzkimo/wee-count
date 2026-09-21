@@ -56,6 +56,51 @@ export function isAcceptedMime(mime: string): mime is AcceptedMime {
   return (ACCEPTED_MIME as readonly string[]).includes(mime);
 }
 
+/**
+ * 魔数嗅探：只认 JPEG / PNG / WebP，其余一律 `null`。
+ *
+ * 为什么 MIME 不能只看文件名：把 `a.gif` 改名成 `a.jpg` 后，扩展名路径会放行，
+ * 而 `createImageBitmap` 照样解得出它的第一帧 ⇒ 等于绕过规格 §1 的"只接受静态位图"。
+ * 所以真正的准入判据是**字节头**，扩展名只配当提示（两个判据都过才收）。
+ *
+ * ⚠️ 越界读在这里**不会抛**（`Uint8Array` 的越界下标返回 `undefined`，而 `undefined` 不等于
+ * 任何字节值）—— `bytes.length >= N` 是**文档与纵深防御**，不是行为判据：删掉它也得不到
+ * 不同结果，所以不要拿它当杀手用例（那是"变异没改变行为"，见 errata E4）。
+ */
+export function sniffImageMime(bytes: Uint8Array): AcceptedMime | null {
+  // JPEG：SOI 标记 FF D8 + 紧随其后必须是一个标记（0xFF 打头）
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  // PNG：\x89PNG\r\n\x1a\n
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  // WebP：RIFF 容器头 + `WEBP` 四字符编码（4..7 字节是分块长度，任意值，不判）
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
 /** bytes 是**解码后的字节数**，不是 data URL 字符串长度。0 字节不是合法图片 */
 export function isWithinByteLimit(bytes: number): boolean {
   return bytes > 0 && bytes <= MAX_BYTES;

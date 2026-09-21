@@ -16,7 +16,23 @@ import {
   isAcceptedMime,
   isWithinByteLimit,
   scaleToFit,
+  sniffImageMime,
 } from "../imageScale";
+
+describe("规格 §1 的常量值（MAX_EDGE / MAX_BYTES 是规格值，不是旋钮）", () => {
+  // 这两条钉的是**值本身**：其余用例全走导出符号，把 1280 改成 2560 它们**全都不会红**
+  // （符号跟着一起变），而那已经违反规格 §1 了。
+  it("MAX_EDGE 是规格 §1 的 1280px（不是可随手调的旋钮）", () => {
+    expect(MAX_EDGE).toBe(1280);
+  });
+
+  it("MAX_BYTES 是规格 §1 的 1 MiB（不是可随手调的旋钮）", () => {
+    expect(MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  // ⚠️ **刻意不钉 `JPEG_QUALITY`**：规格 §10.5 把"质量 0.72 / 最大边 1280px"留作真机实测后的
+  // 调参旋钮。钉死它会把一次**有意调参**变成红测试，也会让"对照变异"失去落点。
+});
 
 describe("scaleToFit", () => {
   it("长边不超过上限时不缩放，且原样返回尺寸", () => {
@@ -86,5 +102,61 @@ describe("dataUrlByteLength", () => {
   it("缺逗号或空 base64 ⇒ 0（不成负数、不成 NaN）", () => {
     expect(dataUrlByteLength("data:image/jpeg;base64")).toBe(0);
     expect(dataUrlByteLength("data:image/jpeg;base64,")).toBe(0);
+  });
+});
+
+describe("sniffImageMime", () => {
+  // 字节头才是准入判据：扩展名可以被改名伪造，而 `createImageBitmap` 解得出 GIF 的第一帧
+  // ⇒ 只看扩展名等于给规格 §1 的"只接受静态位图"开后门。
+  const bytes = (...vals: number[]): Uint8Array => new Uint8Array(vals);
+
+  it("JPEG：FF D8 FF 开头 ⇒ image/jpeg", () => {
+    expect(sniffImageMime(bytes(0xff, 0xd8, 0xff, 0xe0))).toBe("image/jpeg");
+    expect(sniffImageMime(bytes(0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43))).toBe("image/jpeg");
+  });
+
+  it("PNG：8 字节签名 ⇒ image/png", () => {
+    expect(sniffImageMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))).toBe("image/png");
+  });
+
+  it("WebP：RIFF 容器头 + WEBP 四字符编码 ⇒ image/webp", () => {
+    // 4..7 字节是分块长度（这里是 0x1a），任意值都必须照判
+    expect(sniffImageMime(bytes(0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50))).toBe(
+      "image/webp",
+    );
+    expect(sniffImageMime(bytes(0x52, 0x49, 0x46, 0x46, 0xff, 0xff, 0xff, 0xff, 0x57, 0x45, 0x42, 0x50, 0x56))).toBe(
+      "image/webp",
+    );
+  });
+
+  it("GIF（GIF87a / GIF89a）⇒ null —— 本函数存在的理由：改名成 .jpg 的动图必须被拒", () => {
+    expect(sniffImageMime(bytes(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBeNull();
+    expect(sniffImageMime(bytes(0x47, 0x49, 0x46, 0x38, 0x37, 0x61))).toBeNull();
+  });
+
+  it("PDF / HEIC 等非静态位图容器 ⇒ null", () => {
+    expect(sniffImageMime(bytes(0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34))).toBeNull(); // "%PDF-1.4"
+    expect(
+      sniffImageMime(bytes(0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63)),
+    ).toBeNull(); // ftyp heic
+  });
+
+  it("空数组与长度不足 ⇒ null，且不抛异常", () => {
+    expect(sniffImageMime(new Uint8Array(0))).toBeNull();
+    expect(sniffImageMime(bytes(0x89, 0x50, 0x4e))).toBeNull(); // PNG 签名只有 3 字节（需要 8）
+    expect(sniffImageMime(bytes(0x52, 0x49, 0x46))).toBeNull(); // "RIF" 只有 3 字节（需要 12）
+  });
+
+  it("前缀正确但被截断 ⇒ null", () => {
+    expect(sniffImageMime(bytes(0xff, 0xd8))).toBeNull(); // JPEG 只有 SOI，没有第三个字节
+    expect(sniffImageMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a))).toBeNull(); // PNG 前 7 字节
+    expect(sniffImageMime(bytes(0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42))).toBeNull(); // 少最后一位 P
+  });
+
+  it("JPEG 分支的第三个字节：FF D8 之后不是 FF ⇒ null（不是合法 JPEG 头）", () => {
+    // 这条是 `bytes[2] === 0xff` 子句的唯一杀手：上面七条对那个子句全都视而不见
+    // （真 JPEG 的第三字节本来就是 FF，截断用例又过不了 `length >= 3`）。
+    expect(sniffImageMime(bytes(0xff, 0xd8, 0x00))).toBeNull();
+    expect(sniffImageMime(bytes(0xff, 0xd8, 0x4a, 0x00))).toBeNull();
   });
 });
