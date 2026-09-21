@@ -174,11 +174,21 @@ describe("pickImage：压缩后的体积闸门与返回形状（规格 §4.1 / �
     });
   });
 
-  // 🔴 裁决 B：编码结果为空 ⇒ **「这张图片打不开」**，不许报成「图片太大」
+  // 🔴 编码结果为空**或非法** ⇒ **「这张图片打不开」**，不许报成「图片太大」
   // （后者会让用户去裁更小的图、然后继续失败 —— 文案诚实性）。
-  // 若要它红，需要删掉 `if (size === 0)` 这条守卫：空结果会掉进"图片太大"分支。
-  it("编码结果为空（空串 / 只有前缀）⇒ 「这张图片打不开」", async () => {
-    for (const dataUrl of ["", "data:image/jpeg;base64,"]) {
+  // ⚠️ 输入域是**两类**：`dataUrlByteLength` 对空编码给 0，对**非法 base64 段**给**负数**
+  // （`"…base64,="` ⇒ Math.floor(3/4) − 1 = −1；探针实测 0/0/0/0/−1/−1/1/3）。
+  // 若要它红，需要把守卫写成 `size === 0`（那样 −1 那两条会掉进"图片太大"）。
+  it("编码结果为空或非法（空串 / 只有前缀 / 非法 base64 ⇒ −1 / `data:,` ⇒ 0）⇒ 一律「这张图片打不开」", async () => {
+    const broken: Array<[string, number]> = [
+      ["", 0],
+      ["data:image/jpeg;base64,", 0],
+      ["data:,", 0],
+      ["data:image/jpeg;base64,=", -1],
+      ["data:image/jpeg;base64,==", -1],
+    ];
+    for (const [dataUrl, expectedBytes] of broken) {
+      expect(dataUrlByteLength(dataUrl), `fixture 自证：${JSON.stringify(dataUrl)} 解出 ${expectedBytes} 字节`).toBe(expectedBytes);
       await expect(pickImage(injected({ dataUrl, width: 1280, height: 960 }).deps), JSON.stringify(dataUrl)).resolves.toEqual({
         ok: false,
         message: MSG_DECODE_FAILED,

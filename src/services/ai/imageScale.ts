@@ -51,7 +51,13 @@ export function scaleToFit(size: ImageSize, maxEdge: number = MAX_EDGE): ScaledS
   };
 }
 
-/** MIME 白名单判定（大小写敏感的精确匹配：`image/jpg` 这类野写法不算通过） */
+/** MIME 白名单判定（大小写敏感的精确匹配：`image/jpg` 这类野写法不算通过）。
+ *
+ * ⚠️ **测试专用**：E7d 删掉 `pickImage` 里那条恒假的 `if (!isAcceptedMime("image/jpeg"))` 之后，
+ * **生产路径已无调用方**（只剩 `imageScale.test.ts` 的用例）。**故意保留**：项目铁律"不可删改已有测试"，
+ * 删掉本函数会让那批用例成孤儿 ⇒ 留着并把话说清楚，免得后人误以为它还是**活的准入判据**
+ * （真正的准入判据只有 `sniffImageMime` 一条）。
+ */
 export function isAcceptedMime(mime: string): mime is AcceptedMime {
   return (ACCEPTED_MIME as readonly string[]).includes(mime);
 }
@@ -61,7 +67,15 @@ export function isAcceptedMime(mime: string): mime is AcceptedMime {
  *
  * 为什么 MIME 不能只看文件名：把 `a.gif` 改名成 `a.jpg` 后，扩展名路径会放行，
  * 而 `createImageBitmap` 照样解得出它的第一帧 ⇒ 等于绕过规格 §1 的"只接受静态位图"。
- * 所以真正的准入判据是**字节头**，扩展名只配当提示（两个判据都过才收）。
+ * 所以真正的准入判据**只有字节头这一条**：扩展名**不设否决权**（E10 裁决）—— 选择器只拿它
+ * 过滤候选（`imageInput` 的 `PICK_EXTENSIONS` 只出现在 `open` 的 `filters` 上），代码里没有任何
+ * 扩展名判断（曾有的"后缀白名单"是第二道否决权，会误拒无扩展名的合法图片，已删）。
+ *
+ * ⚠️ **已知边界：魔数判不出"静态"**（探针实测两者都与静态图前若干字节同构 ⇒ 一律放行）：
+ *   - **动画 WebP**：`RIFF….WEBP`（`VP8X` + `ANIM` 分块）与静态 WebP 头完全相同 —— 本函数不读分块；
+ *   - **APNG**：PNG 签名（`acTL` 分块）与静态 PNG 完全相同 —— 本函数只读前 8 字节。
+ * 两者都会进 `createImageBitmap` 并被解出**第一帧** ⇒ 规格 §1"只接受静态位图"在魔数层**无法判定**。
+ * 故意不做 `ANIM`/`acTL` 分块解析（YAGNI，已记账由规格收口）；GIF / HEIC / PDF 仍被这一层拒掉。
  *
  * ⚠️ 越界读在这里**不会抛**（`Uint8Array` 的越界下标返回 `undefined`，而 `undefined` 不等于
  * 任何字节值）—— `bytes.length >= N` 是**文档与纵深防御**，不是行为判据：删掉它也得不到

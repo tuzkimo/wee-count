@@ -175,4 +175,52 @@ describe("ChatComposer：M4 选图入口", () => {
     await w.get('[data-test="attachment-remove"]').trigger("click");
     expect(w.find('[data-test="attachment-preview"]').exists()).toBe(false);
   });
+
+  // 🔴 规格 §7：关掉的闸门是"发送权"，**不是**"已附的图" —— 关开关时预览必须还在（不能被顺手清空）。
+  // 若要它红，需要让预览依赖 `enabled`（例如 `<AttachmentPreview v-if="attached && enabled">`，
+  // 或在关闭时 `watch` 清空 `attached`）。
+  it("意愿层**关掉**时，已附的图保留可见（只是不能再发）", async () => {
+    const url = dataUrlOfBytes(3000);
+    vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
+    vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
+    stubRealCanvas(url);
+
+    const w = mount(ChatComposer, { props: { sending: false, enabled: true } });
+    await w.get('[data-test="composer-pick-image"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="attachment-preview"]').exists()).toBe(true);
+
+    await w.setProps({ enabled: false });
+
+    // 预览与缩略图**原样还在**（含隐私提示 —— 用户此刻仍需看到"这张图会整张发出去"）
+    expect(w.find('[data-test="attachment-preview"]').exists()).toBe(true);
+    expect(w.get('[data-test="attachment-thumb"]').attributes("src")).toBe(url);
+    expect(w.get('[data-test="attachment-notice"]').text()).toBe("截图会整张发给模型，可能含余额等其他信息");
+    // 而发送权没了：两颗按钮都禁用
+    expect(w.get('[data-test="composer-send"]').attributes("disabled")).toBeDefined();
+    expect(w.get('[data-test="composer-pick-image"]').attributes("disabled")).toBeDefined();
+  });
+
+  // 🔴 取消 = 放弃这次挑选 ⇒ 上一轮的失败文案要被清掉（否则它会一直挂在输入区上方误导人）。
+  // 若要它红，需要让取消分支直接 `return`（不清 `imageError`）。
+  it("失败后再取消 ⇒ 上一轮的失败文案被清掉", async () => {
+    vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
+    vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 4000, height: 3000, close: vi.fn() })),
+    );
+
+    const w = mountComposer();
+    await w.get('[data-test="composer-pick-image"]').trigger("click");
+    await flushPromises();
+    expect(w.get('[data-test="composer-image-error"]').text()).toBe("这张图片打不开");
+
+    // 第二次点击：用户取消了选择
+    vi.mocked(open).mockResolvedValue(null);
+    await w.get('[data-test="composer-pick-image"]').trigger("click");
+    await flushPromises();
+
+    expect(w.find('[data-test="composer-image-error"]').exists()).toBe(false);
+  });
 });

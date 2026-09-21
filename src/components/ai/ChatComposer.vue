@@ -52,12 +52,16 @@ const attached = ref<ImageAttachment | null>(null);
 const imageError = ref("");
 
 /**
- * 选图（§3 步骤 1–3）：取消什么都不做；失败只显示文案；成功进预览并发 `attach`。
+ * 选图（§3 步骤 1–3）：**取消只清掉上一轮的失败文案**；失败只显示文案；成功进预览并发 `attach`。
  * `pickImage()` 无参 ⇒ 走**生产默认依赖**（真插件 + 真 canvas），本组件不注入任何东西。
  */
 async function onPickImage(): Promise<void> {
   const result = await pickImage();
-  if (result === null) return;
+  if (result === null) {
+    // 取消 = 用户放弃了这次挑选 ⇒ 上一轮的"这张图片打不开"不该继续挂在输入区上方误导人
+    imageError.value = "";
+    return;
+  }
   if (!result.ok) {
     imageError.value = result.message;
     return;

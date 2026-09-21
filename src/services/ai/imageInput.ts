@@ -1,5 +1,7 @@
-// 选图 + 读字节 + 本地压缩（规格 §3 步骤 1–2 / §6 / §8）。**插件的收口处**：全仓只有这个文件
-// import `@tauri-apps/plugin-dialog` / `plugin-fs`，canvas 也只在这里出现。
+// 选图 + 读字节 + 本地压缩（规格 §3 步骤 1–2 / §6 / §8）。**AI 特性内插件与 canvas 的唯一收口处**
+// （AI 之外的同类用法另有：`src/views/BackupPage.vue:68-69` 用 dialog/fs 做备份导入导出、
+// `src/services/backup/importer.ts:2` 用 fs 做恢复、`src/components/AvatarCropper.vue:113/127`
+// 用 canvas 转 JPEG ⇒ 此处只声明**本特性**的边界，不声称"全仓"）。
 //
 // 为什么要有**注入缝**（`PickDeps`）：happy-dom 里三样东西一样都没有 ——
 // `createImageBitmap` 是 `undefined`、`canvas.getContext("2d")` 返回 `null`、插件没有 IPC
@@ -96,7 +98,8 @@ async function toJpegDataUrl(bytes: Uint8Array, sourceMime: AcceptedMime): Promi
 
 /**
  * 生产默认依赖：真插件 + 真 canvas。
- * 测试的 B 组**故意不注入**这一份，用来证明默认路径确实走到了 canvas（换掉它那条必须红）。
+ * 测试的 B 组**故意不注入**这一份，用来证明默认路径确实走到了 canvas
+ * （若要它红，需要把 `realDeps.toJpegDataUrl` 换成任何能返回成功结果的假实现 —— 实测会带红 4 条）。
  */
 const realDeps: PickDeps = { open, readFile, toJpegDataUrl };
 
@@ -104,7 +107,7 @@ const realDeps: PickDeps = { open, readFile, toJpegDataUrl };
  * 选一张图并压缩成 JPEG data URL（规格 §3 步骤 1–3）。
  *
  * 步骤与失败文案（§8）一一对应：取消 ⇒ `null`；魔数认不出 ⇒ 只支持…；读失败 ⇒ 读不到…
- * 解不开 / 编码结果为空 ⇒ 打不开；压缩后仍超 1 MiB ⇒ 图片太大…
+ * 解不开 / 编码结果为空或非法 ⇒ 打不开；压缩后仍超 1 MiB ⇒ 图片太大…
  */
 export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> {
   const selected = await deps.open({
@@ -133,9 +136,11 @@ export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> 
   }
 
   const size = dataUrlByteLength(made.dataUrl);
-  // 编码结果为空 = **根本没生成出图片** ⇒ 归"打不开"，**不能**归"图片太大"：
-  // 后者会让用户去裁更小的图、然后继续失败（§8 的文案表一个字都不改，改的是落到哪条分支）
-  if (size === 0) return { ok: false, message: MSG_DECODE_FAILED };
+  // 编码结果为空**或非法** = 根本没生成出图片 ⇒ 归"打不开"，**不能**归"图片太大"：
+  // 后者会让用户去裁更小的图、然后继续失败（§8 的文案表一个字都不改，改的是落到哪条分支）。
+  // ⚠️ 必须是 `<= 0` 而不是 `=== 0`：`dataUrlByteLength` 对**非法 base64 段**会返回负数
+  // （`"…base64,="` ⇒ Math.floor(3/4) − 1 = **−1**，探针实测），`=== 0` 会漏掉这一整类。
+  if (size <= 0) return { ok: false, message: MSG_DECODE_FAILED };
   if (!isWithinByteLimit(size)) return { ok: false, message: MSG_TOO_LARGE };
 
   return {
