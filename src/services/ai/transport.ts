@@ -32,6 +32,10 @@ import { apiFetch } from "@/services/api";
  *
  * ⚠️ 这里只是**类型**：组块发生在 `agent.ts` 的编排层（`userContent`），transport
  * 一个字都不组装 —— 它只负责把 `messages` 序列化发出去（本文件顶部三条纪律不变）。
+ *
+ * 🔒 **这是线上契约的唯一一份定义**（请求体的 `content` 就长这样，后端当 JSON 哑管道透传）：
+ * 谁都不许在别处再写一份等价联合类型（多一份＝多一个会跟上游悄悄漂移的地方）。
+ * 别处需要它时一律 `import type { ContentBlock }`（type-only ⇒ 运行时不耦合）。
  */
 export type ContentBlock =
   | { type: "text"; text: string }

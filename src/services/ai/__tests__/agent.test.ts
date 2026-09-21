@@ -1162,7 +1162,7 @@ describe("M4 带图那一轮：图落 payload、content 仍是纯文本（§4.1�
   });
 });
 
-describe("M4 §8：上游 400 的文案（带图那一轮换成「可能不支持图片」）", () => {
+describe("M4 §8：上游 400 的文案（带图那一轮换成带前提的「可能不支持图片」）", () => {
   const IMG: ImageAttachment = {
     mime: "image/jpeg",
     dataUrl: "data:image/jpeg;base64,QUJD",
@@ -1171,11 +1171,21 @@ describe("M4 §8：上游 400 的文案（带图那一轮换成「可能不支�
     bytes: 3,
   };
 
-  it("带图 + 上游 400 ⇒ 当前模型可能不支持图片，试试先用文字描述", async () => {
+  it("带图 + 上游 400 ⇒ 这条没发出去：若带了截图，可能是当前模型不支持图片，试试先用文字描述。", async () => {
     const { transport } = failTransport({ ok: false, failure: { kind: "bad_request" } });
     const turn = await run({ transport }, { userText: "算餐饮", image: IMG });
     // 杀手：把 `IMAGE_UNSUPPORTED_TEXT` 换回 `describeFailure(...)` ⇒ 这条红
-    expect(turn.text).toBe("当前模型可能不支持图片，试试先用文字描述");
+    expect(turn.text).toBe("这条没发出去：若带了截图，可能是当前模型不支持图片，试试先用文字描述。");
+  });
+
+  // 🔴 规格 §8 的措辞要求：`bad_request` **证明不了**原因是图（畸形 body / 非法参数同样落这个
+  // kind）⇒ 猜测必须**显式标成猜测**，不能写成断言。若要它红：把文案改回旧的无前提写法
+  // 「当前模型可能不支持图片，试试先用文字描述」。
+  it("文案带前提：含「若带了截图」（不是在断言一件我们没验证过的事）", async () => {
+    const { transport } = failTransport({ ok: false, failure: { kind: "bad_request" } });
+    const turn = await run({ transport }, { userText: "算餐饮", image: IMG });
+    expect(turn.text).toContain("若带了截图");
+    expect(turn.text).toContain("试试先用文字描述"); // 可操作的下一步必须还在
   });
 
   it("**不带图**的 400 ⇒ 一个字都不变（仍是 M2 映射的原文案）", async () => {
@@ -1183,7 +1193,7 @@ describe("M4 §8：上游 400 的文案（带图那一轮换成「可能不支�
     const plain = await run({ transport }, { userText: "上个月花了多少" });
     // 杀手：把判据写成"只判 failure.kind"（漏掉 `image !== undefined`）⇒ 这条红
     // （会把所有 400 的提示都换成"不支持图片"，与截图毫无关系的那一轮也开始胡说话）
-    expect(plain.text).not.toBe("当前模型可能不支持图片，试试先用文字描述");
+    expect(plain.text).not.toBe("这条没发出去：若带了截图，可能是当前模型不支持图片，试试先用文字描述。");
     expect(plain.text).toBe("这条消息没能发出去，换个说法试试。");
   });
 
