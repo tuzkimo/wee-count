@@ -77,6 +77,17 @@ function traceOf(payload: AiMessagePayload | null): unknown[] {
 }
 
 /**
+ * 这条消息里那张截图的 dataUrl（§4.1 的 `payload.image`），没有就是 null。
+ *
+ * §4.3 把"带图的历史消息"在**发给模型的上下文**里替换成 `[用户发过一张截图]`，但同一段
+ * 规格明写"**不影响**本地存储与页面渲染（页面仍显示缩略图）" ⇒ 历史里那条消息照样要能看见
+ * 用户当初发的是哪张图（缩略图的 alt 是"截图"，**不做金额遮罩**：它就是要让用户看清发了什么）。
+ */
+function thumbOf(payload: AiMessagePayload | null): string | null {
+  return payload?.image?.dataUrl ?? null;
+}
+
+/**
  * 这条消息的金额要不要遮（§7.4 乙方案）。**判定只在这一处**：`revealed` 是 store 的内存集合
  * （"本轮主动问出来的"），全局 `amountsHidden` 是遮罩本身的语义（默认不看、需要时点开）。
  *
@@ -245,6 +256,13 @@ watch(
         </p>
         <div v-for="m in ai.messages" :key="m.id" class="mb-3 space-y-2" data-test="ai-message">
           <MessageBubble :message="m" :masked="isMasked(m.id)" />
+          <img
+            v-if="thumbOf(m.payload) !== null"
+            :src="thumbOf(m.payload) ?? ''"
+            alt="截图"
+            class="h-16 w-16 rounded object-cover"
+            data-test="ai-message-thumb"
+          />
           <FilterChips
             v-if="chipsOf(m.payload).length > 0"
             :chips="chipsOf(m.payload)"
@@ -285,6 +303,19 @@ watch(
       }}
     </p>
 
-    <ChatComposer :sending="ai.sending" :enabled="ai.sendingEnabled" @send="onSend" @cancel="onCancel" />
+    <!--
+      E12.1：附件**归 store**（`ai.attachedImage`），composer 只渲染 + 发事件 ⇒ 接线在这里。
+      `@attach` / `@remove-attachment` 两个方向都必须接：漏掉前者选完图不出预览，
+      漏掉后者点 ✕ 没反应 —— 两者都是"页面以为组件自己在管"这类断线的典型形态。
+    -->
+    <ChatComposer
+      :sending="ai.sending"
+      :enabled="ai.sendingEnabled"
+      :image="ai.attachedImage"
+      @send="onSend"
+      @cancel="onCancel"
+      @attach="ai.setAttachedImage"
+      @remove-attachment="ai.clearAttachedImage()"
+    />
   </div>
 </template>

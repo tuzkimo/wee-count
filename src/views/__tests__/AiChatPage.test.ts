@@ -58,6 +58,12 @@ vi.mock("@/stores/transaction", async (importOriginal) => {
   return { ...actual, useTransactionStore: () => tx };
 });
 
+// M4 选图：只 mock **第三方插件**（自己写的 imageInput 一律走真的），与 ChatComposer.test.ts 同法
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-fs", () => ({ readFile: vi.fn() }));
+
+import { open } from "@tauri-apps/plugin-dialog";
+import { readFile } from "@tauri-apps/plugin-fs";
 import { initUserTables } from "@/db/userDb";
 import { appendMessage, ensureConversation } from "@/services/ai/session";
 import { AGENT_FAILURE_TEXT, useAiChatStore } from "@/stores/aiChat";
@@ -788,5 +794,110 @@ describe("隐私：说明卡、意愿层门控、三个金额出口", () => {
     const cardText = wrapper.get('[data-test="draft-card"]').text();
     expect(cardText).toContain("128");
     expect(cardText).not.toContain(AMOUNT_PLACEHOLDER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4 附件：页面接线（E12.1）—— 选图/撤掉都经 store，切页（重挂载）不丢
+// ---------------------------------------------------------------------------
+
+describe("M4 附件接线：附件归 store ⇒ 切页不丢（E12.1）", () => {
+  const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+  /** 用真 base64 编码器造出**解码后恰好 n 字节**的 data URL */
+  function dataUrlOfBytes(n: number): string {
+    return `data:image/jpeg;base64,${Buffer.alloc(n, 0x41).toString("base64")}`;
+  }
+
+  /** 让**真实**转码链在 happy-dom 里跑通（同 ChatComposer.test.ts 的 DOM 探针） */
+  function stubRealCanvas(url: string): void {
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 4000, height: 3000, close: vi.fn() })),
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(url);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** 点页面上的选图按钮（走真实 imageInput + 被 mock 的两个插件） */
+  async function pick(wrapper: VueWrapper, url: string): Promise<void> {
+    vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
+    vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
+    stubRealCanvas(url);
+    await wrapper.get('[data-test="composer-pick-image"]').trigger("click");
+    await flushPromises();
+  }
+
+  it("选完图 ⇒ 图进 store 且预览出现；**卸载再挂载** ⇒ 预览仍在（切页不丢附件）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const url = dataUrlOfBytes(3000);
+    const wrapper = await mountPage();
+
+    await pick(wrapper, url);
+
+    // 杀手：删掉页面上的 `@attach="ai.setAttachedImage"` ⇒ 这三条红（图根本进不了 store）
+    expect(useAiChatStore().attachedImage?.dataUrl).toBe(url);
+    expect(wrapper.get('[data-test="attachment-thumb"]').attributes("src")).toBe(url);
+
+    // 切页 = 组件被**卸载**；回来 = 重新挂载（同一个 Pinia 实例 ⇒ store 还活着）
+    wrapper.unmount();
+    const again = await mountPage();
+
+    // ⚠️ 这条是 E12.1 的落点：附件若活在组件/页面局部状态里，重挂载后就什么都不剩。
+    //    它和上面那条**共用同一个杀手**（附件没进 store 时两条一起红）—— 它多守的是
+    //    "有没有人把附件的作用域缩到一次挂载之内"（例如卸载时顺手清掉）。
+    expect(again.find('[data-test="attachment-preview"]').exists()).toBe(true);
+    expect(again.get('[data-test="attachment-thumb"]').attributes("src")).toBe(url);
+  });
+
+  it("点 ✕ 撤掉 ⇒ 预览消失，且**重挂载后不会复活**（撤掉也是 store 的动作）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const url = dataUrlOfBytes(3000);
+    const wrapper = await mountPage();
+    await pick(wrapper, url);
+    expect(wrapper.find('[data-test="attachment-preview"]').exists()).toBe(true);
+
+    await wrapper.get('[data-test="attachment-remove"]').trigger("click");
+    await flushPromises();
+    // 杀手：删掉页面上的 `@remove-attachment="ai.clearAttachedImage()"` ⇒ store 里那张图还在
+    // ⇒ 这一条（重挂载后复活）与上面的"消失"一起红
+    expect(useAiChatStore().attachedImage).toBeNull();
+    expect(wrapper.find('[data-test="attachment-preview"]').exists()).toBe(false);
+
+    wrapper.unmount();
+    const again = await mountPage();
+    expect(again.find('[data-test="attachment-preview"]').exists()).toBe(false);
+  });
+
+  it("历史里带图的那条 user 消息仍显示缩略图（§4.3 只换**发给模型**的上下文）", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const url = dataUrlOfBytes(3000);
+    const cid = (await ensureConversation(LEDGER_ID, new Date(T0)))!;
+    await appendMessage({
+      id: "u-img",
+      conversation_id: cid,
+      role: "user",
+      content: "",
+      payload: {
+        image: { mime: "image/jpeg", dataUrl: url, width: 1280, height: 960, bytes: 3000 },
+      },
+      created_at: T0,
+    });
+
+    const wrapper = await mountPage();
+
+    // 杀手：把页面里那个 `<img data-test="ai-message-thumb">` 删掉 ⇒ 这条红
+    // （§4.3 的替换只作用于上下文；页面这侧必须还能看见当初发的是哪张图）
+    expect(wrapper.get('[data-test="ai-message-thumb"]').attributes("src")).toBe(url);
   });
 });

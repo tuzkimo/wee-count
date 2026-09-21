@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({ readFile: vi.fn() }));
 
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
+import type { ImageAttachment } from "@/services/ai/imageInput";
 
 /** 用真 base64 编码器造出**解码后恰好 n 字节**的 data URL */
 function dataUrlOfBytes(n: number): string {
@@ -105,6 +106,27 @@ describe("ChatComposer：M4 选图入口", () => {
     vi.restoreAllMocks();
   });
 
+  /**
+   * 按**页面的接线方式**走一遍：点选图 → 把 `attach` 里那份图回灌成 `:image`。
+   *
+   * ⚠️ E12.1 起附件**归 store**（`ai.attachedImage`），composer 只渲染 `props.image` 并发事件 ⇒
+   * "选完图出预览"这件事**必然跨组件**：组件发 `attach`，页面写 store，store 再把 `:image` 流回来。
+   * 所以凡是要断言"预览出现"的用例都得走这个 helper —— 只点一下按钮**不再**能出预览
+   * （这正是 M4 三条老用例改契约的原因，已报备）。helper 等价于页面那两行接线，
+   * 真正的端到端（含 store）在 `AiView/AiChatPage.test.ts` 里另有用例。
+   */
+  async function pickAndWire(w: ReturnType<typeof mount>): Promise<void> {
+    await w.get('[data-test="composer-pick-image"]').trigger("click");
+    await flushPromises();
+    const emitted = w.emitted("attach");
+    if (emitted !== undefined && emitted.length > 0) {
+      // ⚠️ 不用 `Array.at`：本仓 tsconfig 的 lib 里没有它（`vue-tsc` 会报 TS2550）
+      const last = emitted[emitted.length - 1];
+      await w.setProps({ image: last![0] as ImageAttachment });
+      await flushPromises();
+    }
+  }
+
   // 🔴 规格 §7：关闭时选图按钮与发送按钮**一并**不可用 ⇒ 必须是**同一道闸**（`:disabled="!enabled"`）。
   // 若要它红，需要把选图按钮的禁用条件改成常量（`false` ⇒ 前两条红；`true` ⇒ 后两条红）。
   it("意愿层关着 ⇒ 选图按钮与发送按钮同时不可用；开着 ⇒ 两颗都能点", () => {
@@ -145,15 +167,15 @@ describe("ChatComposer：M4 选图入口", () => {
     expect(w.emitted("attach")).toBeUndefined();
   });
 
-  it("选图成功 ⇒ 预览（缩略图 + 隐私提示）出现，并 emit attach 整份 image（§4.1）", async () => {
+  it("选图成功 ⇒ emit attach 整份 image（§4.1）；`:image` 回流后预览（缩略图 + 隐私提示）出现", async () => {
     const url = dataUrlOfBytes(3000);
     vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
     vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
     stubRealCanvas(url);
 
     const w = mountComposer();
-    await w.get('[data-test="composer-pick-image"]').trigger("click");
-    await flushPromises();
+    // 杀手：把 `emit("attach", …)` 删掉 ⇒ 下面这份整份断言红（页面拿不到图 ⇒ 附件永远进不了 store）
+    await pickAndWire(w);
 
     expect(w.get('[data-test="attachment-thumb"]').attributes("src")).toBe(url);
     expect(w.get('[data-test="attachment-notice"]').text()).toBe("截图会整张发给模型，可能含余额等其他信息");
@@ -162,23 +184,41 @@ describe("ChatComposer：M4 选图入口", () => {
     ]);
   });
 
-  it("点 ✕ ⇒ 预览消失（撤掉的只是**待发**附件）", async () => {
+  it("点 ✕ ⇒ 发 `removeAttachment`（组件不自己清：附件归 store）；属主清掉后预览消失", async () => {
     vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
     vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
     stubRealCanvas(dataUrlOfBytes(3000));
 
     const w = mountComposer();
-    await w.get('[data-test="composer-pick-image"]').trigger("click");
-    await flushPromises();
+    await pickAndWire(w);
     expect(w.find('[data-test="attachment-preview"]').exists()).toBe(true);
 
     await w.get('[data-test="attachment-remove"]').trigger("click");
+    // 杀手：把 `@remove="emit('removeAttachment')"` 改成空操作 ⇒ 这条红（点 ✕ 没反应）
+    expect(w.emitted("removeAttachment")).toHaveLength(1);
+
+    // 属主（页面 → store）收到事件后把 `:image` 清成 null ⇒ 预览消失
+    await w.setProps({ image: null });
     expect(w.find('[data-test="attachment-preview"]').exists()).toBe(false);
   });
 
+  // 🔴 §4.2「文字可省略」：只选了一张图、一个字都没写，也必须能发出去（空文本不带图才不发）。
+  // 若要它红，需要把 `onSend` 的守卫写回 `value === ""`（只判文字）。
+  it("只有图、没有文字 ⇒ 发送发出空文本（图本身就是要发的内容，§4.2）", async () => {
+    const url = dataUrlOfBytes(3000);
+    vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
+    vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
+    stubRealCanvas(url);
+
+    const w = mountComposer();
+    await pickAndWire(w);
+
+    await w.get('[data-test="composer-send"]').trigger("click");
+    expect(w.emitted("send")).toEqual([[""]]);
+  });
+
   // 🔴 规格 §7：关掉的闸门是"发送权"，**不是**"已附的图" —— 关开关时预览必须还在（不能被顺手清空）。
-  // 若要它红，需要让预览依赖 `enabled`（例如 `<AttachmentPreview v-if="attached && enabled">`，
-  // 或在关闭时 `watch` 清空 `attached`）。
+  // 若要它红，需要把预览的渲染条件也绑上 `enabled`（`v-if="props.image !== null && enabled"`）。
   it("意愿层**关掉**时，已附的图保留可见（只是不能再发）", async () => {
     const url = dataUrlOfBytes(3000);
     vi.mocked(open).mockResolvedValue("C:/tmp/real.jpg");
@@ -186,8 +226,7 @@ describe("ChatComposer：M4 选图入口", () => {
     stubRealCanvas(url);
 
     const w = mount(ChatComposer, { props: { sending: false, enabled: true } });
-    await w.get('[data-test="composer-pick-image"]').trigger("click");
-    await flushPromises();
+    await pickAndWire(w);
     expect(w.find('[data-test="attachment-preview"]').exists()).toBe(true);
 
     await w.setProps({ enabled: false });

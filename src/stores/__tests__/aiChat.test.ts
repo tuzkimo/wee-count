@@ -32,6 +32,8 @@ vi.mock("@/services/ai/agent", async (importOriginal) => {
 
 import { getTeamMembers, initUserTables } from "@/db/userDb";
 import { appendMessage, ensureConversation, loadMessages } from "@/services/ai/session";
+// 只借类型（M4）：不会把 imageInput（它 import 两个 Tauri 插件）拉进这个测试的运行时
+import type { ImageAttachment } from "@/services/ai/imageInput";
 import {
   CANCELED_TEXT,
   DB_FAILURE_TEXT,
@@ -320,6 +322,127 @@ describe("send：编排 agent（谁去落库、快照里给什么）", () => {
       { id: "u-wife", name: "老婆" },
       { id: "local-1", name: "我" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4：附件归 store（E12.1）—— 谁持有、谁清空、切页后还在不在
+// ---------------------------------------------------------------------------
+
+describe("M4 附件：store 持有、send 取走即清（E12.1 / §4.2）", () => {
+  const IMG: ImageAttachment = {
+    mime: "image/jpeg",
+    dataUrl: "data:image/jpeg;base64,QUJD",
+    width: 1280,
+    height: 960,
+    bytes: 3,
+  };
+
+  it("带图发送 ⇒ 图交给 runAgent、内存那条 user 消息带 payload.image、store 里的附件被清空", async () => {
+    await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+    runMock().mockResolvedValue(turn({ text: "记好了" }));
+
+    store.setAttachedImage(IMG);
+    expect(store.attachedImage).toEqual(IMG);
+    await store.send("算餐饮");
+
+    // ① 图进了这一轮的入参（agent 层据此组装块数组 + 落 payload）
+    expect(runMock().mock.calls[0]![0].image).toEqual(IMG);
+    // ② 内存那条 user 消息也带图（否则刚发完那条的缩略图要等一次 load() 才出现）
+    expect(store.messages[0]!.payload).toEqual({ image: IMG });
+    expect(store.messages[0]!.content).toBe("算餐饮");
+    // ③ **取走即清**：附件是一次性的（§4.2「只有在当轮才带块」）
+    //    杀手：删掉 `attachedImage.value = null` ⇒ 这条红（下一轮会把同一张图再发一遍）
+    expect(store.attachedImage).toBeNull();
+  });
+
+  it("只有图、没有文字 ⇒ 照发（§4.2「文字可省略」）；此时 content 是空串", async () => {
+    await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+    runMock().mockResolvedValue(turn({ text: "看不出金额" }));
+
+    store.setAttachedImage(IMG);
+    await store.send("   ");
+
+    // 杀手：把守卫写回 `if (userText === "") return`（只判文字）⇒ 这条红（只发一张图会被吞掉）
+    expect(runMock()).toHaveBeenCalledTimes(1);
+    expect(runMock().mock.calls[0]![0].image).toEqual(IMG);
+    expect(store.messages[0]!.content).toBe("");
+  });
+
+  it("意愿层关着 ⇒ 一个请求都不发，且**附件留在输入区**（§7：不静默丢弃用户的选择）", async () => {
+    await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = useAiChatStore(); // 不开门：sendingEnabled 默认 false
+    store.setAttachedImage(IMG);
+
+    await store.send("算餐饮");
+
+    expect(runMock()).not.toHaveBeenCalled();
+    // 杀手：把"取走即清"提到闸门检查**之前** ⇒ 这条红（关一次开关就静默丢了他刚选的图）
+    expect(store.attachedImage).toEqual(IMG);
+    expect(store.messages).toEqual([]);
+  });
+
+  it("没有文字也没有图 ⇒ 老路径不变：不发请求、不留空气泡", async () => {
+    await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+
+    await store.send("");
+    await store.send("   ");
+
+    expect(runMock()).not.toHaveBeenCalled();
+    expect(store.messages).toEqual([]);
+  });
+
+  it("✕ / 撤掉：`clearAttachedImage` 只清**待发**的那份（发送后内存消息仍带着图）", async () => {
+    await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+    runMock().mockResolvedValue(turn({ text: "记好了" }));
+
+    store.setAttachedImage(IMG);
+    store.clearAttachedImage();
+    expect(store.attachedImage).toBeNull();
+
+    // 撤掉待发 ≠ 删历史：再走一轮真实发送，已发那条消息里的图**还在**（§7「不追溯删除」）
+    store.setAttachedImage(IMG);
+    await store.send("算餐饮");
+    expect(store.attachedImage).toBeNull();
+    expect(store.messages[0]!.payload).toEqual({ image: IMG });
+  });
+
+  it("落库往返（§9-10）：库里那条带图的 user 消息 `load()` 回来后 payload.image **整份相等**", async () => {
+    const { sqlite } = await useRealDb();
+    setLedger(LEDGER_ID);
+    const store = openGate();
+
+    // 直接种一行（`runAgent` 在本文件是 mock ⇒ 真正写库的是 agent 层，那里另有用例钉写入侧）。
+    // 这条钉的是**读回**：store 的 `load()` 必须把 payload 整份留着（`parsePayload` 不许吃掉 image）。
+    const convId = await ensureConversation(LEDGER_ID, new Date(T0));
+    await appendMessage({
+      id: "u-img",
+      conversation_id: convId!,
+      role: "user",
+      content: "算餐饮",
+      payload: { image: IMG },
+      created_at: T0,
+    });
+
+    await store.load();
+
+    // 杀手：把 `payload.image` 从 `AiMessagePayload` 里去掉（或让 parsePayload 只挑已知键）⇒ 这条红
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0]!.payload!.image).toEqual(IMG);
+    // 五个字段一个都不能少（整份相等，不是"挑几个断言"）
+    expect(Object.keys(store.messages[0]!.payload!.image!).sort()).toEqual([
+      "bytes", "dataUrl", "height", "mime", "width",
+    ]);
+    expect(countRows(sqlite, "ai_messages")).toBe(1);
   });
 });
 

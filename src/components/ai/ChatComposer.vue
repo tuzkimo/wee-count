@@ -34,25 +34,33 @@ import { type ImageAttachment, pickImage } from "@/services/ai/imageInput";
  * 为什么不像 `sending` 那样只靠"入口不存在"：那个开关是**用户可见的状态**（"我的 → 隐私"里
  * 明明关着），输入框却还能打字、还能点发送 —— 那不是防御问题，是界面在说谎。
  * store 里 `send` 另有一道 `if (!sendingEnabled) return`：这里是"不让做"，那里是"做了也不发"。
+ *
+ * `image`（默认 `null`）：**待发送的截图，真相在 store**（E12.1）—— 组件只渲染它、只发事件。
+ * 附件放进 store 而不是留在这里的局部 `ref`，是因为"选完图切页再回来"必须还在（见 store 上
+ * `attachedImage` 的注释）：组件被重挂载时局部状态会连同 DOM 一起消失。
  */
-withDefaults(defineProps<{ sending: boolean; enabled?: boolean }>(), { enabled: true });
+const props = withDefaults(defineProps<{ sending: boolean; enabled?: boolean; image?: ImageAttachment | null }>(), {
+  enabled: true,
+  image: null,
+});
 
 const emit = defineEmits<{
   send: [text: string];
   cancel: [];
+  /** 选图成功 ⇒ 页面把它交给 store（本组件不碰 store）。`✕` 那一侧见 `removeAttachment` */
   attach: [image: ImageAttachment];
+  /** 用户撤掉**待发**附件（已落库的历史图不动，§7「不追溯删除」） */
+  removeAttachment: [];
 }>();
 
 const text = ref("");
 const inset = useKeyboardInset();
 
-/** 已选中的截图（本地状态：发送前只活在这里，落库是任务 4 的 store 的事） */
-const attached = ref<ImageAttachment | null>(null);
 /** 选图失败的 §8 文案（空串 = 没有错误）—— 失败**不抛**，页面只展示这句话 */
 const imageError = ref("");
 
 /**
- * 选图（§3 步骤 1–3）：**取消只清掉上一轮的失败文案**；失败只显示文案；成功进预览并发 `attach`。
+ * 选图（§3 步骤 1–3）：**取消只清掉上一轮的失败文案**；失败只显示文案；成功发 `attach`。
  * `pickImage()` 无参 ⇒ 走**生产默认依赖**（真插件 + 真 canvas），本组件不注入任何东西。
  */
 async function onPickImage(): Promise<void> {
@@ -67,19 +75,14 @@ async function onPickImage(): Promise<void> {
     return;
   }
   imageError.value = "";
-  attached.value = result.image;
   emit("attach", result.image);
-}
-
-/** 撤掉附件：只影响**待发**内容（已落库的历史图不动，§7「不追溯删除」） */
-function onRemoveImage(): void {
-  attached.value = null;
 }
 
 function onSend(): void {
   const value = text.value.trim();
-  // 空串（含"只有空白"）不发：让模型回答一个空问题是纯浪费一次配额
-  if (value === "") return;
+  // "没内容可发" = 没有文字**且**没有图（M4 起"只发一张图、一个字不写"是合法形态，§4.2）。
+  // 老路径（没有图）逐字不变：空串/纯空白仍然什么都不发 —— 让模型回答空问题是浪费一次配额。
+  if (value === "" && props.image === null) return;
   text.value = "";
   emit("send", value);
 }
@@ -97,7 +100,12 @@ function onCancel(): void {
     data-test="chat-composer"
   >
     <p v-if="imageError" class="mb-2 text-xs text-red-500" data-test="composer-image-error">{{ imageError }}</p>
-    <AttachmentPreview v-if="attached" :image="attached" class="mb-2" @remove="onRemoveImage" />
+    <AttachmentPreview
+      v-if="props.image !== null"
+      :image="props.image"
+      class="mb-2"
+      @remove="emit('removeAttachment')"
+    />
     <div class="flex items-end gap-2">
       <button
         type="button"

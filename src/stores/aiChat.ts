@@ -38,6 +38,8 @@ import {
   type AgentTurn,
 } from "@/services/ai/agent";
 import { createTransport, fetchAiStatus, type AiStatus } from "@/services/ai/transport";
+// 只借类型：`import type` 不会把 imageInput（它 import 两个 Tauri 插件）拉进 store 的运行时
+import type { ImageAttachment } from "@/services/ai/imageInput";
 // ⚠️ 这里取的是**常量**（`PROMPT_VERSION`），不是把 prompt.ts 的模块图拖进来当依赖：
 // `agent.ts`（本文件上面那行就 import 了它）运行期本来就要 `buildSystemPrompt`，模块图早就在了。
 import { PROMPT_VERSION } from "@/services/ai/prompt";
@@ -255,6 +257,29 @@ export const useAiChatStore = defineStore("aiChat", () => {
   /** 当前账本的会话 id（切账本即切会话，Ruling 14） */
   const conversationId = ref<string | null>(null);
   /**
+   * **待发送**的截图（M4 §4.2 / E12.1）。**唯一真相在 store**，不在组件里。
+   *
+   * 为什么必须放这里（而不是 composer 的局部 `ref`）：附件要在**切页/重挂载**后仍然在 ——
+   * 用户选了一张截图、切去别处看一眼再回来，那张图不能凭空消失（选图是本地动作，
+   * 重新选一次要重走系统选择器）。M4 之前的实现把附件留在 composer 局部状态里，
+   * 页面一重挂载就丢，且 `emit("attach")` 当时**没有任何监听者**。
+   *
+   * 生命周期（三句话）：
+   *  - **谁写**：页面接线 `@attach` ⇒ `setAttachedImage`（成功选图后）；`✕` ⇒ `clearAttachedImage`。
+   *  - **谁清**：`send()` **取走即清**（一次性消费 —— 图只进当轮，§4.2「只有在当轮才带块」）。
+   *  - **闸关着时不清**（§7）：`sendingEnabled` 为假时 `send` 提前返回，附件**留在输入区**，
+   *    因为"关掉开关"不该静默丢掉用户的选择（页面同时禁用两枚按钮）。
+   */
+  const attachedImage = ref<ImageAttachment | null>(null);
+  /** 选图成功 ⇒ 页面把它交给 store（组件自身不碰 store，见 `ChatComposer` 文件头） */
+  function setAttachedImage(image: ImageAttachment): void {
+    attachedImage.value = image;
+  }
+  /** 用户点 ✕ 撤掉**待发**附件：已落库的历史图不动（§7「不追溯删除」） */
+  function clearAttachedImage(): void {
+    attachedImage.value = null;
+  }
+  /**
    * 会话里**全部**草稿（含已确认 / 已拒绝）——**唯一**的草稿真相。
    *
    * 每次 `load()` 都从 payload 重建（`readDrafts`），所以"决定"跨页面存活这件事只有一份实现：
@@ -370,19 +395,29 @@ export const useAiChatStore = defineStore("aiChat", () => {
    */
   async function send(text: string): Promise<void> {
     const userText = text.trim();
-    if (userText === "") return;
+
+    // "没内容可发" = 没有文字**且**没有图。M4 起带图可以不写字（§4.2：「文字可省略」），
+    // 所以这里判的是两者都空 —— 只判 `userText === ""` 会把"只发一张图"当场吞掉。
+    if (userText === "" && attachedImage.value === null) return;
 
     // §7.3 的**意愿层**：开关关着一个请求都不发。UI 那边同时禁用输入框（`ChatComposer` 的
     // `enabled`），但执行点在这里 —— 页面忘了禁用、或将来多一个调用方，都漏不出去。
     // 默认是关的（`AI_SENDING_ENABLED_DEFAULT=false`），所以"还没读过配置"也走这条 return。
+    //
+    // ⚠️ 这一条必须在"取走附件"**之前**：闸关着时那个 return 不能顺手把附件清掉，
+    // 否则用户关一次开关就静默丢了他刚选的图（§7「开关关闭后已附的图保留可见」）。
     if (!sendingEnabled.value) return;
+
+    // 取走即清（一次性消费）：下面这一轮是这张图唯一的去处，发出去之后输入区就该空了。
+    const image = attachedImage.value;
+    attachedImage.value = null;
 
     // 生成中又发一条 ⇒ 掐掉在途那一轮（§5.2）。丢弃的是**结果**，不是用户已经说出口的话
     cancelInFlight();
     const seq = ++runSeq;
     const controller = new AbortController();
     inFlight = controller;
-    const run = runTurn(seq, controller, userText);
+    const run = runTurn(seq, controller, userText, image);
     // 登记这一轮（`send` 自己 await 它、`clear()` 也要等它落定）。两个 handler 是为了让这次
     // 登记不产生 unhandled rejection —— `runTurn` 契约上不 reject，这里只是不让记账变成风险。
     inFlightRuns.add(run);
@@ -397,7 +432,8 @@ export const useAiChatStore = defineStore("aiChat", () => {
   async function runTurn(
     seq: number,
     controller: AbortController,
-    userText: string
+    userText: string,
+    image: ImageAttachment | null,
   ): Promise<void> {
     sending.value = true;
     error.value = null;
@@ -411,7 +447,9 @@ export const useAiChatStore = defineStore("aiChat", () => {
       id: crypto.randomUUID(),
       role: "user",
       content: userText,
-      payload: null,
+      // §4.1/§4.3：图只进 payload（content 是纯文本），且**内存这一份也要带** ——
+      // 否则刚发完那条消息的缩略图要等一次 `load()` 才出现（页面渲染读的就是这个字段）。
+      payload: image === null ? null : { image },
       createdAt: new Date().toISOString(),
     };
     messages.value.push(userMessage);
@@ -427,6 +465,8 @@ export const useAiChatStore = defineStore("aiChat", () => {
       const snapshot = await buildSnapshot(members.map((m) => ({ name: m.name })));
       const turn = await runAgent({
         userText,
+        // 有图 ⇒ agent 层把本轮 content 组装成内容块数组（§4.2）并把图写进 payload（§4.1）
+        ...(image === null ? {} : { image }),
         ledgerId,
         snapshot,
         // 成员表（**真 id**）与快照分两路：快照只给名字（§7.1 绝不发 id），而成员解析要用
@@ -946,6 +986,9 @@ export const useAiChatStore = defineStore("aiChat", () => {
     sendingEnabled,
     privacyCardSeen,
     revealed,
+    attachedImage,
+    setAttachedImage,
+    clearAttachedImage,
     load,
     send,
     cancel,
