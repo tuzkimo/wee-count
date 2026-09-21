@@ -21,8 +21,10 @@ vi.mock("@/db/userDb", async (importOriginal) => {
 import { initUserTables } from "@/db/userDb";
 import {
   ensureConversation, appendMessage, loadMessages, recentTurns, clearConversation,
-  setTitleIfEmpty, type AiMessagePayload,
+  setTitleIfEmpty, buildContext, type AiMessagePayload,
 } from "@/services/ai/session";
+// 只借类型：`import type` 不会把 imageInput（它 import 两个 Tauri 插件）拉进这个测试的运行时
+import type { ImageAttachment } from "@/services/ai/imageInput";
 
 const T0 = "2026-03-01T00:00:00.000Z";
 
@@ -195,7 +197,12 @@ describe("recentTurns：只带最近 3 轮 user/assistant 文本（§4.5）", ()
     const [sql, params] = db.select.mock.calls[0] as [string, unknown[]];
     expect(params).toEqual(["c1", 6]);              // 3 轮 × 2 条；把 n 写死/漏掉都红
     expect(sql).toContain("ORDER BY rowid DESC");   // 取"最近"而不是"最早"
-    expect(sql).not.toContain("payload");           // 全量回放 tool 结果会让 token 膨胀（§4.5）
+    // ⚠️ 这条断言 M4 起**换了口径**（有意摩擦，E7 同族）：SQL 现在必须把 `payload` 选出来，
+    // 否则判不出"这条 user 消息带没带图"（§4.3）。旧写法 `sql).not.toContain("payload")` 已
+    // 不可能成立。它想守的那件事（"payload 的内容不许进上下文"）由下面两条接管，且更直接：
+    //   ① 下一行 `Object.keys(turns[0])` 只有 role/content ⇒ 整份透传 payload 会当场变红；
+    //   ② 带图那条由 `buildContext` 换成占位文本（见 buildContext 那一组用例）。
+    expect(sql).toContain("payload");               // 判"带图"的唯一依据（§4.3）
     expect(turns).toHaveLength(6);
     expect(Object.keys(turns[0]!)).toEqual(["role", "content"]);
     // 必须翻回正序：漏掉 reverse 的话 turns[0] 是"答4"
@@ -211,6 +218,74 @@ describe("recentTurns：只带最近 3 轮 user/assistant 文本（§4.5）", ()
     const turns = await recentTurns("c1", 1);
     expect(db.select.mock.calls[0]![1] as unknown[]).toEqual(["c1", 2]);
     expect(turns.map((t) => t.content)).toEqual(["问4", "答4"]);
+  });
+});
+
+describe("buildContext：带图历史 user 消息 ⇒ 占位文本（§4.3）", () => {
+  const IMG = {
+    mime: "image/jpeg" as const,
+    dataUrl: "data:image/jpeg;base64,AAAA",
+    width: 1280,
+    height: 960,
+    bytes: 3,
+  };
+  const row = (role: "user" | "assistant", content: string, payload: unknown = null) => ({
+    role,
+    content,
+    payload: payload === null ? null : JSON.stringify(payload),
+  });
+  const img = { image: IMG };
+
+  it("带图 + 有文字 ⇒ `[用户发过一张截图] <原文字>`（原文字保留，模型靠它理解意图）", () => {
+    const ctx = buildContext([
+      row("user", "算餐饮", img),
+      row("assistant", "好"),
+    ]);
+    expect(ctx[0]!.content).toBe("[用户发过一张截图] 算餐饮");
+    expect(ctx[1]!.content).toBe("好");
+    // 杀手：把替换写成"整条换掉"（丢掉原文字）⇒ 这条红
+    expect(ctx[0]!.content).toContain("算餐饮");
+  });
+
+  it("带图 + 无文字 ⇒ 只有占位文本，**没有尾随空格**（prompt 里不许出现不可见差异）", () => {
+    const ctx = buildContext([row("user", "", img)]);
+    expect(ctx[0]!.content).toBe("[用户发过一张截图]");
+    expect(ctx[0]!.content).not.toMatch(/\s$/);
+  });
+
+  it("替换**只影响上下文**：入参那一行一个字段都不改（§4.3 明写不影响本地存储与页面渲染）", () => {
+    const saved = row("user", "", img);
+    const ctx = buildContext([saved]);
+
+    expect(ctx[0]!.content).toBe("[用户发过一张截图]");
+    // 杀手：把替换写成 `r.content = …`（原地改）⇒ 下面两条红 —— 页面上的缩略图与原文会一起消失
+    expect(saved.content).toBe("");
+    expect(saved.payload).toBe(JSON.stringify(img));
+  });
+
+  it("不带图 / `image: null` / 坏 payload / assistant 带图 ⇒ 一律原文照旧", () => {
+    const ctx = buildContext([
+      row("user", "上个月花了多少"),                       // 老路径（无 payload）
+      row("user", "也带图但没落上", { image: null }),        // 坏写入：image 为 null
+      { role: "user", content: "坏 payload", payload: "{不是 JSON" },
+      { role: "user", content: "payload 是数组", payload: "[]" },
+      row("assistant", "我看不出来", img),                  // assistant 永不替换（占了"用户发过"就是撒谎）
+    ]);
+    expect(ctx.map((t) => t.content)).toEqual([
+      "上个月花了多少", "也带图但没落上", "坏 payload", "payload 是数组", "我看不出来",
+    ]);
+    // 坏 payload 不许连累整段历史（同 store `parsePayload` 的纪律：坏行不致命）
+    expect(ctx).toHaveLength(5);
+  });
+
+  it("只含 role/content 两个键：refs / drafts / trace 的真值绝不进上下文（§4.5 有界上下文）", () => {
+    const ctx = buildContext([
+      row("user", "带图", { image: IMG, refs: { "q1.total": "128" }, drafts: [{ a: 1 }], trace: [{ b: 2 }] }),
+    ]);
+    expect(Object.keys(ctx[0]!)).toEqual(["role", "content"]);
+    const json = JSON.stringify(ctx);
+    expect(json).not.toContain("q1.total");
+    expect(json).not.toContain("data:image/jpeg");  // dataUrl 一个字都不进上下文（省 token + 缩小隐私面）
   });
 });
 
@@ -255,6 +330,48 @@ describe("session.ts 接真实 node:sqlite（SQL 真的能执行）", () => {
     expect(await loadMessages(cid!)).toEqual([]);
     // 清空后同一账本仍复用同一条会话行（软删行被 ensureConversation 复活，不是删会话再建 —— 否则 UNIQUE 之外的语义会漂）
     expect(await ensureConversation("L1", base)).toBe(cid);
+
+    sqlite.close();
+  });
+
+  it("真库：带图落库的 user 消息在 recentTurns 里变成占位文本（payload 真被读出来了，§4.3）", async () => {
+    const sqlite = await realDb();
+    state.db = asTauriDb(sqlite);
+    const base = new Date("2026-03-02T00:00:00.000Z");
+    const cid = await ensureConversation("L2", base);
+
+    const image: ImageAttachment = {
+      mime: "image/jpeg", dataUrl: "data:image/jpeg;base64,AAAA", width: 1280, height: 960, bytes: 3,
+    };
+    // ① 带图 + 有文字 ② 带图 + 无文字（content 是空串）③ 不带图
+    await appendMessage({
+      id: "u1", conversation_id: cid!, role: "user", content: "算餐饮", payload: { image },
+      created_at: base.toISOString(),
+    });
+    await appendMessage({
+      id: "a1", conversation_id: cid!, role: "assistant", content: "好",
+      created_at: new Date(base.getTime() + 1000).toISOString(),
+    });
+    await appendMessage({
+      id: "u2", conversation_id: cid!, role: "user", content: "", payload: { image },
+      created_at: new Date(base.getTime() + 2000).toISOString(),
+    });
+    await appendMessage({
+      id: "u3", conversation_id: cid!, role: "user", content: "上个月花了多少",
+      created_at: new Date(base.getTime() + 3000).toISOString(),
+    });
+
+    // 杀手：把 SQL 里的 `payload` 去掉（回到旧的 `SELECT role, content`）⇒ 前两条不再是占位文本
+    expect(await recentTurns(cid!, 3)).toEqual([
+      { role: "user", content: "[用户发过一张截图] 算餐饮" },
+      { role: "assistant", content: "好" },
+      { role: "user", content: "[用户发过一张截图]" },
+      { role: "user", content: "上个月花了多少" },
+    ]);
+    // §4.3：替换**不改库** —— 库里那条 content 仍是空串、payload 里的 dataUrl 原样还在
+    const rows = await loadMessages(cid!);
+    expect(rows[2]!.content).toBe("");
+    expect(JSON.parse(rows[2]!.payload!)).toEqual({ image });
 
     sqlite.close();
   });

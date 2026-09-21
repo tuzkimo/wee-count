@@ -11,6 +11,7 @@
 //  4. `is_deleted` 只长在会话行上（消息表没有该列）：读路径按**所属会话**的 `is_deleted = 0` 过滤；
 //     `clearConversation` 硬删消息行 + 软删会话行；`ensureConversation` 复活软删行而不是插第二行（Ruling 7）。
 import { getUserDb } from "@/db/userDb";
+import type { ImageAttachment } from "@/services/ai/imageInput";
 
 const WARN = "[ai/session]";
 
@@ -38,6 +39,15 @@ export interface AiMessagePayload {
   drafts?: unknown[]
   refs?: Record<string, string>
   trace?: unknown[]
+  /**
+   * 这条 user 消息带的**截图**（M4 §4.1）。只进 payload、**绝不进 `content`**（content 是纯文本）。
+   *
+   * 它有两个消费者，都在本文件/编排层，且都**只读**：
+   *  1. 页面渲染（历史里那条消息仍要显示缩略图 —— §4.3 明写替换"不影响页面渲染"）；
+   *  2. `buildContext` 判"这条历史消息要不要换成占位文本"（§4.3）。
+   * ⇒ 发给模型的上下文里**永远没有** dataUrl，只有占位文本（省 token + 缩小隐私面）。
+   */
+  image?: ImageAttachment
   /**
    * 产生这条 assistant 消息时用的提示词版本（`prompt.PROMPT_VERSION`，§7.1:449 的"随消息落库"）。
    *
@@ -163,24 +173,79 @@ export async function loadMessages(conversationId: string): Promise<AiMessageRow
   }
 }
 
+/** `buildContext` 的入参：一行历史消息（`payload` 是**库里那份 JSON 文本**，可能为 null）。 */
+export interface ContextRow {
+  role: "user" | "assistant"
+  content: string
+  payload: string | null
+}
+
+/**
+ * 带图历史消息在上下文里的占位文本（§4.3 逐字）。
+ * ⚠️ 与 §8 的失败文案无关：这是**发给模型**的，用户永远看不到（页面仍显示缩略图）。
+ */
+export const IMAGE_PLACEHOLDER = "[用户发过一张截图]"
+
+/** 这一行的 payload 里有没有落图的 `image`（§4.1）。坏 payload / `image: null` ⇒ 当作没有（不抛）。 */
+function hasImage(payloadJson: string | null): boolean {
+  if (payloadJson === null) return false
+  try {
+    const parsed: unknown = JSON.parse(payloadJson)
+    if (typeof parsed !== "object" || parsed === null) return false
+    const image = (parsed as { image?: unknown }).image
+    // 只认"真有一份图"：`image: null` / 缺键都不算（老消息与坏写入都走这一条）
+    return typeof image === "object" && image !== null
+  } catch {
+    // 坏 JSON 不能连累整段历史：当作"没有图"（与 store 的 `parsePayload` 同一条纪律：坏行不致命）
+    return false
+  }
+}
+
+/**
+ * 历史行 → **发给模型**的上下文（§4.3 的替换在这里，也是它唯一的落点）。
+ *
+ * 带 `image` 的历史 **user** 消息替换成占位文本：
+ *  - 有文字 ⇒ `[用户发过一张截图] <原文字>`（原文字保留：模型要靠它理解"帮我记餐饮"）
+ *  - 没文字 ⇒ `[用户发过一张截图]`（**不带尾随空格** —— 尾随空格会让 prompt 里出现不可见差异）
+ *
+ * ⚠️ 三条边界，缺一条就有真实代价：
+ *  1. **只影响发出去这一份**：入参对象一个字段都不改（`map` 出新对象）—— §4.3 明写替换
+ *     "不影响本地存储与页面渲染"（页面仍要显示缩略图，历史条目的真值仍在 payload 里）。
+ *  2. **assistant 消息永不替换**：占位文本说的是"用户发过"，挂在回答上就是撒谎。
+ *  3. 判据是 payload 里的 `image` 对象，**不是** content 里有没有字 —— 无文字的那条
+ *     content 是空串，靠 content 判会漏掉它（那条恰恰最需要占位，否则模型看到一条空气泡）。
+ */
+export function buildContext(rows: ContextRow[]): AiTurn[] {
+  return rows.map((r) => {
+    if (r.role !== "user" || !hasImage(r.payload)) return { role: r.role, content: r.content }
+    return {
+      role: r.role,
+      content: r.content === "" ? IMAGE_PLACEHOLDER : `${IMAGE_PLACEHOLDER} ${r.content}`,
+    }
+  })
+}
+
 /**
  * 最近 n 轮的 user/assistant 文本（不带 tool 结果），供 prompt 使用。
  * 「一轮」= user 一条 + assistant 一条，所以取最近 `n * 2` 条再翻成正序。
  * DB 未就绪或查询失败时返回 []（不抛）；软删会话同样读不到（见 `loadMessages`）。
+ *
+ * ⚠️ M4 起 SQL **必须**把 `payload` 一起选出来：判"这条 user 消息带没带图"（§4.3）只能看它。
+ * 但 payload 只被 `buildContext` 用来判一个布尔 —— 返回的每个 turn 仍然只有 `role`/`content`
+ * 两个键，refs 的真值 / drafts / trace **一律不进上下文**（§4.5 的有界上下文）。
  */
 export async function recentTurns(conversationId: string, n = 3): Promise<AiTurn[]> {
   const db = getUserDb();
   if (!db) return [];
 
   try {
-    const rows = await db.select<AiTurn[]>(
-      `SELECT role, content FROM ai_messages
+    const rows = await db.select<ContextRow[]>(
+      `SELECT role, content, payload FROM ai_messages
        WHERE conversation_id = ? AND ${CONV_NOT_DELETED}
        ORDER BY rowid DESC LIMIT ?`,
       [conversationId, n * 2]
     );
-    // 显式只映射 role/content：把整行透传会把 payload（含 refs 真值）带进上下文
-    return rows.map((r) => ({ role: r.role, content: r.content })).reverse();
+    return buildContext(rows).reverse();
   } catch (e) {
     console.warn(`${WARN} recentTurns failed:`, e);
     return [];
