@@ -48,7 +48,10 @@ import {
   type Transport,
   type TransportFailure,
 } from "@/services/ai/transport";
-import type { AiMessagePayload } from "@/services/ai/session";
+import {
+  imagePlaceholderText,
+  type AiMessagePayload,
+} from "@/services/ai/session";
 // ⚠️ **只借类型**：`import type` 不会把 imageInput 那份实现（它 import 两个 Tauri 插件）
 // 拉进编排层的运行时 —— 本层要的只是"那张图的形状"（dataUrl / 尺寸 / 字节数）。
 import type { ImageAttachment } from "@/services/ai/imageInput";
@@ -243,21 +246,37 @@ function buildMessages(
 }
 
 /**
+ * 本轮那条 user 消息在**历史里**会呈现成的文本 —— `withoutTrailingDuplicate` 的比较对象。
+ *
+ *  - 无图轮 ⇒ 原文（`recentTurns` 原样返回，M1–M3 逐字不变）
+ *  - 带图轮 ⇒ `imagePlaceholderText(userText)`：`recentTurns` 出来的历史已经过 §4.3 的
+ *    占位替换，库里那行在原位长成这样
+ *
+ * ⚠️ 比较对象**必须**是"历史里那个样子"，不能是 `userText` 原文：带图轮拿原文比
+ * `last.content === userText` **永远为假** ⇒ 去重静默失效（连点两次发送会把同一轮发两遍，
+ * 而"最近 3 轮"实际只剩 2 轮 —— 不报错、不抛，只是上下文悄悄变样）。
+ * 无图轮两者相等，所以老路径行为逐字不变。
+ */
+function contextText(userText: string, image: ImageAttachment | undefined): string {
+  return image === undefined ? userText : imagePlaceholderText(userText);
+}
+
+/**
  * `recentTurns` 是**在本轮 user 落库之前**读的，所以正常不会含本轮。
  * 但"用户连点两次发送"或 store 先落库的形态下它可能已含 ⇒ 去掉尾部重复的本轮消息，
  * 否则本轮会问两遍、且"最近 3 轮"实际只剩 2 轮。
  *
- * ⚠️ 与它比较的**只能是纯文本** `userText`，**绝不能**是本轮那份 content（带图时是块数组）：
- * 库里那行 user 消息的 `content` 就是纯文本（§4.1），拿块数组去比 `===` **永远为假**
- * ⇒ 去重会**静默失效**（连点两次发送时本轮进两遍，而"最近 3 轮"实际只剩 2 轮 ——
- * 不报错、不抛，只是上下文悄悄变样）。
+ * ⚠️ 与它比较的**只能是文本**（`contextText` 算出来的那份），**绝不能**是本轮那份 content
+ * （带图时是块数组）：库里那行 user 消息的 `content` 就是纯文本（§4.1），拿块数组去比 `===`
+ * **永远为假** ⇒ 去重会**静默失效**。带图轮还要再往前一步：它的历史已被 §4.3 替换成
+ * 占位文本 ⇒ 拿 `userText` 原文比同样永远为假（同一个坑的第二种走法）。
  */
 function withoutTrailingDuplicate(
   turns: { role: "user" | "assistant"; content: string }[],
-  userText: string,
+  contextText: string,
 ): { role: "user" | "assistant"; content: string }[] {
   const last = turns[turns.length - 1];
-  if (last !== undefined && last.role === "user" && last.content === userText) {
+  if (last !== undefined && last.role === "user" && last.content === contextText) {
     return turns.slice(0, -1);
   }
   return turns;
@@ -518,8 +537,9 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
 
       const messages = buildMessages(
         system,
-        // 去重只拿**纯文本**比（见 `withoutTrailingDuplicate` 的 ⚠️：块数组比较会静默失效）
-        withoutTrailingDuplicate(history, args.userText),
+        // 去重拿**历史里那个样子**比（见 `withoutTrailingDuplicate` / `contextText` 的 ⚠️：
+        // 块数组比会静默失效；带图轮拿 userText 原文比同样会）
+        withoutTrailingDuplicate(history, contextText(args.userText, args.image)),
         userContent(args.userText, args.image),
         roundMessagesForModel,
       );

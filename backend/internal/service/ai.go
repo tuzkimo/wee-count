@@ -169,7 +169,7 @@ type upstreamChatResponse struct {
 // OpenAI 兼容的多模态回包会回内容块数组（`[{"type":"text","text":"…"}]`）。
 // 旧形状是 string，遇到数组时 json.Unmarshal **整份失败** ⇒ 归一化报 ai_upstream_error
 // ⇒ 用户看到"AI 服务暂时不可用"，可响应本身是好的（只是我们读不懂它的形状）。
-// 容错方向是**只多接受**：字符串与块数组都能读，读不出的形状退化成空文本（见 upstreamText）。
+// 容错方向是**只多接受**：字符串与内容块数组都能读；**读不出的形状显式失败**（见 upstreamText）。
 type upstreamResponseMessage struct {
 	Content   json.RawMessage    `json:"content"`
 	ToolCalls []upstreamToolCall `json:"tool_calls"`
@@ -177,39 +177,59 @@ type upstreamResponseMessage struct {
 
 // upstreamText 把上游 message.content 归一成**纯文本**给客户端契约（AIChatResponse.Text）。
 //
-//	字符串     ⇒ 原样
-//	内容块数组 ⇒ 只取 `type == "text"` 的 `text`，按数组顺序拼接（image_url 等非文本块忽略）
-//	null / 缺键 / 其它坏形状 ⇒ ""（**不报错**）
+// **读得懂**（成功）：
 //
-// 为什么坏形状退化成空串而不是报错：空文本本来就是一个合法形态（模型只回了 tool_calls、
-// 一个字都没说 —— 客户端契约里那就是 `content: ""`，会正常走工具循环）。
-// 为"读不出文本"整轮失败是把可用的响应判成故障，代价远大于收益。
-func upstreamText(raw json.RawMessage) string {
+//	字符串            ⇒ 原样（**空字符串 "" 是合法回答**：模型这一轮就是没说话）
+//	内容块数组        ⇒ 只取 `type == "text"` 的 `text`，按数组顺序拼接
+//	                     （image_url 等非文本块忽略；只要**存在** text 块就算读得懂，
+//	                      哪怕那个 text 是空串 —— 与上面那条同理）
+//	null / 缺键       ⇒ ""（工具回包那一轮的常见形态：模型只回了 tool_calls）
+//
+// **读不懂**（返回 *AIError{ai_upstream_error}，走 M2 既有的失败映射，不新造错误码）：
+//
+//	既不是字符串也不是数组（数字/布尔/对象…）、数组里**一个 text 块都没有**（含空数组）
+//
+// 为什么坏形状**必须显式失败**而不是退化成空串：空串在下游是"AI 没说话"这个**合法**语义
+// （会落一条空 assistant 行、store 的 error 保持 null）⇒ 退化成空串等于把"我们读不懂这个
+// 响应"伪装成"模型什么都没说"，用户看到的是 AI 装死而不是出错。静默成功比显式失败更糟。
+// 而它**不能**顺手把合法的空串也判成失败：空 content 是真实存在的正常形态（§4.2 的教训）。
+func upstreamText(raw json.RawMessage) (string, error) {
 	c := bytes.TrimSpace(raw)
 	if len(c) == 0 || bytes.Equal(c, []byte("null")) {
-		return ""
+		return "", nil
 	}
 	if c[0] == '"' {
 		var s string
 		if err := json.Unmarshal(c, &s); err != nil {
-			return ""
+			return "", badContentShape("不是合法字符串字面量")
 		}
-		return s
+		return s, nil
 	}
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(c, &blocks); err != nil {
-		return ""
+		return "", badContentShape("既不是字符串也不是内容块数组")
 	}
 	var b strings.Builder
+	found := false
 	for _, blk := range blocks {
 		if blk.Type == "text" {
+			found = true
 			b.WriteString(blk.Text)
 		}
 	}
-	return b.String()
+	if !found {
+		return "", badContentShape("内容块数组里没有一个 text 块")
+	}
+	return b.String(), nil
+}
+
+// badContentShape 是"上游 content 形状读不懂"的**显式**失败。
+// 复用 M2 既有的 ai_upstream_error（客户端已有对应文案），不新增错误码。
+func badContentShape(why string) error {
+	return &AIError{Code: AICodeUpstreamError, Err: fmt.Errorf("unrecognized upstream content shape: %s", why)}
 }
 
 // toUpstreamMessages 把客户端契约（扁平）转成上游请求体（嵌套）。
@@ -352,6 +372,12 @@ func normalizeUpstream(raw []byte) (*AIChatResponse, error) {
 		return nil, &AIError{Code: AICodeUpstreamError, Err: errors.New("upstream returned no choices")}
 	}
 	msg := up.Choices[0].Message
+	// 上游的 content 可能是字符串，也可能是内容块数组 ⇒ 一律经 upstreamText 归一（E12.2）；
+	// 形状读不懂时它给**显式失败**（不许退化成空串 —— 那会让用户看到"AI 装死"）。
+	text, err := upstreamText(msg.Content)
+	if err != nil {
+		return nil, err
+	}
 	// tool_calls 必须是 [] 而不是 null：客户端会直接遍历它，
 	// null 与 [] 在 JS 里行为不同——"形状静默不同"是这类适配层最典型的坑。
 	toolCalls := make([]AIToolCall, 0, len(msg.ToolCalls))
@@ -363,8 +389,7 @@ func normalizeUpstream(raw []byte) (*AIChatResponse, error) {
 		})
 	}
 	return &AIChatResponse{
-		// 上游的 content 可能是字符串，也可能是内容块数组 ⇒ 一律经 upstreamText 归一（E12.2）
-		Text:         upstreamText(msg.Content),
+		Text:         text,
 		ToolCalls:    toolCalls,
 		Usage:        up.Usage,
 		FinishReason: up.Choices[0].FinishReason,

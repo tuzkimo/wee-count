@@ -186,6 +186,20 @@ export interface ContextRow {
  */
 export const IMAGE_PLACEHOLDER = "[用户发过一张截图]"
 
+/**
+ * 一条带图 user 消息在**上下文里**会呈现成的文本（§4.3 的替换规则，**唯一定义**）。
+ *
+ *  - 有文字 ⇒ `[用户发过一张截图] <原文字>`（原文字保留：模型要靠它理解"帮我记餐饮"）
+ *  - 没文字 ⇒ `[用户发过一张截图]`（**不带尾随空格** —— 尾随空格会让 prompt 里出现不可见差异）
+ *
+ * 🔒 为什么要单独导出：`agent.ts` 的**去重**（`withoutTrailingDuplicate`）必须拿"历史里那个
+ * 样子"当比较对象，而不是本轮 `userText` 原文 —— 带图轮的历史已经被本函数替换过，拿原文比
+ * 永远为假 ⇒ 去重静默失效（连点两次发送会把同一轮发两遍）。两处若各写一份，就是下一个漂移点。
+ */
+export function imagePlaceholderText(content: string): string {
+  return content === "" ? IMAGE_PLACEHOLDER : `${IMAGE_PLACEHOLDER} ${content}`
+}
+
 /** 这一行的 payload 里有没有落图的 `image`（§4.1）。坏 payload / `image: null` ⇒ 当作没有（不抛）。 */
 function hasImage(payloadJson: string | null): boolean {
   if (payloadJson === null) return false
@@ -220,7 +234,7 @@ export function buildContext(rows: ContextRow[]): AiTurn[] {
     if (r.role !== "user" || !hasImage(r.payload)) return { role: r.role, content: r.content }
     return {
       role: r.role,
-      content: r.content === "" ? IMAGE_PLACEHOLDER : `${IMAGE_PLACEHOLDER} ${r.content}`,
+      content: imagePlaceholderText(r.content),
     }
   })
 }

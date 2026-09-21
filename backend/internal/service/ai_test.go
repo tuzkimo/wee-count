@@ -101,13 +101,21 @@ func TestAIService_Chat_TextOnly(t *testing.T) {
 //
 // 旧形状 `Content string` 遇到内容块数组时 json.Unmarshal 整份失败 ⇒ 归一化报
 // ai_upstream_error ⇒ 用户看到"AI 服务暂时不可用"，而那个响应本身是好的（只是形状我们读不懂）。
-// 容错方向只多不少：字符串/块数组都读得出文本，读不出的形状退化成空文本**而不是**整轮失败
-// （空文本本来就合法：模型只回 tool_calls、一个字都没说时就是这个形态）。
+// 容错方向只多不少：字符串与块数组都读得出文本（**含合法的空串**）。
+//
+// ⚠️ 口径变更（任务 4 审查 Minor-1）：**读不懂的形状显式失败**（ai_upstream_error），
+// 不再退化成空文本。旧口径把"我们读不懂这个响应"伪装成"模型什么都没说"：空文本在下游是
+// 合法语义（落一条空 assistant 行、store 的 error 保持 null）⇒ 用户看到 AI 装死而不是出错。
+// 而**合法的空**（`"content":""`、`[{"type":"text","text":""}]`、null/缺键）必须仍然成功 ——
+// 那是真实存在的正常形态，把它们一起判成失败是另一种错（§4.2 的教训）。
+// 注：**body 本身语法就不合法**（`{oops`）在上层 json.Unmarshal 就被拦下，同样报
+// ai_upstream_error（用户可见结果一致），所以这张表不必再造一个走不到的形状。
 func TestAIService_Chat_ResponseContentShapes(t *testing.T) {
 	cases := []struct {
-		name string
-		body string
-		want string
+		name    string
+		body    string
+		want    string
+		wantErr bool
 	}{
 		{
 			name: "老形状：字符串原样",
@@ -131,9 +139,51 @@ func TestAIService_Chat_ResponseContentShapes(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "读不出文本的坏形状 ⇒ 空串，不整轮失败",
-			body: `{"choices":[{"message":{"content":123},"finish_reason":"stop"}]}`,
+			name: "message 里**缺 content 键** ⇒ 同 null，不失败",
+			body: `{"choices":[{"message":{"tool_calls":[
+				{"id":"call_1","type":"function","function":{"name":"query_transactions","arguments":"{}"}}]},
+				"finish_reason":"tool_calls"}]}`,
 			want: "",
+		},
+		{
+			// 🔴 这条钉住"这次修复没误伤合法空答"：
+			// 杀手：把 `len(c) == 0 || null` 之外的**空串**也判成失败 ⇒ 这条红。
+			name: "**合法的空字符串**照旧成功（「模型这一轮没说话」≠「我们读不懂」）",
+			body: `{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`,
+			want: "",
+		},
+		{
+			// 🔴 同上：判据是"**存在** text 块"，不是"结果非空"。
+			// 杀手：把判据改成 `b.Len() == 0` ⇒ 这条红。
+			name: "text 块本身是空串 ⇒ 仍是成功（存在 text 块就算读得懂）",
+			body: `{"choices":[{"message":{"content":[{"type":"text","text":""}]},"finish_reason":"stop"}]}`,
+			want: "",
+		},
+		{
+			name:    "坏形状：数字（既非字符串也非数组）⇒ 显式失败",
+			body:    `{"choices":[{"message":{"content":123},"finish_reason":"stop"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "坏形状：布尔 ⇒ 显式失败",
+			body:    `{"choices":[{"message":{"content":true},"finish_reason":"stop"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "坏形状：对象 ⇒ 显式失败",
+			body:    `{"choices":[{"message":{"content":{"text":"你好"}},"finish_reason":"stop"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "坏形状：空数组（一个 text 块都没有）⇒ 显式失败",
+			body:    `{"choices":[{"message":{"content":[]},"finish_reason":"stop"}]}`,
+			wantErr: true,
+		},
+		{
+			name: "坏形状：数组里只有非文本块（image_url）⇒ 显式失败",
+			body: `{"choices":[{"message":{"content":[
+				{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,AAAA"}}]},"finish_reason":"stop"}]}`,
+			wantErr: true,
 		},
 	}
 	for _, tc := range cases {
@@ -144,8 +194,22 @@ func TestAIService_Chat_ResponseContentShapes(t *testing.T) {
 			got, err := svc.Chat(context.Background(), AIChatRequest{
 				Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("这个形状读不懂，必须**显式失败**（退化成空串会让用户看到 AI 装死）: got Text=%q", got.Text)
+				}
+				// 复用 M2 既有的映射：不新造错误码
+				var aiErr *AIError
+				if !errors.As(err, &aiErr) {
+					t.Fatalf("失败必须带上错误码（客户端按码选文案）: %v", err)
+				}
+				if aiErr.Code != AICodeUpstreamError {
+					t.Errorf("Code = %q, want %q", aiErr.Code, AICodeUpstreamError)
+				}
+				return
+			}
 			if err != nil {
-				t.Fatalf("这个形状不该整轮失败（旧实现会在块数组上报 ai_upstream_error）: %v", err)
+				t.Fatalf("这个形状必须成功（含合法的空串/null）: %v", err)
 			}
 			if got.Text != tc.want {
 				t.Errorf("Text = %q, want %q", got.Text, tc.want)

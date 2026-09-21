@@ -1126,6 +1126,55 @@ describe("M4 带图那一轮：content 三态组装（§4.2）", () => {
     // 历史那一条**永远**是字符串（占位文本），不会把 dataUrl 再发一遍
     expect(JSON.stringify(calls[0]!.slice(0, 3))).not.toContain("base64");
   });
+
+  // 🔴 任务 4 审查 Minor-2：带图轮的去重**必须也生效**。
+  // 历史里那条已经被 §4.3 换成占位文本 ⇒ 拿 `userText` 原文比 `===` 永远为假 ⇒ 静默失效。
+  // 杀手：把 `withoutTrailingDuplicate(history, contextText(args.userText, args.image))` 的
+  //      **第二个实参**改回 `args.userText` ⇒ 这两条红（本轮进两遍，`roles` 变成 3 条）。
+  it("带图轮连点两次 ⇒ 本轮 user 消息只进一条（拿原文比就会发两遍）", async () => {
+    const { session } = fakeSession({
+      // 第一次发送落库后，`recentTurns` 回来的就是这个样子（§4.3 的占位替换）
+      recentTurns: [{ role: "user", content: "[用户发过一张截图] 算餐饮" }],
+    });
+    const { transport, calls } = scriptedTransport({ text: "记好了", toolCalls: [] });
+
+    await run({ transport, session }, { userText: "算餐饮", image: IMG });
+
+    // 只该剩下 system + 本轮（那条重复的历史被去掉）
+    expect(calls[0]!.map((m) => m.role)).toEqual(["system", "user"]);
+    // 而且留下来的必须是**带图的本轮那条**（不是把历史那条留下、把本轮丢掉）
+    expect(Array.isArray(calls[0]![1]!.content)).toBe(true);
+  });
+
+  it("带图轮、**一个字都没写**时连点两次 ⇒ 同样只进一条（占位文本不带尾随空格）", async () => {
+    const { session } = fakeSession({
+      recentTurns: [{ role: "user", content: "[用户发过一张截图]" }],
+    });
+    const { transport, calls } = scriptedTransport({ text: "看不出金额", toolCalls: [] });
+
+    await run({ transport, session }, { userText: "", image: IMG });
+
+    expect(calls[0]!.map((m) => m.role)).toEqual(["system", "user"]);
+  });
+
+  // 🔴 反向边界：去重只能去掉**真的重复**的那一条，不许把"上一条不同的 user 消息"一起吃掉。
+  // ⚠️ 历史**尾部必须是一条 user 行**才有判别力（尾行是 assistant 时，放宽判据也碰不到它 ⇒ MISS，
+  // 我第一版就是这么写的：K-D2 实测全绿，等于零判别力）。
+  // 杀手：把判据放宽成"尾部是 user 就去掉"（不看文本）⇒ 这条红（最近 3 轮悄悄少一轮）。
+  it("带图轮 + 历史尾部是一条**别的** user 消息 ⇒ 必须留着（只去掉真重复的那条）", async () => {
+    const { session } = fakeSession({
+      recentTurns: [
+        { role: "user", content: "[用户发过一张截图] 上个月呢" },
+        { role: "assistant", content: "上个月 300 元" },
+        { role: "user", content: "那这周呢" },
+      ],
+    });
+    const { transport, calls } = scriptedTransport({ text: "记好了", toolCalls: [] });
+
+    await run({ transport, session }, { userText: "算餐饮", image: IMG });
+
+    expect(calls[0]!.map((m) => m.role)).toEqual(["system", "user", "assistant", "user", "user"]);
+  });
 });
 
 describe("M4 带图那一轮：图落 payload、content 仍是纯文本（§4.1）", () => {
