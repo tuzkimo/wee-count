@@ -48,7 +48,7 @@ function injected(shot: JpegShot = { dataUrl: dataUrlOfBytes(3000), width: 1280,
   return { deps, toJpegDataUrl };
 }
 
-describe("pickImage：读文件之前（选择器与扩展名初筛）", () => {
+describe("pickImage：读文件之前（只跟选择器打交道）", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -65,13 +65,23 @@ describe("pickImage：读文件之前（选择器与扩展名初筛）", () => {
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ multiple: false, directory: false }));
   });
 
-  // 初筛是"扩展名"：它的判据是文件名，**故意**连字节都不看（`.pdf` + JPEG 字节也拒）
-  it("非图片扩展名 ⇒ 拒绝并给出规格 §8 文案，且不转码", async () => {
+  // 🔴 裁决：扩展名**不设否决权**（选择器已按扩展名过滤候选，再否决只会误拒 ——
+  // 比如 Android 选择器返回一个**没有扩展名**的合法图片）。准入判据只有字节头。
+  // 若要它红，需要把 `sniffImageMime(bytes)` 重新套上扩展名白名单（= 把删掉的第二道否决权装回来）。
+  it("扩展名不设否决权：`.pdf` 扩展名 + 合法 JPEG 字节 ⇒ **不拒**，照样进转码", async () => {
     vi.mocked(open).mockResolvedValue("C:/tmp/a.pdf");
     vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
     const { deps, toJpegDataUrl } = injected();
-    await expect(pickImage(deps)).resolves.toEqual({ ok: false, message: MSG_UNSUPPORTED });
-    expect(toJpegDataUrl).not.toHaveBeenCalled();
+    await expect(pickImage(deps)).resolves.toMatchObject({ ok: true });
+    expect(toJpegDataUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("无扩展名的合法图片（Android 选择器可能这样返回）⇒ 不拒", async () => {
+    vi.mocked(open).mockResolvedValue("content://media/external/images/1000042");
+    vi.mocked(readFile).mockResolvedValue(JPEG_BYTES);
+    const { deps, toJpegDataUrl } = injected();
+    await expect(pickImage(deps)).resolves.toMatchObject({ ok: true });
+    expect(toJpegDataUrl).toHaveBeenCalledTimes(1);
   });
 
   it("读文件失败（权限 / 损坏）⇒ 「读不到这张图片，请重试」", async () => {
@@ -87,8 +97,8 @@ describe("pickImage：字节头定音（魔数才是准入判据，errata E7d）
     vi.mocked(open).mockResolvedValue("C:/tmp/fake.jpg");
   });
 
-  // 🔴 本用例是 E7d 的落点：`.jpg` 扩展名**过了初筛**，只有字节头能拦下它。
-  // 若要它红，需要把 `sniffImageMime(bytes)` 换成"只看扩展名"（或让嗅探恒过）。
+  // 🔴 本用例是 E7d 的落点：扩展名不再参与判断（连 `.jpg` 也不代表什么），只有字节头能定音。
+  // 若要它红，需要让 `sniffImageMime(bytes)` 恒过（或让判据重新看扩展名）。
   it("改名伪装：GIF 字节 + .jpg 扩展名 ⇒ 拒绝（否则动图会被解出第一帧）", async () => {
     vi.mocked(readFile).mockResolvedValue(GIF_BYTES);
     const { deps, toJpegDataUrl } = injected();
@@ -162,6 +172,18 @@ describe("pickImage：压缩后的体积闸门与返回形状（规格 §4.1 / �
       ok: false,
       message: MSG_TOO_LARGE,
     });
+  });
+
+  // 🔴 裁决 B：编码结果为空 ⇒ **「这张图片打不开」**，不许报成「图片太大」
+  // （后者会让用户去裁更小的图、然后继续失败 —— 文案诚实性）。
+  // 若要它红，需要删掉 `if (size === 0)` 这条守卫：空结果会掉进"图片太大"分支。
+  it("编码结果为空（空串 / 只有前缀）⇒ 「这张图片打不开」", async () => {
+    for (const dataUrl of ["", "data:image/jpeg;base64,"]) {
+      await expect(pickImage(injected({ dataUrl, width: 1280, height: 960 }).deps), JSON.stringify(dataUrl)).resolves.toEqual({
+        ok: false,
+        message: MSG_DECODE_FAILED,
+      });
+    }
   });
 
   it("转码失败（解不开 / 没有 2d 上下文）⇒ 「这张图片打不开」", async () => {

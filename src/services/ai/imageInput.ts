@@ -7,13 +7,16 @@
 // ⇒ 等于**没测**。所以三个 IO 全部从参数进来、默认用真实现（`realDeps`）：
 // 测试既能注入假实现覆盖正常路径，也能**不注入**去证明生产默认路径真的接到了 canvas。
 //
-// ⚠️ **两条判据的定序（errata E7d / E8c）——这是本文件最容易写错的地方**：
-//   1. **扩展名初筛**（`mimeFromPath`）：便宜，但**可被改名伪造** ⇒ 只当快速过滤；
-//   2. **字节头定音**（`sniffImageMime`）：`readFile` 成功之后、**转码之前**，`null` 即拒绝。
-//   送给转码器的 `sourceMime` 用**嗅探结果**（字节头的真相），扩展名不参与后续任何判断。
-//   历史：这里曾有一条 `if (!isAcceptedMime("image/jpeg"))` —— 判的是**字面量**、恒假，
-//   是一条假防线（E7d）：改名成 `.jpg` 的 GIF 会从它眼皮下溜到 `createImageBitmap`，
-//   而后者照样解得开动图的第一帧 ⇒ 绕过了规格 §1 的"只接受静态位图"。已删除。
+// ⚠️ **准入判据只有一条：字节头（魔数）**（裁决：扩展名**不设否决权**；errata E8c / E7d）：
+//   选择器只按扩展名**过滤候选**（`PICK_EXTENSIONS`，纯粹是 UX），**不参与准入判断**。
+//   理由：扩展名两头都不靠谱 —— 往上可被改名伪造（GIF 改名成 `.jpg`），往下会**误拒**
+//   （Android 选择器可能返回一个没有扩展名的合法图片）。
+//   所以：`readFile` 成功之后、**转码之前**调 `sniffImageMime(bytes)`，`null` 即拒绝；
+//   送给转码器的 `sourceMime` 也用**嗅探结果**（比扩展名准）。
+//   历史（两条已被删掉的判据，别再写回来）：
+//     - `if (!isAcceptedMime("image/jpeg"))` —— 判的是**字面量**、恒假，一条假防线（E7d）；
+//     - `if (mimeFromPath(selected) === null) return …` —— 让扩展名成了**第二道否决权**，
+//       既与"字节定音"自相矛盾（E8c），又会误拒无扩展名的合法图片。
 //
 // ⚠️ 返回的 `mime` **固定 `"image/jpeg"`**：canvas 一律导出 JPEG（`toDataURL("image/jpeg", …)`），
 // 把源类型传下去会让 `payload.image.mime` 与 `dataUrl` 的真实类型**不一致**（E8c）。
@@ -44,30 +47,16 @@ export interface ImageAttachment {
 export type PickResult = { ok: true; image: ImageAttachment } | { ok: false; message: string } | null;
 
 /**
- * 规格 §8 的用户可见文案。**逐字**照抄，且全文件只此一份 ——
- * "只支持 JPEG / PNG / WebP 图片"在**两条**分支上用（扩展名初筛、字节头定音），
- * 抄两份就是两份手写真相（本仓 `toolNames.ts` 记过同族的血泪）。
+ * 规格 §8 的用户可见文案。**逐字**照抄，且全文件只此一份（本仓 `toolNames.ts`
+ * 记过"同一句话抄两份 ⇒ 两份手写真相迟早漂移"的血泪）。
  */
 const MSG_UNSUPPORTED = "只支持 JPEG / PNG / WebP 图片";
 const MSG_READ_FAILED = "读不到这张图片，请重试";
 const MSG_DECODE_FAILED = "这张图片打不开";
 const MSG_TOO_LARGE = "图片太大，换一张或先裁剪";
 
-/** 选择器里列的扩展名（用户体验层的过滤；**不是**准入判据） */
+/** 选择器里列的扩展名（**只是 UX 过滤**：连它自己都不参与准入判断，见文件头） */
 const PICK_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
-
-/** 扩展名 → MIME 的**初筛**表。真正的类型判定在 `sniffImageMime`（字节头）。 */
-const EXT_MIME: Record<string, AcceptedMime> = {
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  png: "image/png",
-  webp: "image/webp",
-};
-
-function mimeFromPath(path: string): AcceptedMime | null {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  return EXT_MIME[ext] ?? null;
-}
 
 /** 转码结果：压缩后的 data URL 与它的像素尺寸 */
 interface JpegResult {
@@ -114,8 +103,8 @@ const realDeps: PickDeps = { open, readFile, toJpegDataUrl };
 /**
  * 选一张图并压缩成 JPEG data URL（规格 §3 步骤 1–3）。
  *
- * 步骤与失败文案（§8）一一对应：取消 ⇒ `null`；非图片 ⇒ 只支持…；读失败 ⇒ 读不到…
- * 解不开 ⇒ 打不开；压缩后仍超 1 MiB ⇒ 图片太大…
+ * 步骤与失败文案（§8）一一对应：取消 ⇒ `null`；魔数认不出 ⇒ 只支持…；读失败 ⇒ 读不到…
+ * 解不开 / 编码结果为空 ⇒ 打不开；压缩后仍超 1 MiB ⇒ 图片太大…
  */
 export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> {
   const selected = await deps.open({
@@ -124,9 +113,6 @@ export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> 
     filters: [{ name: "图片", extensions: PICK_EXTENSIONS }],
   });
   if (selected === null) return null;
-
-  // 初筛：改名就能骗过它，所以它**不是**准入判据（真判据是下面的字节头）
-  if (mimeFromPath(selected) === null) return { ok: false, message: MSG_UNSUPPORTED };
 
   let bytes: Uint8Array;
   try {
@@ -147,6 +133,9 @@ export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> 
   }
 
   const size = dataUrlByteLength(made.dataUrl);
+  // 编码结果为空 = **根本没生成出图片** ⇒ 归"打不开"，**不能**归"图片太大"：
+  // 后者会让用户去裁更小的图、然后继续失败（§8 的文案表一个字都不改，改的是落到哪条分支）
+  if (size === 0) return { ok: false, message: MSG_DECODE_FAILED };
   if (!isWithinByteLimit(size)) return { ok: false, message: MSG_TOO_LARGE };
 
   return {
