@@ -68,13 +68,15 @@ func (e *AIError) Unwrap() error { return e.Err }
 // AIMessage 是客户端 ↔ 后端的消息形状（规格 §6.1）。**只在线上用**，
 // 既不出现在发给上游的请求体里（那边是 upstreamMessage），也不从上游响应反序列化
 // （那边是 upstreamChatResponse.message）。因此它的 json tag 就是对外契约，改它即改契约。
-// Content 是字符串而非多模态数组：v1 是文字进文字出（规格 §9 M2/M3）。
-// M4 做截图时这里要改成 json.RawMessage——届时只改这一个类型。
+// Content 是 json.RawMessage 而不是 string（M4 起）：客户端发字符串（M1–M3 的文字链路）
+// 或发 OpenAI 兼容的多模态内容块数组（截图那一轮）都**原样透传**，后端不解析块内容——
+// 它仍是哑管道。用 RawMessage 的代价是 `null` 会被原样收进字段（RawMessage 实现了
+// UnmarshalJSON，不走 []byte 的"JSON null 保持零值"规则）⇒ 装配点必须归一（见 toUpstreamMessages）。
 type AIMessage struct {
-	Role       string       `json:"role"`
-	Content    string       `json:"content,omitempty"`
-	ToolCallID string       `json:"tool_call_id,omitempty"`
-	ToolCalls  []AIToolCall `json:"tool_calls,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  []AIToolCall    `json:"tool_calls,omitempty"`
 }
 
 // AIToolCall 是客户端契约里的工具调用形状（规格 §6.1:311/322）：**扁平**。
@@ -92,7 +94,7 @@ type AIToolCall struct {
 // 少任何一层供应商都会 400。反过来，客户端契约里多任何一层同样是错的。
 type upstreamMessage struct {
 	Role       string             `json:"role"`
-	Content    string             `json:"content,omitempty"`
+	Content    json.RawMessage    `json:"content,omitempty"`
 	ToolCallID string             `json:"tool_call_id,omitempty"`
 	ToolCalls  []upstreamToolCall `json:"tool_calls,omitempty"`
 }
@@ -169,13 +171,22 @@ type upstreamResponseMessage struct {
 // （供应商解析不出 function.name ⇒ 400），而客户端契约又要求它保持扁平。
 // 客户端没有 tool_calls 时 ToolCalls 保持 nil，`omitempty` 保证该键不出现——
 // 给上游发一个空的 tool_calls 数组在部分供应商上会被当成非法请求。
+//
+// content 同理（规格 §5.2）：null 与空内容都必须归成 nil，让 `omitempty` 把键整个省掉。
+// 为什么不能直接赋值：`json.RawMessage` 实现了 UnmarshalJSON，客户端发
+// `"content": null` 时字段里存的是**字面量 `null`**（4 字节，非空），
+// 直接透传就会给上游发出 `"content":null`；而工具回传那一轮的消息按契约只有
+// role/tool_calls，多一个键在部分供应商上同样是 400。
+// content 是合法的字符串或块数组时**逐字节原样**传下去（不 TrimSpace、不重排）。
 func toUpstreamMessages(in []AIMessage) []upstreamMessage {
 	out := make([]upstreamMessage, len(in))
 	for i, m := range in {
 		out[i] = upstreamMessage{
 			Role:       m.Role,
-			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
+		}
+		if c := bytes.TrimSpace(m.Content); len(c) > 0 && !bytes.Equal(c, []byte("null")) {
+			out[i].Content = m.Content
 		}
 		if len(m.ToolCalls) == 0 {
 			continue

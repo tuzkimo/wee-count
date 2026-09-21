@@ -12,10 +12,12 @@ import (
 	"wee-count/backend/internal/service"
 )
 
-// maxAIBodyBytes 是 AI 请求体上限（规格 §6.4）：256KB。
-// 消息历史 + 工具 schema 约几十 KB，这个上限防的是有人塞巨型 body。
+// maxAIBodyBytes 是 AI 请求体上限（规格 M4 §5.3）：4 MiB。
+// M4 起单条消息可以带一张截图，客户端压缩后 ≤ 1 MiB ⇒ base64 后 ≈ 1.37 MiB，
+// 再留文本、工具 schema 与多轮历史的余量，256KB 的老上限会把任何带图请求打成 413。
+// 它仍然是 DoS 闸门（不是无限放宽）：超限走既有的 *http.MaxBytesError ⇒ 413，不新增错误码。
 // 用 var 而非 const，便于测试用小值触发超限分支（与 maxSyncBodyBytes 同理）。
-var maxAIBodyBytes int64 = 256 << 10
+var maxAIBodyBytes int64 = 4 << 20
 
 type AIHandler struct {
 	svc *service.AIService

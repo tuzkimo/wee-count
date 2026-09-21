@@ -74,14 +74,16 @@ func TestAIHandler_Chat_NoAuth(t *testing.T) {
 	}
 }
 
-// 规格 §8.D：请求体超 256KB → **413**（不是 400）。
+// 规格 §8.D：请求体超上限 → **413**（不是 400）。
 // 现有 sync.go 把超限当 400，AI 这里必须区分出来。
+// M4 §5.3 把上限从 256KB 放宽到 4 MiB，所以这里的 body 也必须跟着长到 4 MiB 以上
+// ——否则它变成一条"超限"的假断言（300KB 在新上限下是合法请求，会拿到 502）。
 func TestAIHandler_Chat_BodyTooLarge(t *testing.T) {
 	h := newAIHandlerForTest(t, "http://127.0.0.1:1", "sk-test")
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ai/chat", h.Chat)
 
-	big := `{"messages":[{"role":"user","content":"` + strings.Repeat("x", 300<<10) + `"}]}`
+	big := `{"messages":[{"role":"user","content":"` + strings.Repeat("x", 4<<20) + `"}]}`
 	req := httptest.NewRequest("POST", "/ai/chat", bytes.NewBufferString(big))
 	req = req.WithContext(setUserID(req.Context(), "u1"))
 	rec := httptest.NewRecorder()
@@ -89,6 +91,42 @@ func TestAIHandler_Chat_BodyTooLarge(t *testing.T) {
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("expected 413, got %d", rec.Code)
+	}
+}
+
+// 规格 §5.3：M4 把上限放宽到 4 MiB。这条把**数值本身**钉住——改回 256KB（或任何
+// 放不下 1.37 MiB base64 单图的值）都会红。没有它，"1.5 MiB 的带图请求不被拒"
+// 还可以靠"上限恰好是别的更大值"侥幸通过。
+func TestAIHandler_Chat_BodyLimitIsFourMiB(t *testing.T) {
+	if want := int64(4 << 20); maxAIBodyBytes != want {
+		t.Errorf("maxAIBodyBytes = %d, want %d（规格 §5.3：单图压缩后 ≤ 1 MiB ⇒ base64 ≈ 1.37 MiB，"+
+			"上限必须放宽到 4 MiB，否则每一条带图请求都会被打成 413）", maxAIBodyBytes, want)
+	}
+}
+
+// 规格 §5.3 的**理由**：一张 1.5 MiB 的 base64 图（≈1.1 MiB 原图，正好在 1 MiB 上限附近）
+// 必须能过 body 闸门。断言落到 502 而不是"非 413"：502 = 请求已经穿过 handler 走到
+// service 的外联那一步（假上游地址不可达），证明它**没有**在上限这一层被拒。
+// 上限还是 256KB 时这条必红（413）。
+func TestAIHandler_Chat_ImageSizedBodyIsNotRejected(t *testing.T) {
+	h := newAIHandlerForTest(t, "http://127.0.0.1:1", "sk-test")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /ai/chat", h.Chat)
+
+	img := strings.Repeat("A", 1500<<10) // 1.5 MiB base64（块数组形态，M4 的真实形状）
+	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"算餐饮"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,` + img + `"}}]}]}`
+	req := httptest.NewRequest("POST", "/ai/chat", bytes.NewBufferString(body))
+	req = req.WithContext(setUserID(req.Context(), "u1"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusRequestEntityTooLarge {
+		t.Fatalf("1.5 MiB 的带图请求被 body 上限拒了（413）——上限没有按规格 §5.3 放宽到 4 MiB")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("带图请求应穿过 body 闸门走到外联那一步（502 ai_unreachable），实际 %d；响应体: %s",
+			rec.Code, rec.Body.String())
 	}
 }
 

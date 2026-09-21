@@ -74,7 +74,7 @@ func TestAIService_Chat_TextOnly(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	got, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -113,7 +113,7 @@ func TestAIService_Chat_ToolCalls(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	got, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "今年花了多少"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"今年花了多少"`)}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -155,7 +155,7 @@ func TestAIService_Chat_ResponseJSONIsFlat(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	got, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "今年花了多少"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"今年花了多少"`)}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -224,13 +224,13 @@ func TestAIService_Chat_RequestToolCallsAreNested(t *testing.T) {
 	// 客户端回传的 assistant 消息 + 工具结果：这就是第二轮的输入形状。
 	_, err := svc.Chat(context.Background(), AIChatRequest{
 		Messages: []AIMessage{
-			{Role: "user", Content: "今年花了多少"},
+			{Role: "user", Content: json.RawMessage(`"今年花了多少"`)},
 			{Role: "assistant", ToolCalls: []AIToolCall{{
 				ID:        "call_1",
 				Name:      "query_transactions",
 				Arguments: `{"aggregate":"sum"}`,
 			}}},
-			{Role: "tool", ToolCallID: "call_1", Content: `{"sum":1234}`},
+			{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`{"sum":1234}`)},
 		},
 	})
 	if err != nil {
@@ -328,7 +328,7 @@ func TestAIService_Chat_SendsConfiguredPayload(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	_, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 		Tools:    []byte(`[{"type":"function","function":{"name":"t"}}]`),
 	})
 	if err != nil {
@@ -378,7 +378,7 @@ func TestAIService_Chat_UpstreamErrorMapping(t *testing.T) {
 			svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 			_, err := svc.Chat(context.Background(), AIChatRequest{
-				Messages: []AIMessage{{Role: "user", Content: "hi"}},
+				Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 			})
 			if err == nil {
 				t.Fatal("上游非 200 时应返回错误")
@@ -413,7 +413,7 @@ func TestAIService_Chat_RedirectIsNotSuccess(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	got, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	if err == nil {
 		t.Fatalf("3xx 不得当作成功，实际返回: %+v", got)
@@ -440,7 +440,7 @@ func TestAIService_Chat_Timeout(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 50*time.Millisecond)
 
 	_, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	assertAICode(t, err, AICodeUpstreamTimeout)
 }
@@ -516,7 +516,7 @@ func TestAIService_Chat_Unreachable(t *testing.T) {
 	svc := newTestAIService(t, url, 5*time.Second)
 
 	_, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	assertAICode(t, err, AICodeUnreachable)
 }
@@ -527,7 +527,7 @@ func TestAIService_Chat_NoChoices(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	_, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	assertAICode(t, err, AICodeUpstreamError)
 }
@@ -550,7 +550,7 @@ func TestAIService_Chat_UpstreamBodyTooLarge(t *testing.T) {
 	svc := newTestAIService(t, srv.URL, 5*time.Second)
 
 	got, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	if err == nil {
 		t.Fatalf("上游响应 %d 字节（超过上限 %d）时必须报错，实际成功解出 %d 字节文本",
@@ -567,7 +567,7 @@ func TestAIService_Chat_DisabledSendsNothing(t *testing.T) {
 	})
 
 	_, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: "hi"}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
 	})
 	assertAICode(t, err, AICodeDisabled)
 	if calls, _, _, _ := rec.snapshot(); calls != 0 {
@@ -591,7 +591,7 @@ func TestAIService_Chat_LogsUsageNotContent(t *testing.T) {
 
 	const sentinel = "SENTINEL-账目-盒马-12345"
 	if _, err := svc.Chat(context.Background(), AIChatRequest{
-		Messages: []AIMessage{{Role: "user", Content: sentinel}},
+		Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"` + sentinel + `"`)}},
 	}); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
