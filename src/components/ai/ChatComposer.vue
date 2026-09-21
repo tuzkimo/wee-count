@@ -16,9 +16,17 @@
 // ⇒ 脚本里的 `if (sending) return` 也是同类走不到的防御（复审 m8 实测全绿），已删。
 // 没有第三条用户可达入口：无 `<form>` / 无 `@submit` / script setup 无 `expose`
 // （`vm.onSend()` 只有 dev/test 的代理能直调，不是生产入口）。
+//
+// ⚠️ **选图按钮（M4 §7）用的是同一个 `enabled`**：`:disabled="!enabled"`，与发送按钮那一行**逐字同源**。
+// 规格 §7 要的是"关闭时选图与发送**一并**不可用"⇒ 必须是**同一道闸**，不许新造第二条判据。
+// `sending` 期间它**不禁用**：发送按钮在 `sending` 时是"不渲染"而非"禁用"（见上），
+// 所以两枚按钮唯一共有的禁用来源就是 `enabled`；选图期间不禁用也不越权 ——
+// 图片是本地选、本地压，发送仍要用户再点一次（§7 的意愿层闸门在 `enabled` 上）。
 import { ref } from "vue";
-import { Send, Square } from "lucide-vue-next";
+import { ImagePlus, Send, Square } from "lucide-vue-next";
+import AttachmentPreview from "@/components/ai/AttachmentPreview.vue";
 import { useKeyboardInset } from "@/composables/useKeyboardInset";
+import { type ImageAttachment, pickImage } from "@/services/ai/imageInput";
 
 /**
  * `enabled`（默认 `true`）：§7.3 的意愿层开关关着时**输入框与发送键都禁用**。
@@ -32,10 +40,37 @@ withDefaults(defineProps<{ sending: boolean; enabled?: boolean }>(), { enabled: 
 const emit = defineEmits<{
   send: [text: string];
   cancel: [];
+  attach: [image: ImageAttachment];
 }>();
 
 const text = ref("");
 const inset = useKeyboardInset();
+
+/** 已选中的截图（本地状态：发送前只活在这里，落库是任务 4 的 store 的事） */
+const attached = ref<ImageAttachment | null>(null);
+/** 选图失败的 §8 文案（空串 = 没有错误）—— 失败**不抛**，页面只展示这句话 */
+const imageError = ref("");
+
+/**
+ * 选图（§3 步骤 1–3）：取消什么都不做；失败只显示文案；成功进预览并发 `attach`。
+ * `pickImage()` 无参 ⇒ 走**生产默认依赖**（真插件 + 真 canvas），本组件不注入任何东西。
+ */
+async function onPickImage(): Promise<void> {
+  const result = await pickImage();
+  if (result === null) return;
+  if (!result.ok) {
+    imageError.value = result.message;
+    return;
+  }
+  imageError.value = "";
+  attached.value = result.image;
+  emit("attach", result.image);
+}
+
+/** 撤掉附件：只影响**待发**内容（已落库的历史图不动，§7「不追溯删除」） */
+function onRemoveImage(): void {
+  attached.value = null;
+}
 
 function onSend(): void {
   const value = text.value.trim();
@@ -57,7 +92,20 @@ function onCancel(): void {
     :style="{ paddingBottom: `${8 + inset}px` }"
     data-test="chat-composer"
   >
+    <p v-if="imageError" class="mb-2 text-xs text-red-500" data-test="composer-image-error">{{ imageError }}</p>
+    <AttachmentPreview v-if="attached" :image="attached" class="mb-2" @remove="onRemoveImage" />
     <div class="flex items-end gap-2">
+      <button
+        type="button"
+        class="flex items-center rounded-lg border border-gray-200 px-2 py-2 text-text-secondary disabled:opacity-50"
+        :disabled="!enabled"
+        aria-label="选择截图"
+        title="选一张截图记账"
+        data-test="composer-pick-image"
+        @click="onPickImage"
+      >
+        <ImagePlus :size="16" />
+      </button>
       <input
         v-model="text"
         type="text"
