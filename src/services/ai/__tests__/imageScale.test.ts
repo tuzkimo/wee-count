@@ -53,6 +53,15 @@ describe("scaleToFit", () => {
     expect(out.height).toBeGreaterThanOrEqual(1);
   });
 
+  it("极端长宽比的竖长条（3×20000）不产生 0 边 —— 与上一条成对，专压 width 侧", () => {
+    // ⚠️ 上一条横长条只压得住 **height 侧**的 `Math.max(1, …)`：删掉 width 那一行它照样绿
+    // （width = round(20000 × 0.064) = 1280，本来就不是 0）。竖长条才让 width 落到 0：
+    // width = round(3 × 1280/20000) = round(0.192) = 0 ⇒ 没有保护就是 0 边。
+    const out = scaleToFit({ width: 3, height: 20000 });
+    expect(out.height).toBe(MAX_EDGE);
+    expect(out.width).toBeGreaterThanOrEqual(1);
+  });
+
   it("竖图（高 > 宽）同样按长边缩", () => {
     expect(scaleToFit({ width: 600, height: 2400 })).toEqual({ width: 320, height: MAX_EDGE, scaled: true });
   });
