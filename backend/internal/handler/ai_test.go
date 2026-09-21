@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,6 +131,67 @@ func TestAIHandler_Chat_ImageSizedBodyIsNotRejected(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("带图请求应穿过 body 闸门走到外联那一步（502 ai_unreachable），实际 %d；响应体: %s",
 			rec.Code, rec.Body.String())
+	}
+}
+
+// handler 级端到端：请求体里真的带 `"content": null`。
+// service 侧的用例只能喂"已经被解码成 RawMessage(`null`)"的等价物 —— 它证不了解码层：
+// ① handler 会不会因为这个值把请求拒掉；② 解码后字段里存的到底是字面量 `null`（4 字节）
+// 还是 nil（缺键）。这两件事实一旦变了（handler 加校验、Content 换成 *json.RawMessage、
+// 自定义 UnmarshalJSON、中间件改写 body），只有这条用例会响。
+//
+// 判别力来源：去掉 service 装配点的 null 归一 ⇒ 上游收到的消息多出 content 键 ⇒ 第二条断言红。
+func TestAIHandler_Chat_NullContentIsNotForwarded(t *testing.T) {
+	// 抓上游请求体的假上游：handler 包已有的 newFakeUpstreamForHandler 只看响应侧。
+	// 锁的理由同 service 包：httptest 在自己的 goroutine 上跑 handler，裸读会被 -race 报竞争。
+	var mu sync.Mutex
+	var upstreamBody string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		upstreamBody = string(raw)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(up.Close)
+
+	h := newAIHandlerForTest(t, up.URL, "sk-test")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /ai/chat", h.Chat)
+
+	req := httptest.NewRequest("POST", "/ai/chat",
+		bytes.NewBufferString(`{"messages":[{"role":"user","content":null}]}`))
+	req = req.WithContext(setUserID(req.Context(), "u1"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	// ① 解码层接受 `null`：它是合法 JSON，绝不该在这里变成 400。
+	if rec.Code != http.StatusOK {
+		t.Fatalf("content:null 的请求应被接受并转发（200），实际 %d；响应体: %s",
+			rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	body := upstreamBody
+	mu.Unlock()
+	if body == "" {
+		t.Fatal("前提不成立：假上游没收到请求体")
+	}
+	var wire struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &wire); err != nil {
+		t.Fatalf("上游收到的不是合法 JSON: %v；实际: %s", err, body)
+	}
+	if len(wire.Messages) != 1 {
+		t.Fatalf("上游应收到 1 条 message，实际 %d；实际: %s", len(wire.Messages), body)
+	}
+	// ② 解码层的 null 必须被归成"缺键"，不得以 `"content":null` 透传给上游。
+	if got, want := slices.Sorted(maps.Keys(wire.Messages[0])), []string{"role"}; !slices.Equal(got, want) {
+		t.Errorf("上游收到的消息键集 = %v, want %v（解码层把字面量 null 收进了 RawMessage，"+
+			"装配点必须把它归一成缺键）；实际: %s", got, want, body)
 	}
 }
 

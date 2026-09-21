@@ -69,9 +69,13 @@ func (e *AIError) Unwrap() error { return e.Err }
 // 既不出现在发给上游的请求体里（那边是 upstreamMessage），也不从上游响应反序列化
 // （那边是 upstreamChatResponse.message）。因此它的 json tag 就是对外契约，改它即改契约。
 // Content 是 json.RawMessage 而不是 string（M4 起）：客户端发字符串（M1–M3 的文字链路）
-// 或发 OpenAI 兼容的多模态内容块数组（截图那一轮）都**原样透传**，后端不解析块内容——
-// 它仍是哑管道。用 RawMessage 的代价是 `null` 会被原样收进字段（RawMessage 实现了
-// UnmarshalJSON，不走 []byte 的"JSON null 保持零值"规则）⇒ 装配点必须归一（见 toUpstreamMessages）。
+// 或发 OpenAI 兼容的多模态内容块数组（截图那一轮），后端都**不解析、不改结构、不重排键序**
+// ——它仍是哑管道。
+// 注意"透传"是**语义**层面，不是**字节**层面：json.Marshal 对 RawMessage 会就地 compact
+// （块内空白被压掉）并做 HTML 转义（`<` `>` `&` → `\u003c` `\u0026` `\u003e`）。
+// JSON 的空白与转义不影响解析出的值，所以上游拿到的 JSON 值与客户端发出的等价。
+// 用 RawMessage 的代价是 `null` 会被原样收进字段（RawMessage 实现了 UnmarshalJSON，
+// 不走 []byte 的"JSON null 保持零值"规则）⇒ 装配点必须归一（见 toUpstreamMessages）。
 type AIMessage struct {
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content,omitempty"`
@@ -177,7 +181,10 @@ type upstreamResponseMessage struct {
 // `"content": null` 时字段里存的是**字面量 `null`**（4 字节，非空），
 // 直接透传就会给上游发出 `"content":null`；而工具回传那一轮的消息按契约只有
 // role/tool_calls，多一个键在部分供应商上同样是 400。
-// content 是合法的字符串或块数组时**逐字节原样**传下去（不 TrimSpace、不重排）。
+// content 是合法的字符串或块数组时按**语义**原样传下去：不 TrimSpace、不解析、不改结构、
+// 不重排键序（赋的是未经 trim 的原始字节，所以 `"content":""` 与 `"content":" "` 不会被误判成空）。
+// 但这里的"原样"同样是语义层面：json.Marshal 会 compact RawMessage 的块内空白并做 HTML 转义
+// （`<` `>` `&` → `\u003c` `\u0026` `\u003e`），解析出的 JSON 值不变。
 func toUpstreamMessages(in []AIMessage) []upstreamMessage {
 	out := make([]upstreamMessage, len(in))
 	for i, m := range in {

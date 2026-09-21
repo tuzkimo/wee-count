@@ -230,7 +230,9 @@ func TestAIService_Chat_RequestToolCallsAreNested(t *testing.T) {
 				Name:      "query_transactions",
 				Arguments: `{"aggregate":"sum"}`,
 			}}},
-			{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`{"sum":1234}`)},
+			// tool 消息的 content 在 OpenAI 兼容协议里是**字符串**（工具结果就是一段文本），
+			// 不是对象也不是块数组——裸对象会被真实供应商判非法。这里逐字保留改动前的语义。
+			{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"{\"sum\":1234}"`)},
 		},
 	})
 	if err != nil {
