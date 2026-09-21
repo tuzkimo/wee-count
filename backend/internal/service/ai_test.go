@@ -97,6 +97,63 @@ func TestAIService_Chat_TextOnly(t *testing.T) {
 	}
 }
 
+// 响应侧 content 容错（任务 1 审查 Minor-5 / E12.2）：上游回的 content **不一定是字符串**。
+//
+// 旧形状 `Content string` 遇到内容块数组时 json.Unmarshal 整份失败 ⇒ 归一化报
+// ai_upstream_error ⇒ 用户看到"AI 服务暂时不可用"，而那个响应本身是好的（只是形状我们读不懂）。
+// 容错方向只多不少：字符串/块数组都读得出文本，读不出的形状退化成空文本**而不是**整轮失败
+// （空文本本来就合法：模型只回 tool_calls、一个字都没说时就是这个形态）。
+func TestAIService_Chat_ResponseContentShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "老形状：字符串原样",
+			body: `{"choices":[{"message":{"content":"你好"},"finish_reason":"stop"}]}`,
+			want: "你好",
+		},
+		{
+			name: "块数组：只取 text 块按序拼接（image_url 块忽略）",
+			body: `{"choices":[{"message":{"content":[
+				{"type":"text","text":"这个月"},
+				{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,AAAA"}},
+				{"type":"text","text":"花了 128 元"}
+			]},"finish_reason":"stop"}]}`,
+			want: "这个月花了 128 元",
+		},
+		{
+			name: "content 显式为 null（工具回包那一轮的常见形态）",
+			body: `{"choices":[{"message":{"content":null,"tool_calls":[
+				{"id":"call_1","type":"function","function":{"name":"query_transactions","arguments":"{}"}}]},
+				"finish_reason":"tool_calls"}]}`,
+			want: "",
+		},
+		{
+			name: "读不出文本的坏形状 ⇒ 空串，不整轮失败",
+			body: `{"choices":[{"message":{"content":123},"finish_reason":"stop"}]}`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newFakeUpstream(t, 200, tc.body)
+			svc := newTestAIService(t, srv.URL, 5*time.Second)
+
+			got, err := svc.Chat(context.Background(), AIChatRequest{
+				Messages: []AIMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+			})
+			if err != nil {
+				t.Fatalf("这个形状不该整轮失败（旧实现会在块数组上报 ai_upstream_error）: %v", err)
+			}
+			if got.Text != tc.want {
+				t.Errorf("Text = %q, want %q", got.Text, tc.want)
+			}
+		})
+	}
+}
+
 // 归一化：tool_calls 从**上游嵌套形状**映射到**客户端扁平契约**（规格 §6.1:311-314）。
 // 断言口径与本轮之前完全一致（id/名称/arguments 三项都要对），只是字段路径变了：
 // 上游的 `function.name` → 契约的 `name`。`type` 在契约里不存在，故不再断言它，

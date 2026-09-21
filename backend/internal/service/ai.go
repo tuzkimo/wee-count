@@ -164,9 +164,52 @@ type upstreamChatResponse struct {
 
 // upstreamResponseMessage 是上游响应里 message 的形状。tool_calls 是**嵌套**的，
 // 与请求侧上游形状一致——所以这里复用 upstreamToolCall，转换在 normalizeUpstream。
+//
+// Content 是 json.RawMessage 而不是 string（M4）：供应商回的**不一定是字符串** ——
+// OpenAI 兼容的多模态回包会回内容块数组（`[{"type":"text","text":"…"}]`）。
+// 旧形状是 string，遇到数组时 json.Unmarshal **整份失败** ⇒ 归一化报 ai_upstream_error
+// ⇒ 用户看到"AI 服务暂时不可用"，可响应本身是好的（只是我们读不懂它的形状）。
+// 容错方向是**只多接受**：字符串与块数组都能读，读不出的形状退化成空文本（见 upstreamText）。
 type upstreamResponseMessage struct {
-	Content   string             `json:"content"`
+	Content   json.RawMessage    `json:"content"`
 	ToolCalls []upstreamToolCall `json:"tool_calls"`
+}
+
+// upstreamText 把上游 message.content 归一成**纯文本**给客户端契约（AIChatResponse.Text）。
+//
+//	字符串     ⇒ 原样
+//	内容块数组 ⇒ 只取 `type == "text"` 的 `text`，按数组顺序拼接（image_url 等非文本块忽略）
+//	null / 缺键 / 其它坏形状 ⇒ ""（**不报错**）
+//
+// 为什么坏形状退化成空串而不是报错：空文本本来就是一个合法形态（模型只回了 tool_calls、
+// 一个字都没说 —— 客户端契约里那就是 `content: ""`，会正常走工具循环）。
+// 为"读不出文本"整轮失败是把可用的响应判成故障，代价远大于收益。
+func upstreamText(raw json.RawMessage) string {
+	c := bytes.TrimSpace(raw)
+	if len(c) == 0 || bytes.Equal(c, []byte("null")) {
+		return ""
+	}
+	if c[0] == '"' {
+		var s string
+		if err := json.Unmarshal(c, &s); err != nil {
+			return ""
+		}
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(c, &blocks); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, blk := range blocks {
+		if blk.Type == "text" {
+			b.WriteString(blk.Text)
+		}
+	}
+	return b.String()
 }
 
 // toUpstreamMessages 把客户端契约（扁平）转成上游请求体（嵌套）。
@@ -320,7 +363,8 @@ func normalizeUpstream(raw []byte) (*AIChatResponse, error) {
 		})
 	}
 	return &AIChatResponse{
-		Text:         msg.Content,
+		// 上游的 content 可能是字符串，也可能是内容块数组 ⇒ 一律经 upstreamText 归一（E12.2）
+		Text:         upstreamText(msg.Content),
 		ToolCalls:    toolCalls,
 		Usage:        up.Usage,
 		FinishReason: up.Choices[0].FinishReason,

@@ -41,6 +41,15 @@ describe("AiPrivacyCard（§7.3:472-480）", () => {
     }
   });
 
+  it("⑤ 必须说明**截图是整张上传**（M4 §7：截图含余额/其他账本，用户得先知道）", () => {
+    const w = mount(AiPrivacyCard, { props: { host: HOST, seen: false } });
+    const screenshot = w.get('[data-test="ai-privacy-screenshot"]').text();
+    // 杀手：删掉这一段 ⇒ 这条红（用户以为只发"圈出来那笔"，实际整张图都出网）
+    expect(screenshot).toContain("整张");
+    expect(screenshot).toContain("余额");
+    expect(screenshot).toContain("账本");
+  });
+
   it("点「知道了」只发事件（写盘由调用方决定，组件不碰 store）", async () => {
     const w = mount(AiPrivacyCard, { props: { host: HOST, seen: false } });
     await w.get('[data-test="ai-privacy-card-dismiss"]').trigger("click");

@@ -37,6 +37,9 @@ const emit = defineEmits<{ dismiss: [] }>();
       <span class="font-medium text-text" data-test="ai-privacy-host">{{ props.host }}</span>。
       明细条目最多发送前 20 条。可随时在「我的 → 隐私」关闭。
     </p>
+    <p class="mt-1 text-xs leading-relaxed text-text-secondary" data-test="ai-privacy-screenshot">
+      发截图时会整张上传，可能含余额与其他账本信息。
+    </p>
     <p class="mt-1 text-xs leading-relaxed text-text-secondary" data-test="ai-privacy-plaintext">
       会话历史是明文落盘（含金额与备注，与流水表同级别），请与数据文件本身同等看待。
     </p>
