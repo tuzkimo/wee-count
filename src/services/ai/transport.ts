@@ -27,15 +27,29 @@ import { apiFetch } from "@/services/api";
 // ---------------------------------------------------------------------------
 
 /**
+ * OpenAI 兼容的**内容块**（M4 截图那一轮用，§4.2）。只声明客户端会发出的两种：
+ * `text`（用户那句话）与 `image_url`（截图的 dataUrl）。
+ *
+ * ⚠️ 这里只是**类型**：组块发生在 `agent.ts` 的编排层（`userContent`），transport
+ * 一个字都不组装 —— 它只负责把 `messages` 序列化发出去（本文件顶部三条纪律不变）。
+ */
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+/**
  * 一条对话消息。
  *
  * `tool_calls` 只在 assistant 消息上出现，形状与响应里收到的**逐字相同** —— 客户端把上一轮
  * 收到的那一份原样回传，服务端负责转成上游的嵌套形状（M2 契约第 1 条）。
  * 所以这里的类型只用 `ChatToolCall`，绝不会出现 `function: {...}`。
+ *
+ * `content` 是 `string | ContentBlock[]`（M4 起）：无图那一轮仍是**字符串**（M1–M3 逐字不变），
+ * 带图那一轮是内容块数组（§4.2）。后端把它当 `json.RawMessage` 哑管道透传（M4 任务 1）。
  */
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | ContentBlock[];
   tool_call_id?: string;
   tool_calls?: ChatToolCall[];
 }

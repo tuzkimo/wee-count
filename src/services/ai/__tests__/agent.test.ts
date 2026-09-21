@@ -36,6 +36,8 @@ import type { AppliedFilter } from "@/services/ai/resolve";
 import type { AiQueryResult } from "@/services/ai/querySql";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
 import type { LookupContext } from "@/services/ai/resolve";
+// 只借类型（M4）：不会把 imageInput（它 import 两个 Tauri 插件）拉进这个测试的运行时
+import type { ImageAttachment } from "@/services/ai/imageInput";
 import {
   runAgent,
   CANCELED_TEXT,
@@ -205,10 +207,13 @@ function fakeSession(opts: { recentTurns?: { role: "user" | "assistant"; content
 
 async function run(
   deps: AgentDeps,
-  over: { userText?: string; signal?: AbortSignal } = {},
+  over: { userText?: string; signal?: AbortSignal; image?: ImageAttachment } = {},
 ): Promise<AgentTurn> {
   return await runAgent({
     userText: over.userText ?? "这个月花了多少",
+    // `image` 只在显式给的时候才传（M4 §4.2）：缺省时**连这个键都不出现**，
+    // 老路径（M1–M3）的入参与行为逐字不变。
+    ...(over.image === undefined ? {} : { image: over.image }),
     ledgerId: LEDGER,
     snapshot: SNAPSHOT,
     lookup: LOOKUP,
@@ -1051,6 +1056,143 @@ describe("真库：往软删会话里 appendMessage 是「写得进、读不出�
 // ---------------------------------------------------------------------------
 // ⑪ 绝不把 id 发给模型 / 不传 signal 给 refresh
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ⑫ M4 截图：本轮 content 的组装（§4.2）/ payload.image 落库（§4.1）/ 带图 400 的文案（§8）
+// ---------------------------------------------------------------------------
+
+describe("M4 带图那一轮：content 三态组装（§4.2）", () => {
+  const IMG: ImageAttachment = {
+    mime: "image/jpeg",
+    dataUrl: "data:image/jpeg;base64,QUJD",
+    width: 1280,
+    height: 960,
+    bytes: 3,
+  };
+  /** 本轮那条 user 消息（历史上那几条也在数组里，所以按"最后一条 user"取） */
+  const lastUser = (msgs: ChatMessage[]): ChatMessage | undefined =>
+    [...msgs].reverse().find((m) => m.role === "user");
+
+  it("无图 ⇒ content 仍是**字符串**（M1–M3 老路径零回归）", async () => {
+    const { transport, calls } = scriptedTransport({ text: "好", toolCalls: [] });
+    await run({ transport }, { userText: "上个月花了多少" });
+    // 杀手：把 `userContent()` 改成"一律返回块数组" ⇒ 这条红（老路径的 content 类型变了）
+    expect(lastUser(calls[0]!)!.content).toBe("上个月花了多少");
+    expect(typeof lastUser(calls[0]!)!.content).toBe("string");
+  });
+
+  it("有图 + 无文字 ⇒ **只**一块 image_url（空 text 块在部分供应商上会被判非法）", async () => {
+    const { transport, calls } = scriptedTransport({ text: "看不出金额", toolCalls: [] });
+    await run({ transport }, { userText: "", image: IMG });
+    // 杀手：删掉 `userContent` 里的 image_url 块（只发 text）⇒ 这条红
+    expect(lastUser(calls[0]!)!.content).toEqual([
+      { type: "image_url", image_url: { url: IMG.dataUrl } },
+    ]);
+    // 文字为空**不能**变成"不发这一轮"：这一轮必须真发出去（§4.2 允许只有图）
+    expect(calls).toHaveLength(1);
+  });
+
+  it("有图 + 有文字 ⇒ 先 text 块再 image_url 块", async () => {
+    const { transport, calls } = scriptedTransport({ text: "好", toolCalls: [] });
+    await run({ transport }, { userText: "算餐饮", image: IMG });
+    // 杀手：省掉 text 块（带图时只发 image_url）⇒ 这条红（用户那句指令丢了）
+    expect(lastUser(calls[0]!)!.content).toEqual([
+      { type: "text", text: "算餐饮" },
+      { type: "image_url", image_url: { url: IMG.dataUrl } },
+    ]);
+  });
+
+  it("图**只进当轮**：第二轮请求（工具往返）不会再多带一份图，历史里也没有图", async () => {
+    const { session } = fakeSession({
+      recentTurns: [
+        { role: "user", content: "[用户发过一张截图] 算餐饮" }, // §4.3：历史里已经是占位文本
+        { role: "assistant", content: "好" },
+      ],
+    });
+    const { transport, calls } = scriptedTransport(
+      { text: "", toolCalls: [CALL_QUERY] },
+      { text: "记好了", toolCalls: [] },
+    );
+    await run({ transport, session }, { userText: "算餐饮", image: IMG });
+
+    expect(calls).toHaveLength(2);
+    // 本轮那块图在两轮请求里各出现一次（第二轮的 messages 是"历史 + 本轮 + 工具往返"重建的）
+    for (const msgs of calls) {
+      const withImage = msgs.filter(
+        (m) => Array.isArray(m.content) && m.content.some((b) => b.type === "image_url"),
+      );
+      expect(withImage).toHaveLength(1);
+    }
+    // 历史那一条**永远**是字符串（占位文本），不会把 dataUrl 再发一遍
+    expect(JSON.stringify(calls[0]!.slice(0, 3))).not.toContain("base64");
+  });
+});
+
+describe("M4 带图那一轮：图落 payload、content 仍是纯文本（§4.1）", () => {
+  const IMG: ImageAttachment = {
+    mime: "image/jpeg",
+    dataUrl: "data:image/jpeg;base64,QUJD",
+    width: 1280,
+    height: 960,
+    bytes: 3,
+  };
+
+  it("带图 ⇒ user 行的 payload.image 整份落库，content 是纯文本（图不进 content）", async () => {
+    const { session, appended } = fakeSession();
+    const { transport } = scriptedTransport({ text: "好", toolCalls: [] });
+    await run({ transport, session }, { userText: "算餐饮", image: IMG });
+
+    const row = appended.find((r) => r.role === "user")!;
+    // 杀手：把 `prepareConversation` 的第四个参数去掉（不传 payload）⇒ 这条红
+    expect(row.payload).toEqual({ image: IMG });
+    // §4.1：content 仍是**纯文本**（用户那句文字），绝不是内容块数组
+    expect(row.content).toBe("算餐饮");
+    expect(typeof row.content).toBe("string");
+  });
+
+  it("无图 ⇒ user 行**连 payload 键都不出现**（老路径逐字不变）", async () => {
+    const { session, appended } = fakeSession();
+    const { transport } = scriptedTransport({ text: "好", toolCalls: [] });
+    await run({ transport, session }, { userText: "上个月花了多少" });
+
+    const row = appended.find((r) => r.role === "user")!;
+    // 杀手：把 payload 一律写成 `{ image: undefined }` ⇒ 这条红（会往库里塞一个坏 JSON 键）
+    expect("payload" in row).toBe(false);
+    expect(row.content).toBe("上个月花了多少");
+  });
+});
+
+describe("M4 §8：上游 400 的文案（带图那一轮换成「可能不支持图片」）", () => {
+  const IMG: ImageAttachment = {
+    mime: "image/jpeg",
+    dataUrl: "data:image/jpeg;base64,QUJD",
+    width: 1280,
+    height: 960,
+    bytes: 3,
+  };
+
+  it("带图 + 上游 400 ⇒ 当前模型可能不支持图片，试试先用文字描述", async () => {
+    const { transport } = failTransport({ ok: false, failure: { kind: "bad_request" } });
+    const turn = await run({ transport }, { userText: "算餐饮", image: IMG });
+    // 杀手：把 `IMAGE_UNSUPPORTED_TEXT` 换回 `describeFailure(...)` ⇒ 这条红
+    expect(turn.text).toBe("当前模型可能不支持图片，试试先用文字描述");
+  });
+
+  it("**不带图**的 400 ⇒ 一个字都不变（仍是 M2 映射的原文案）", async () => {
+    const { transport } = failTransport({ ok: false, failure: { kind: "bad_request" } });
+    const plain = await run({ transport }, { userText: "上个月花了多少" });
+    // 杀手：把判据写成"只判 failure.kind"（漏掉 `image !== undefined`）⇒ 这条红
+    // （会把所有 400 的提示都换成"不支持图片"，与截图毫无关系的那一轮也开始胡说话）
+    expect(plain.text).not.toBe("当前模型可能不支持图片，试试先用文字描述");
+    expect(plain.text).toBe("这条消息没能发出去，换个说法试试。");
+  });
+
+  it("带图但不是 400（例如超时）⇒ 仍走 M2 的原映射（这处改动只覆盖 bad_request）", async () => {
+    const { transport } = failTransport({ ok: false, failure: { kind: "timeout" } });
+    const turn = await run({ transport }, { userText: "算餐饮", image: IMG });
+    expect(turn.text).toBe("AI 分析超时了，请重试。");
+  });
+});
 
 describe("隐私与边界", () => {
   it("发出去的 messages 里不出现任何 id（工具已经剥过，agent 不再加回来）", async () => {

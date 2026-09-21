@@ -1,10 +1,12 @@
 // 编排循环（规格 §5.2）：文字进 → 工具调 → 最终文本出。
 //
-// 本模块**没有任何自己的失败文案**：所有面向用户的话都来自三条既有来源，避免第二份真相 ——
+// 本模块**没有自己发明失败话术**：所有面向用户的话都来自三条既有来源，避免第二份真相 ——
 //   ① transport 的 `describeFailure`（§5.3 的错误矩阵文案表）
 //   ② tools 的错误字符串（回喂给模型、让它改一次）
-//   ③ 本文件三个常量（轮数用尽 / 纠错用尽 / 本地库不可用）—— 它们**不是** §5.3 的错误矩阵，
-//      所以不放进 `describeFailure`（那里是"后端/网络"的话术，混进去会让 UI 分不清该不该重试）
+//   ③ 本文件四个常量（轮数用尽 / 纠错用尽 / 本地库不可用 / **带图那一轮的 400**）
+//      —— 前三个**不是** §5.3 的错误矩阵，所以不放进 `describeFailure`（那里是"后端/网络"的
+//      话术，混进去会让 UI 分不清该不该重试）；第四个是 §8 明写的一行文案，判据沿用 M2 的
+//      `bad_request` 分类（**不新增错误码**），只在"这一轮带了图"时覆盖它。
 //
 // 四条硬约束（各有一条能红的用例，见 agent.test.ts）：
 //   1. **轮数上限 6**（§5.2）：用尽时给"建议 + 手动筛选"，是**收尾**不是错误气泡。
@@ -13,7 +15,8 @@
 //      `signal.aborted` 猜（用户在途取消时 `apiFetch` 会把它压成 `status:0`，分不出来）。
 //   4. **有界上下文**（§4.5）：每轮请求 = system + 最近 3 轮 user/assistant 文本 + 本轮 user
 //      + 本轮的工具往返。**历史 tool 结果不进下一轮**（全量回放 tool 结果会让 token 膨胀，
-//      而历史结论已经写在 assistant 文本里）。
+//      而历史结论已经写在 assistant 文本里）。M4 起"本轮 user"可能是**内容块数组**（带图，
+//      §4.2），但**历史里的图不重发**：`session.buildContext` 已把它换成占位文本（§4.3）。
 //
 // ⚠️ 两处"看着像多余、其实是边界"的地方：
 //   - `snapshot` 与 `lookup` 都要：`buildSystemPrompt` 只要**名字+类型**（§7.1 刻意不给 id），
@@ -41,10 +44,14 @@ import {
   describeFailure,
   type ChatMessage,
   type ChatToolCall,
+  type ContentBlock,
   type Transport,
   type TransportFailure,
 } from "@/services/ai/transport";
 import type { AiMessagePayload } from "@/services/ai/session";
+// ⚠️ **只借类型**：`import type` 不会把 imageInput 那份实现（它 import 两个 Tauri 插件）
+// 拉进编排层的运行时 —— 本层要的只是"那张图的形状"（dataUrl / 尺寸 / 字节数）。
+import type { ImageAttachment } from "@/services/ai/imageInput";
 import type { LookupContext, LookupMember } from "@/services/ai/resolve";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +73,16 @@ export const CLARIFY_FAILURE_TEXT = "我没理解这个请求，换个说法试�
 
 /** 本地库不可用 / 本地查询异常（§5.3「工具执行异常（DB 错）：记 console，回一条通用失败消息」） */
 export const DB_FAILURE_TEXT = "本地数据出了点问题，这次没能查。稍后再试试。";
+
+/**
+ * §8「上游 400（模型不支持视觉等）」的文案（M4）。
+ *
+ * **不是新错误码**：判据仍是 M2 既有的 `bad_request` 分类，只是"这一轮带了图"时把它换成
+ * 一句用户能自救的话（"先用文字描述"）—— 供应商的视觉支持参差，400 是最常见的表现。
+ * ⚠️ **不带图的 400 一个字都不变**（仍走 `describeFailure` 的原文案）：这处改动只覆盖
+ * "带图那一轮"，别把 400 的通用提示悄悄换掉（`agent.test.ts` 有一条用例专钉这一点）。
+ */
+export const IMAGE_UNSUPPORTED_TEXT = "当前模型可能不支持图片，试试先用文字描述";
 
 /**
  * 取消时**不该**渲染的文案。
@@ -121,6 +138,15 @@ export interface AgentTurn {
 
 export interface RunAgentArgs {
   userText: string;
+  /**
+   * 这一轮带的截图（M4 §4.2）。三件事都由它决定：
+   *  1. 发给模型的**当前轮** content 从字符串变成内容块数组（`userContent`）；
+   *  2. 落库那条 user 消息的 `payload.image`（§4.1 —— content 仍是纯文本 `userText`）；
+   *  3. 上游 400 的文案（§8：带图那一轮的 400 多半是"模型不支持视觉"）。
+   * ⚠️ **历史里的图不重发**（§4.2）：它只影响"本轮"与"本次落库"，`history` 里的图
+   * 早在 `session.buildContext` 就被替换成占位文本了。
+   */
+  image?: ImageAttachment;
   ledgerId: string;
   snapshot: LedgerSnapshot;
   /**
@@ -172,21 +198,41 @@ function isCanceled(outcome: { ok: false; failure: TransportFailure }): boolean 
 }
 
 /**
+ * 当前轮 user 消息的 content（§4.2 的三态，**唯一的组装点**）。
+ *
+ *  - **无图 ⇒ 字符串**（M1–M3 老路径逐字不变 ⇒ 老路径零回归）
+ *  - **有图无文字 ⇒ 只一块 `image_url`**（空 `text` 块在部分供应商上会被判非法）
+ *  - **有图有文字 ⇒ `[{type:"text"},{type:"image_url"}]`**（text 在前：顺序即语义）
+ *
+ * ⚠️ 判据是 `image === undefined`，不是 `text === ""`：用户"只发一张图、一个字不写"是
+ * §4.2 明确支持的形态（那条 content 是空串，但**必须**发出去）。
+ */
+function userContent(text: string, image: ImageAttachment | undefined): string | ContentBlock[] {
+  if (image === undefined) return text;
+  const block: ContentBlock = { type: "image_url", image_url: { url: image.dataUrl } };
+  return text === "" ? [block] : [{ type: "text", text }, block];
+}
+
+/**
  * 每轮请求的 messages（§4.5 的有界上下文）。
  *
  * `history` 只含**落库的 user/assistant 文本**（`recentTurns` 已经只取这两类），
  * `roundMessages` 只含**本轮**的 assistant(tool_calls) + tool 结果。
  * ⇒ 历史 tool 结果永远不会出现在下一轮的请求里。
+ *
+ * `userContent` 是本轮那条 user 消息的 content：**字符串或内容块数组**（§4.2 三态，
+ * 由 `userContent()` 组装）。历史那几条**永远是字符串** —— 带图的历史已经被替换成
+ * 占位文本（§4.3），图不重发。
  */
 function buildMessages(
   system: string,
   history: { role: "user" | "assistant"; content: string }[],
-  userText: string,
+  userContent: string | ContentBlock[],
   roundMessages: ChatMessage[],
 ): ChatMessage[] {
   const messages: ChatMessage[] = [{ role: "system", content: system }];
   for (const turn of history) messages.push({ role: turn.role, content: turn.content });
-  messages.push({ role: "user", content: userText });
+  messages.push({ role: "user", content: userContent });
   for (const m of roundMessages) messages.push(m);
   return messages;
 }
@@ -195,6 +241,11 @@ function buildMessages(
  * `recentTurns` 是**在本轮 user 落库之前**读的，所以正常不会含本轮。
  * 但"用户连点两次发送"或 store 先落库的形态下它可能已含 ⇒ 去掉尾部重复的本轮消息，
  * 否则本轮会问两遍、且"最近 3 轮"实际只剩 2 轮。
+ *
+ * ⚠️ 与它比较的**只能是纯文本** `userText`，**绝不能**是本轮那份 content（带图时是块数组）：
+ * 库里那行 user 消息的 `content` 就是纯文本（§4.1），拿块数组去比 `===` **永远为假**
+ * ⇒ 去重会**静默失效**（连点两次发送时本轮进两遍，而"最近 3 轮"实际只剩 2 轮 ——
+ * 不报错、不抛，只是上下文悄悄变样）。
  */
 function withoutTrailingDuplicate(
   turns: { role: "user" | "assistant"; content: string }[],
@@ -353,7 +404,11 @@ async function persistMessage(
  * 因此走到这里 `conversationId` 仍是 null，只可能是一次 ensure 就失败（抛 / 回 null）：
  * 翻译成"本地库不可用"。
  */
-async function prepareConversation(p: Persist, userText: string): Promise<"ok" | "db_error"> {
+async function prepareConversation(
+  p: Persist,
+  userText: string,
+  image?: ImageAttachment,
+): Promise<"ok" | "db_error"> {
   if (p.session === undefined) return "ok";
   // 会话 id 由 runAgent 每轮先 ensure 保证 ⇒ 这里仍为 null 就是本地库不可用
   if (p.conversationId === null) return "db_error";
@@ -361,7 +416,10 @@ async function prepareConversation(p: Persist, userText: string): Promise<"ok" |
   // 首条 user 消息写完**立刻**补标题：`setTitleIfEmpty` 自己只认 title 是否为空，
   // 分不出"新会话"与"第二条消息" ⇒ 必须每条 user 消息后都调一次（修正第 10 条），
   // 否则 `title` 是死列（规格 §4.5 要求取首条用户消息前 20 字）。
-  const written = await persistMessage(p, "user", userText);
+  //
+  // §4.1：截图**只进 payload**，`content` 仍是纯文本 `userText`（没写字就是空串）——
+  // 图绝不进 content（content 是"面向模型/给用户看"的那一份，payload 才是本地结构化数据）。
+  const written = await persistMessage(p, "user", userText, image === undefined ? undefined : { image });
   if (!written) return "db_error";
   try {
     await p.session.setTitleIfEmpty(p.conversationId, userText);
@@ -441,7 +499,7 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
       }
     }
 
-    if ((await prepareConversation(persist, args.userText)) === "db_error") {
+    if ((await prepareConversation(persist, args.userText, args.image)) === "db_error") {
       return { ...emptyTurn(), text: DB_FAILURE_TEXT };
     }
 
@@ -455,8 +513,9 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
 
       const messages = buildMessages(
         system,
+        // 去重只拿**纯文本**比（见 `withoutTrailingDuplicate` 的 ⚠️：块数组比较会静默失效）
         withoutTrailingDuplicate(history, args.userText),
-        args.userText,
+        userContent(args.userText, args.image),
         roundMessagesForModel,
       );
       const outcome = await args.deps.transport.chat(messages, TOOLS, args.signal);
@@ -465,7 +524,12 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
       if (!outcome.ok) {
         // 用户的取消**不是**错误 ⇒ 不渲染任何消息（§5.2 的"丢弃结果"），返回 aborted
         if (isCanceled(outcome)) return { ...buildTurn(state, trace), aborted: true };
-        const text = describeFailure(outcome.failure);
+        // §8：带图那一轮的 400 多半是"模型不支持视觉" ⇒ 换成一句能自救的话；
+        // 不带图的 400 **一个字都不变**（沿用 M2 既有映射，不新增错误码）。
+        const text =
+          args.image !== undefined && outcome.failure.kind === "bad_request"
+            ? IMAGE_UNSUPPORTED_TEXT
+            : describeFailure(outcome.failure);
         await persistMessage(persist, "assistant", text);
         return { ...buildTurn(state, trace), text };
       }
