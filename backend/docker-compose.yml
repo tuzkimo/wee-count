@@ -19,6 +19,12 @@ services:
       AI_TIMEOUT: ${AI_TIMEOUT:-60s}
       AI_RATE_LIMIT: ${AI_RATE_LIMIT:-20}
       AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-200}
+      # 代理：AI 供应商需要经代理访问时，在 backend/.env 里填 AI_HTTP_PROXY / AI_HTTPS_PROXY
+      #（自定义前缀，避免与宿主机自身的 HTTP_PROXY 混淆）；留空 = 直连。
+      # 本地与线上都可能需要，只是代理地址各自填。
+      HTTP_PROXY: ${AI_HTTP_PROXY:-}
+      HTTPS_PROXY: ${AI_HTTPS_PROXY:-}
+      NO_PROXY: ${AI_NO_PROXY:-localhost,127.0.0.1,postgres,redis}
     depends_on:
       postgres:
         condition: service_healthy
