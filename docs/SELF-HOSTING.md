@@ -36,6 +36,10 @@ services:
       AI_TIMEOUT: ${AI_TIMEOUT:-60s}
       AI_RATE_LIMIT: ${AI_RATE_LIMIT:-20}
       AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-200}
+      # AI 供应商需要经代理访问时填（本地与线上都可能需要，地址各自填）；留空 = 直连
+      HTTP_PROXY: ${AI_HTTP_PROXY:-}
+      HTTPS_PROXY: ${AI_HTTPS_PROXY:-}
+      NO_PROXY: ${AI_NO_PROXY:-localhost,127.0.0.1,postgres,redis}
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,7 +99,10 @@ cd wee-count/backend
 docker compose up -d --build
 ```
 
-仓库自带 `backend/docker-compose.yml`，`api` 服务带 `build: .`，会在本地构建镜像。
+仓库自带 `backend/docker-compose.yml`，`api` 服务同时写了 `build: .` 与 `image: ghcr.io/...`。
+⚠️ **两行都在时，`up` 会优先使用 `image:` 指的那个镜像**（本地没有则拉取），本地自己构建的镜像不会被选中 ——
+所以本地测自己的改动前，先把 `image:` 那行注释掉，或改用 `docker compose up -d --build`（构建后按同一个 `image:` 名打标签）。
+线上部署保持两行原样即可，按下面「升级」一节 `pull` + `up`。
 
 ## 环境变量
 
@@ -116,7 +123,9 @@ docker compose up -d --build
 
 ## 启用 AI（可选）
 
-AI 是**可选**功能。不配置 `AI_API_KEY` 时：后端照常启动（其余变量全都不用管），`GET /api/v1/ai/status` 返回 `{"enabled":false,...}`。客户端那一侧的**聊天功能**（AI 入口 tab、隐私说明卡、隐私开关）属于 **M3**、目前**尚未实现**；注意 `src/services/ai/` 下**已经有**代码，但那是 M1 交付的**本地查询层**（把 AI 给的查询 DSL 编译成 SQL 在本地 SQLite 上跑），**不走后端 AI 接口**、与本节的变量无关。M3 落地后，App 在 `enabled:false` 时不显示 AI 入口。启用只需要一个供应商的 key。
+AI 是**可选**功能。不配置 `AI_API_KEY` 时：后端照常启动（其余变量全都不用管），`GET /api/v1/ai/status` 返回 `{"enabled":false,...}`。客户端那一侧（AI 入口、隐私说明卡、隐私开关、截图记账）**已经实现**。
+
+⚠️ **入口显隐由用户本地的意愿开关决定，不由服务端能力决定**：即使这里配了 key，App 也只在用户到「我的 → 隐私」显式开启后才显示 AI 入口；服务端未配置只影响页面里的状态文案与发送（文案说真话，不再把"探不到"一律说成"未配置"）。启用只需要一个供应商的 key。
 
 变量表（全部可选，非法值一律回落默认值，不会让服务起不来）：
 
@@ -129,6 +138,8 @@ AI 是**可选**功能。不配置 `AI_API_KEY` 时：后端照常启动（其�
 | `AI_TIMEOUT` | `60s` | 上游调用超时（Go duration 格式：`30s`、`2m`） |
 | `AI_RATE_LIMIT` | `20` | 每用户每分钟请求数上限 |
 | `AI_DAILY_LIMIT` | `200` | 每用户每日请求数上限 |
+| `AI_HTTP_PROXY` / `AI_HTTPS_PROXY` | 空（= 直连） | 容器出网代理，映射到容器内的 `HTTP_PROXY` / `HTTPS_PROXY`。**本地与线上都可能需要**，只是地址各自填；Linux 上 `host.docker.internal` 不可用，填网关或内网代理地址 |
+| `AI_NO_PROXY` | `localhost,127.0.0.1,postgres,redis` | 不走代理的地址（别把数据库、Redis 也塞进代理） |
 
 只支持 **OpenAI 兼容协议**，换供应商只需改 `AI_BASE_URL`（+ `AI_MODEL`）：
 
@@ -139,7 +150,7 @@ AI 是**可选**功能。不配置 `AI_API_KEY` 时：后端照常启动（其�
 | Kimi | `https://api.moonshot.cn/v1` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` |
 
-方式二（源码构建）的 `backend/docker-compose.yml` **已经透传**这 7 个变量，且全部是 `${VAR:-}` 空默认——把值写进同目录的 `.env` 即可，不配也能起来。方式一（免克隆）请在自己的 `compose.yml` 的 `api` 服务 `environment` 下补上同样几行：
+方式二（源码构建）的 `backend/docker-compose.yml` **已经透传**这些变量（含代理三项），且全部是 `${VAR:-}` 空默认——把值写进同目录的 `.env` 即可，不配也能起来。方式一（免克隆）请在自己的 `compose.yml` 的 `api` 服务 `environment` 下补上同样几行：
 
 ```yaml
       AI_API_KEY: ${AI_API_KEY:-}
@@ -149,6 +160,10 @@ AI 是**可选**功能。不配置 `AI_API_KEY` 时：后端照常启动（其�
       AI_TIMEOUT: ${AI_TIMEOUT:-60s}
       AI_RATE_LIMIT: ${AI_RATE_LIMIT:-20}
       AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-200}
+      # 供应商需要经代理访问时填；留空 = 直连
+      HTTP_PROXY: ${AI_HTTP_PROXY:-}
+      HTTPS_PROXY: ${AI_HTTPS_PROXY:-}
+      NO_PROXY: ${AI_NO_PROXY:-localhost,127.0.0.1,postgres,redis}
 ```
 
 > 不要写成 `${AI_API_KEY:?}` 那种"必须设置"的形式：那会让**所有没配 AI 的实例起不来**，而 AI 是可选的。
@@ -157,10 +172,11 @@ Key 只存在于服务器进程内存里，由服务端注入到上游请求头�
 
 ### 数据边界（请如实告知使用者）
 
-- **账目数据不经过服务器。** 服务端只是个**无状态代理**：注入 key、把这一轮对话所需的请求转发给供应商，**不读也不存任何账目数据**。AI 回答要用的统计数字（汇总值，以及最多 20 条明细的日期/金额/分类名/账户名/备注截断）是**客户端在本地算好后放进对话里**的（M3 实现），服务端不主动查数据。
-- **只发当前这次请求需要的内容**（清单由 M3 的客户端组装，服务端只转发、不增删）：用户输入原文；分类/账户/标签/成员的名称；本轮工具返回的汇总数字。完整流水、账户余额、初始余额、信用额度、其他账本数据、备份密码、任何凭据都不发。
-- 用户问的每一句话都会发往 `AI_BASE_URL` 指向的供应商，请在隐私说明里告知使用者。M3 落地后，App 会在首次开启 AI 前展示一张说明卡，卡片里的供应商域名取自 `/api/v1/ai/status` 的 `host` 字段（由 `AI_BASE_URL` 解析而来，**不含 key**）；取不到 `host` 时 App 不得允许开启（规格 §7.3）。该字段现在就已经可用。
-- 启用是**两层开关**：服务端 `AI_API_KEY` 非空只是"能力可用"；M3 会在 App「我的 → 隐私」里再提供一个**默认关闭**的独立开关（意愿层），用户看过说明卡并同意后才真正发送。
+- **账目数据不经过服务器。** 服务端只是个**无状态代理**：注入 key、把这一轮对话所需的请求转发给供应商，**不读也不存任何账目数据**。AI 回答要用的统计数字（汇总值，以及最多 20 条明细的日期/金额/分类名/账户名/备注截断）是**客户端在本地算好后放进对话里**的（客户端实现），服务端不主动查数据。
+- **只发当前这次请求需要的内容**（清单由客户端组装，服务端只转发、不增删）：用户输入原文；分类/账户/标签/成员的名称；本轮工具返回的汇总数字。完整流水、账户余额、初始余额、信用额度、其他账本数据、备份密码、任何凭据都不发。
+- 用户问的每一句话都会发往 `AI_BASE_URL` 指向的供应商，请在隐私说明里告知使用者。App 在「我的 → 隐私」展示一张说明卡，卡片里的供应商域名取自 `/api/v1/ai/status` 的 `host` 字段（由 `AI_BASE_URL` 解析而来，**不含 key**）。
+- ⚠️ **旧规则已作废**：此前规格 §7.3 要求"取不到 `host` 时 App 不得允许开启"，那会造成死锁（开关整块不渲染）。现行行为是**入口与意愿开关永远可达、可操作**；`host` 取不到只影响状态文案（说真话）与发送，不影响开启。
+- 启用是**两层开关**：服务端 `AI_API_KEY` 非空只是"能力可用"（`/ai/status` 的 `enabled`）；客户端在 App「我的 → 隐私」里另有一个**默认关闭**的意愿开关，是否真的发送由用户那一侧决定。服务端配了 key 也**不会**让 App 自动出现 AI 入口 —— 入口只在用户显式开启后出现。隐私说明卡就展示在开启入口处。
 - 服务端日志**只记**：`user_id`、耗时、`finish_reason`、token 用量（prompt/completion）与错误码（`handler.AIHandler.Chat` 里以 `ai chat` / `ai chat failed` 开头的日志），加上成功路径上的上游状态码（`service.AIService.Chat` 里以 `ai upstream ok` 开头的日志，格式串带 `upstream=%d`）；请求体解析失败时会记下该 `user_id` 与 Go 的 decode 报错原文（`handler.AIHandler.Chat` 里以 `ai bad request` 开头的日志）——那是 `json` 包的位置/类型报错，**不含消息内容**。**不记**：对话内容、工具结果、任何账目数字。上游返回的原始错误体既不下发给客户端、也不写进日志（`service.AIService.Chat` 里"只有 200 算成功"那个分支）。
 
 ### 配额：多实例时按实例各算一份
@@ -179,7 +195,7 @@ Key 只存在于服务器进程内存里，由服务端注入到上游请求头�
 
 ### 故障对照
 
-M3 落地后，客户端会按响应体里的 `error` 值映射中文文案（服务端现在就已经返回这些错误码）；排障时请把状态码和 `error` 一起看：
+客户端会按响应体里的 `error` 值映射中文文案（服务端现在就已经返回这些错误码）；排障时请把状态码和 `error` 一起看：
 
 > **⚠️ `error` 值分三类，客户端映射时必须区分**（否则会落到未定义分支）：
 > 1. **契约错误码**（下表带 `ai_` 前缀的那些）：规格 §6.6 定义，客户端有对应中文文案。
@@ -198,16 +214,16 @@ M3 落地后，客户端会按响应体里的 `error` 值映射中文文案（�
 
 | 现象 | HTTP | 响应 `error` | 处理 |
 |------|------|--------------|------|
-| `AI_API_KEY` 未配置 | 503 | `ai_disabled` | 填 key 后重启（M3 的 App 端文案为「AI 功能未启用」） |
+| `AI_API_KEY` 未配置 | 503 | `ai_disabled` | 填 key 后重启。App 端文案有两处：入口 / 隐私区状态行说「服务端未配置 AI 功能。」（`src/services/ai/failureText.ts`），尝试发送时说「这个服务器还没启用 AI 功能。」（`src/services/ai/transport.ts`） |
 | key 无效 / 无权限（上游 401、403） | 502 | `ai_upstream_auth` | 检查 key 与 `AI_BASE_URL` 是否配套 |
 | 上游自己限流（上游 429） | 429 | `ai_rate_limited` | 等上游恢复或换更高档位 |
 | 本实例每分钟配额用尽 | 429 | `ai_rate_limited` | 调大 `AI_RATE_LIMIT` |
 | 本实例每日配额用尽 | 429 | `ai_quota_exceeded` | 调大 `AI_DAILY_LIMIT`；多实例记得按实例数折算 |
 | 上游 5xx，或调用超时 | 504 | `ai_upstream_timeout` | 调大 `AI_TIMEOUT`，或查看供应商状态页 |
-| 网络不可达 / DNS 解析失败 | 502 | `ai_unreachable` | 检查容器出网与 `AI_BASE_URL` 域名 |
+| 网络不可达 / DNS 解析失败 | 502 | `ai_unreachable` | 检查容器出网与 `AI_BASE_URL` 域名；若该域名在服务器上必须经代理访问，按「启用 AI」一节配置 `AI_HTTP_PROXY` / `AI_HTTPS_PROXY` |
 | 上游其它 4xx（模型名写错等） | 502 | `ai_upstream_error` | 检查 `AI_MODEL` |
 | 单次请求体超过 256KB | 413 | `request body too large` | 正常使用不会触发；会话历史异常长时才可能。**这不是错误码**，是直述消息（见上注） |
-| 请求体非法 JSON，或 `messages` 为空 | 400 | `invalid request body` | 通常是客户端组装 bug（M3 的请求体形状见规格 §6.1）。**这不是错误码**，是直述消息（见上注） |
+| 请求体非法 JSON，或 `messages` 为空 | 400 | `invalid request body` | 通常是客户端组装 bug（请求体形状见 AI 规格 §6.1：`docs/superpowers/specs/2026-09-18-ai-agent-chat-design.md`）。**这不是错误码**，是直述消息（见上注） |
 | 无 / 非法 access token | 401 | 见上注第三类（5 条鉴权直述消息之一） | 走既有 refresh 单飞；失败则提示重新登录。**这些不是错误码**，是 `middleware/auth.go` 的直述消息（`text/plain`，见上注） |
 
 ## App 对接
