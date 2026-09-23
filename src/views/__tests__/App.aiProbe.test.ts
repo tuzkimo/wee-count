@@ -44,6 +44,8 @@ vi.mock("@/components/lock/AppLockPrompt.vue", () => ({
 
 import App from "@/App.vue";
 import AiChatPage from "@/views/AiChatPage.vue";
+import { setBaseUrl } from "@/services/api";
+import { useAiChatStore } from "@/stores/aiChat";
 import { fetchAiStatus } from "@/services/ai/transport";
 
 const fetchMock = () => vi.mocked(fetchAiStatus);
@@ -63,11 +65,28 @@ function makeRouter() {
   });
 }
 
+/**
+ * 本文件只做两件**前置**（断言一条没动）：
+ *
+ * 1. `setBaseUrl(...)`：C6 之后探测由"地址就绪"触发（`hasBaseUrl()` 为真），而本文件
+ *    原来从不配地址 —— 不补这一句，探测次数会恒为 0，"恰好 1 次"这条断言失去判别力
+ *    （0 也能被读成"页面没偷偷再探"）。**"地址没就绪 ⇒ 零调用"由
+ *    `App.aiProbeTiming.test.ts` 钉住**，两条分工不重叠。
+ * 2. `entryEnabled = true`：C1 之后 AI tab 的显隐只看本地意愿层。原先"tab 出现与否"
+ *    顺带由服务端 `enabled:true` 带出来，现在必须显式开启 —— 本文件第二条用例
+ *    （"从首页点进 AI 页"）需要一个真的 `/ai` 入口。
+ *
+ * ⚠️ 探测次数仍是 1、进页面不重探这两条**意图与数字都没变**：`App.aiProbeTiming.test.ts`
+ * 是这两条意图的接管者（在它那里把探针挂回 `onMounted`、或在页面里加回
+ * `void ai.refreshStatus()`，都会让它红）。
+ */
 async function mountAppAt(path: string) {
   const router = makeRouter();
   await router.push(path);
   await router.isReady();
+  setBaseUrl("http://localhost:8080");
   const wrapper = mount(App, { global: { plugins: [createPinia(), router] } });
+  useAiChatStore().entryEnabled = true;
   await flushPromises();
   return { wrapper, router };
 }

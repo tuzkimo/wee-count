@@ -14,8 +14,16 @@ import { readSetting, writeSetting } from "@/services/settingsFile";
  */
 const ENABLED_KEY = "ai_sending_enabled";
 const CARD_SEEN_KEY = "ai_privacy_card_seen";
+/**
+ * **入口**开关（C1）：AI tab 显不显示只由它决定。
+ *
+ * 与 `ENABLED_KEY`（意愿层"愿不愿意把数据发出去"）分开：入口是"要不要看到这个功能"，
+ * 发送是"看到之后要不要用"。合成一个键的后果是"关掉发送 = 入口消失"，用户再也找不到回来开的地方。
+ */
+const ENTRY_KEY = "ai_entry_enabled";
 const LOG = { tag: "aiPrivacySettings", label: "AI 助手开关" } as const;
 const CARD_LOG = { tag: "aiPrivacySettings", label: "AI 隐私说明卡" } as const;
+const ENTRY_LOG = { tag: "aiPrivacySettings", label: "AI 入口开关" } as const;
 
 /**
  * 默认值：**从严关闭**（§7.3 明写「默认关闭」）。
@@ -26,6 +34,12 @@ const CARD_LOG = { tag: "aiPrivacySettings", label: "AI 隐私说明卡" } as co
 export const AI_SENDING_ENABLED_DEFAULT = false;
 /** 说明卡是否已经看过（看过就不再自动弹；"开启前必须先看说明卡"靠它成立） */
 export const AI_PRIVACY_CARD_SEEN_DEFAULT = false;
+/**
+ * 入口开关默认值：**从严关闭**（用户没开过就不显示 AI tab）。
+ *
+ * 与"服务端配没配 AI"完全无关：能力层拿不到结论时，入口的显隐仍由这个本地说法决定（G1）。
+ */
+export const AI_ENTRY_ENABLED_DEFAULT = false;
 
 function asBoolean(raw: unknown): boolean | null {
   return typeof raw === "boolean" ? raw : null;
@@ -75,4 +89,30 @@ export async function readPrivacyCardSeen(): Promise<boolean> {
 /** 标记说明卡已看过。失败必须 reject（否则用户点「知道了」，下次启动它又弹出来）。 */
 export async function writePrivacyCardSeen(): Promise<void> {
   await writeSetting(CARD_SEEN_KEY, true, { ...CARD_LOG, action: "写入" });
+}
+
+/**
+ * 读**入口**开关（C1）。**永不抛**：读不到回落 `AI_ENTRY_ENABLED_DEFAULT`（不显示入口）。
+ *
+ * 与 `readSendingEnabled` 同一套口径：`invalid`（键在但读不懂）不覆盖它，只 warn。
+ */
+export async function readEntryEnabled(): Promise<boolean> {
+  const own = await readSetting(ENTRY_KEY, asBoolean);
+  if (own.kind === "found") return own.value;
+  if (own.kind === "invalid") {
+    console.warn("[aiPrivacySettings] AI 入口开关无法解析，本次按默认值（不显示入口）处理");
+  } else if (own.kind === "unavailable") {
+    console.warn(
+      own.stage === "load"
+        ? "[aiPrivacySettings] settings.json 加载失败，AI 入口开关按默认值（不显示入口）处理"
+        : "[aiPrivacySettings] 读取 AI 入口开关失败，按默认值（不显示入口）处理",
+      own.cause,
+    );
+  }
+  return AI_ENTRY_ENABLED_DEFAULT;
+}
+
+/** 写入口开关。失败必须 reject（用户主动动作，静默返回 = 界面说开了、磁盘上没开）。 */
+export async function writeEntryEnabled(enabled: boolean): Promise<void> {
+  await writeSetting(ENTRY_KEY, enabled, { ...ENTRY_LOG, action: "写入" });
 }

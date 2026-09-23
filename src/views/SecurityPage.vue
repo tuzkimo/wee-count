@@ -26,10 +26,13 @@ const clearing = ref(false);
 const savingScreenshot = ref(false);
 /** AI 意愿层开关落盘进行中：同上 */
 const savingAiSending = ref(false);
+/** AI **入口**开关落盘进行中：同上 */
+const savingAiEntry = ref(false);
 /** 两个受控 checkbox 的模板引用：落盘失败时用它把 DOM 勾选态拉回真相。 */
 const lockToggleEl = ref<HTMLInputElement | null>(null);
 const screenshotToggleEl = ref<HTMLInputElement | null>(null);
 const aiSendingToggleEl = ref<HTMLInputElement | null>(null);
+const aiEntryToggleEl = ref<HTMLInputElement | null>(null);
 
 /**
  * 本页**不**在这里重新读盘（R71）。
@@ -211,16 +214,57 @@ async function toggleScreenshot(enabled: boolean): Promise<void> {
 }
 
 /**
- * 切换 AI 助手意愿层开关（§7.3）。
+ * 切换 AI 助手**入口**开关（G1/G2/C1）。这是"要不要看到 AI 页"的开关，与"愿不愿意把数据发出去"
+ * 是两件事（后者是下面的 `toggleAiSending`）。
+ *
+ * ⚠️ 这里**没有** `host` 门槛（老实现在这里拒绝开启，与"开关整块不渲染"合成死锁）：
+ * 不知道数据发往哪里、断网、服务端没配，都不阻止用户把入口打开 —— 开启入口永远可达。
+ * 开启动作顺带触发一次**用户显式**的能力探测（`setEntryEnabled` 内部），失败一律不影响落盘。
+ *
+ * 先落盘、后改内存（`ai.setEntryEnabled` 内部就是 `writeEntryEnabled` → 再改 ref），
+ * 失败即 reject ⇒ 显示失败并把 DOM 勾选态拉回真相（与截屏防护同一手法）。
+ */
+async function toggleAiEntry(enabled: boolean): Promise<void> {
+  saveError.value = "";
+  savingAiEntry.value = true;
+  try {
+    await ai.setEntryEnabled(enabled);
+  } catch {
+    saveError.value = "设置保存失败，请重试";
+    syncCheckbox(aiEntryToggleEl.value, ai.entryEnabled);
+    return;
+  } finally {
+    savingAiEntry.value = false;
+  }
+  await nextTick();
+}
+
+/**
+ * 用户显式点「重新检测」（G6/C2.3/C6.3）。
+ *
+ * 这是**唯一**由用户主动发起的能力探测入口（自动路径只有 `App.vue` 的"地址就绪探一次"）。
+ * 它**不受**"地址就绪"守卫约束：地址没配时也照样发一次请求，好让用户拿到 C3.4 那句
+ * "还没连上服务器"的说明，而不是一片空白。
+ *
+ * `refreshStatus` 自己永不抛（失败只写进 `statusFailureKind` 供文案分流）⇒ 这里不需要
+ * try/catch，结果由状态行 `ai-host-state` 如实呈现。
+ */
+async function onAiRecheck(): Promise<void> {
+  await ai.refreshStatus();
+}
+
+/**
+ * 切换 AI 助手意愿层（发送）开关（§7.3）。
  *
  * 三步都不许颠倒：
- * 1. **`host === null` 时这个开关根本不渲染**（模板里的 `v-if`）—— §7.3 的硬门槛是
- *    "拿不到 host 不得允许开启"，而不是"允许点但打不开"。store 里另有一道同样的守卫。
+ * 1. 开关**恒渲染、恒可点**（除落盘进行中）—— 唯一一道 store 层拒绝是"服务端**明确**说没配"
+ *    （C4.3 的防呆：那种状态下开启也发不出去），拒绝时**零落盘**，页面照旧把 DOM 拉回真相。
  * 2. 先落盘、后改内存（`ai.setSendingEnabled` 内部就是 `writeSetting` → 再改 ref），
  *    失败即 reject ⇒ 这里显示失败并把 DOM 勾选态拉回真相（与截屏防护同一手法）。
  * 3. `await nextTick()` 之前不写成功提示。
  *
- * ⚠️ 关闭方向**不**受 `host` 限制：关永远是安全的，哪怕这次探测拿不到 host。
+ * ⚠️ `host === null` **不是**拒绝理由（老实现拿它当门槛，与"整块不渲染"合成死锁）：
+ * 发送失败由提示条说真话承担（C3/C5），不由"不让开"承担。
  */
 async function toggleAiSending(enabled: boolean): Promise<void> {
   saveError.value = "";
@@ -353,19 +397,50 @@ async function onAiPrivacyDismiss(): Promise<void> {
       </div>
 
       <!--
-        AI 助手意愿层开关（§7.3）。**`host === null` 时整块（说明卡 + 开关）都不渲染**：
-        不知道数据发往哪里就不该让用户同意，也不该给一个点不开的开关。
-        说明卡复用 AI 页那一个组件：在能开启的地方就把"发什么、发给谁、历史是明文"摆在开关前面。
+        AI 助手区块（§7.3 + 本轮的门控重构）。**恒渲染**：`host` 不再参与任何渲染判断 ——
+        真机事故里"拿不到 host 就整块不渲染"与"store 拒绝在 host 为 null 时开启"合成死锁，
+        用户既看不到开关、也永远开不了。现在三种状态的开关都在这里，未知只改**文案**（C3）。
+
+        三块的分工（顺序即用户动作顺序）：
+        1. 说明卡（`AiPrivacyCard`）：**组件自己**按 `host !== null && !seen` 决定渲染与否（C2.4）——
+           不知道数据发往哪里就不给同意书；知道就摆在开关前面。知情同意的时机因此是"开启时"。
+        2. 入口开关：AI 页/tab 出不出现只看它（G1），与探测结果无关。
+        3. 发送开关 + 状态行 + 「重新检测」：能力层在这里对用户说话。
       -->
-      <div v-if="ai.host !== null" class="mt-3" data-test="ai-privacy-group">
+      <div class="mt-3" data-test="ai-privacy-group">
         <p class="px-4 py-2 text-xs font-medium uppercase text-text-secondary">AI 助手</p>
         <AiPrivacyCard :host="ai.host" :seen="ai.privacyCardSeen" @dismiss="onAiPrivacyDismiss" />
+
+        <div class="border-y border-gray-100 bg-surface">
+          <label class="flex items-center gap-3 px-4 py-3">
+            <span class="flex-1">
+              <span class="block text-text">显示 AI 助手</span>
+              <span class="block text-xs text-text-secondary">
+                开启后底部出现「AI」页；随时可以在这里关掉
+              </span>
+            </span>
+            <input
+              ref="aiEntryToggleEl"
+              data-test="ai-entry-enabled"
+              type="checkbox"
+              class="h-5 w-5"
+              :checked="ai.entryEnabled"
+              :disabled="savingAiEntry"
+              @change="toggleAiEntry(($event.target as HTMLInputElement).checked)"
+            />
+          </label>
+        </div>
+
         <div class="border-y border-gray-100 bg-surface">
           <label class="flex items-center gap-3 px-4 py-3">
             <span class="flex-1">
               <span class="block text-text">允许发送给 AI 助手</span>
-              <span class="block text-xs text-text-secondary">
-                开启后提问与汇总数字会发送到 {{ ai.host }}
+              <!--
+                状态行由 store 的 `hostStateText` 出（`host === null` 时**绝不**插值出 `null`，
+                也绝不说成"服务端未配置 AI"——那是三类来源里的第三类，C3）
+              -->
+              <span class="block text-xs text-text-secondary" data-test="ai-host-state">
+                {{ ai.hostStateText }}
               </span>
             </span>
             <input
@@ -379,6 +454,19 @@ async function onAiPrivacyDismiss(): Promise<void> {
             />
           </label>
         </div>
+
+        <div class="flex items-center gap-3 px-4 py-2">
+          <button
+            type="button"
+            data-test="ai-recheck"
+            class="rounded-lg border border-gray-200 bg-surface px-3 py-1.5 text-xs text-text-secondary"
+            @click="onAiRecheck"
+          >
+            重新检测
+          </button>
+          <span class="text-xs text-text-secondary">检测一次服务器上的 AI 能力（不轮询）</span>
+        </div>
+
         <p class="px-4 py-2 text-xs text-text-secondary">
           关闭后停止发送（不删历史记录）；会话历史本身是明文落盘的。
         </p>

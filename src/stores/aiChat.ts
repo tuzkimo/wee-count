@@ -44,13 +44,18 @@ import type { ImageAttachment } from "@/services/ai/imageInput";
 // `agent.ts`（本文件上面那行就 import 了它）运行期本来就要 `buildSystemPrompt`，模块图早就在了。
 import { PROMPT_VERSION } from "@/services/ai/prompt";
 import {
+  readEntryEnabled,
   readPrivacyCardSeen,
   readSendingEnabled,
+  writeEntryEnabled,
   writePrivacyCardSeen,
   writeSendingEnabled,
+  AI_ENTRY_ENABLED_DEFAULT,
   AI_PRIVACY_CARD_SEEN_DEFAULT,
   AI_SENDING_ENABLED_DEFAULT,
 } from "@/services/aiPrivacySettings";
+import { AI_NOT_CONFIGURED_TEXT, describeHostState, describeOffHint } from "@/services/ai/failureText";
+import { hasBaseUrl } from "@/services/api";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
 // ⚠️ 草稿形状的**唯一真相**在 `tools.ts` 的草稿工具产出里（Ruling 66 R3）：store 侧只 `import type`
 // 引入，绝不重声明第二份 —— 字段改名的漂移后果是**静默**的（`readDrafts` 把草稿当"形状不全"跳过，
@@ -781,16 +786,15 @@ export const useAiChatStore = defineStore("aiChat", () => {
   }
 
   // -------------------------------------------------------------------------
-  // 能力探测（tab 门控；`host` 还是任务 7 隐私卡的硬门槛）
+  // 能力探测（只影响 AI 页内的文案与"能不能发出去"，**不再参与入口显隐**）
   // -------------------------------------------------------------------------
 
   /**
    * 最近一次**可判定**的探测结果。`null` = 还没有过可判定的结果（**不是**"没启用"）。
    *
    * ⚠️ 存整份 `AiStatus` 而不是三个独立 ref：探测是**一次**原子结果，拆成三个字段就多了
-   * "只更新一半"的形态（`enabled: true` 配着上一轮的 `host`）。下面三个 computed 是它的视图
-   * —— `enabled` 给 tab 门控（`App.vue`），`host`/`model` 给任务 7 的隐私卡（§7.3：
-   * **拿不到 `host` 就不得展示隐私卡、也不得允许开启开关**）。
+   * "只更新一半"的形态（`enabled: true` 配着上一轮的 `host`）。下面几个 computed 是它的视图
+   * —— `enabled`/`configured` 说服务端配没配，`host`/`model` 给隐私卡与入口文案用。
    */
   const status = ref<AiStatus | null>(null);
 
@@ -804,18 +808,58 @@ export const useAiChatStore = defineStore("aiChat", () => {
    */
   const statusUnknown = ref(false);
 
-  /** tab 门控的**唯一**依据：已知 ⇒ 服务端说什么是什么；未知 ⇒ 保持可用；还没探 ⇒ 不显示 */
+  /**
+   * **能力层**视图（服务端说的事实）：已知 ⇒ 服务端说什么是什么；未知 ⇒ 保持可用；还没探 ⇒ 不显示。
+   *
+   * ⚠️ 从本轮起它**不再参与入口显隐**（那是意愿层 `entryEnabled` 的事，G1/C1）。留着它是为了让
+   * "服务端配没配"这件事仍然可读（`configured` 是同一份事实的三值版本，`enabled` 是它的二值降级：
+   * 把"没表态"归到安全的一侧 `false`）。
+   */
   const enabled = computed(() =>
     status.value === null ? statusUnknown.value : status.value.enabled
   );
-  /** 处理数据的服务器；`null` = 不可知（此时不许开开关） */
+
+  /**
+   * 服务端是否**明确表态**配了 AI（C1/C3 的判据）：
+   * - `true`：200 且 `enabled:true`；
+   * - `false`：200 且 `enabled:false`，或 503 `ai_disabled`（两条都是"服务端自己说的"）；
+   * - `null`：**没表态**（没探过 / 网络 / 超时 / 429 / 形状坏 / 401 / 5xx）。
+   *
+   * 与 `enabled` 的分工是刻意的：`enabled` 把"没表态"降级成 `false`（安全的一侧，能力层
+   * 不能因为坏响应就说"配了"），而 `configured` 保留"没表态"这一档 —— 只有它才能把
+   * 「已知没配」与「这次探测不可判定」分开（C3.1 vs C3.4/C3.5）。
+   */
+  const configured = ref<boolean | null>(null);
+
+  /**
+   * 最近一次**不可判定**探测的失败类型；`null` = 没有（没探过 / 就没发请求 / 探测给了结论）。
+   * 只给文案分流用（C3.5），**不参与任何门控**。
+   */
+  const statusFailureKind = ref<NonNullable<AiStatus["failure"]>["kind"] | null>(null);
+
+  /** 处理数据的服务器；`null` = 不可知（**纯视图**：不再参与任何门控，未知照样能开入口） */
   const host = computed(() => status.value?.host ?? null);
   /** 回答用的模型名 */
   const model = computed(() => status.value?.model ?? null);
 
   // -------------------------------------------------------------------------
-  // 隐私：意愿层开关 + 一次性说明卡 + §7.4 的 revealed
+  // 意愿层：入口开关 + 发送开关（本地说法，与能力层完全解耦）
   // -------------------------------------------------------------------------
+
+  /**
+   * **入口**开关（G1/C1）：AI tab 显不显示只看它。默认关闭，持久化在 `ai_entry_enabled`。
+   *
+   * 为什么必须是**本地说法**：真机事故的根因是"客户端试图渲染一个它并不掌握的状态"
+   * （服务端配没配 AI）。本地说法在任何时刻都是已知的 ⇒ "未知态"根本不需要渲染，
+   * 入口也不会因为一次探测失败而消失。
+   *
+   * ⚠️ 刻意**不**把能力层掺进来（不写成 `entryEnabled && !knownNotConfigured`，也不写成
+   * `host !== null`）：那会让"服务端明确没配"或"这轮探测不可判定"把入口收回去，用户刚开的
+   * 入口自己消失 —— 与"开启入口永远可达"（规则 2）冲突，是同一个死锁换了个位置。
+   * "服务端没配"该怎么说话由 AI 页的提示条与发送开关承担（C3.1/C4.3/C5.4），不由入口承担。
+   * `App.vue` 只用这一条判据。
+   */
+  const entryEnabled = ref(AI_ENTRY_ENABLED_DEFAULT);
 
   /**
    * **意愿层**开关（§7.3）：默认关闭。`true` 才允许发请求（`send` 的第一道门控）。
@@ -824,6 +868,36 @@ export const useAiChatStore = defineStore("aiChat", () => {
    * 这一层说"用户愿不愿意把数据发到 `host`"。两层都成立才发得出去。
    */
   const sendingEnabled = ref(AI_SENDING_ENABLED_DEFAULT);
+
+  /**
+   * AI 页提示条文案（C5）：按 `host` 的三类来源分流（G3）。
+   *
+   * 纯函数在 `services/ai/failureText.ts`（那边有自己的表驱动用例）；这里只负责把 store
+   * 的四个状态喂进去 —— store 里**不许**再有一份 `host === null ? "服务端未配置…"` 式的三元。
+   */
+  const sendingHint = computed(() =>
+    describeOffHint({
+      sendingEnabled: sendingEnabled.value,
+      host: host.value,
+      failureKind: statusFailureKind.value,
+      configured: configured.value,
+      hasBaseUrl: hasBaseUrl(),
+    }),
+  );
+
+  /** 隐私区那一行状态说明（C3）：`host === null` 时也**绝不**插值出 `null` */
+  const hostStateText = computed(() =>
+    describeHostState({
+      host: host.value,
+      failureKind: statusFailureKind.value,
+      configured: configured.value,
+      hasBaseUrl: hasBaseUrl(),
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // 隐私：一次性说明卡 + §7.4 的 revealed
+  // -------------------------------------------------------------------------
 
   /** 说明卡看过没有（`true` ⇒ 不再自动弹）。**不参与**任何权限判定，只决定弹不弹。 */
   const privacyCardSeen = ref(AI_PRIVACY_CARD_SEEN_DEFAULT);
@@ -841,29 +915,51 @@ export const useAiChatStore = defineStore("aiChat", () => {
   const revealed = ref<Set<string>>(new Set());
 
   /**
-   * 读一次意愿层开关与说明卡状态（**永不抛**：两个 reader 的契约都是"读不到回落从严默认值"）。
+   * 读一次意愿层（入口开关 / 发送开关）与说明卡状态（**永不抛**：三个 reader 的契约都是
+   * "读不到回落从严默认值"）。
    *
    * 调用点**只有冷启动那一处**（`main.ts` 的引导）。页面**不许**再读一遍：R71 的教训是
    * "读失败会回落默认值，于是把本会话里已经生效的状态静默覆盖掉"——`sendingEnabled` 的
-   * 默认值是"关"，覆盖成关就等于用户明明开了却发不出去，且没有任何提示。
+   * 默认值是"关"、`entryEnabled` 的默认值是"不显示"，覆盖就等于用户明明开了却看不到，
+   * 且没有任何提示。
    */
   async function loadPrivacySettings(): Promise<void> {
+    entryEnabled.value = await readEntryEnabled();
     sendingEnabled.value = await readSendingEnabled();
     privacyCardSeen.value = await readPrivacyCardSeen();
   }
 
   /**
-   * 翻转意愿层开关。**先落盘、后改内存**（照 `stores/privacy.ts:23-31` 的 R57 规则）：
-   * 写失败即 reject，绝不让界面显示一个没写进去的状态。
+   * 翻转**入口**开关（G1/G2）。**先落盘、后改内存**（R57）：写失败即 reject，绝不让界面
+   * 显示一个没写进去的入口。
    *
-   * ⚠️ **开启**这条路上还有 §7.3 的硬门槛：`host === null`（不知道数据发往哪）时**不得允许开启**。
-   * UI 那边连开关都不渲染（briefing 的 M2→M3 硬约束），这里是第二层 —— 它保证"能不能开"
-   * 只由 host 决定，而不由"哪个调用方"决定。关闭方向不受限（关永远是安全的）。
+   * 三件事刻意如此：
+   * - **不看 `host`**：不知道数据发往哪里、断网、服务端没配，都不阻止用户把入口打开
+   *   （规则 2：开启入口永远可达。老实现正是在这里"拒绝开启"，与"开关不渲染"合成死锁）。
+   * - **先探一次**：开入口的同时刷新能力层文案，用户点进去就不会看到一句过期的话。
+   *   这次探测是**用户显式触发**的（第 47 条允许），而 `refreshStatus` 本身不设"地址就绪"
+   *   守卫（守卫在**触发点**：`App.vue` 的就绪 `watch`）⇒ 地址没配时点它也不会被拦下，
+   *   用户能拿到 C3.4 那条说明。
+   * - `refreshStatus` 永不抛 ⇒ 探测失败不影响下面的落盘。
+   */
+  async function setEntryEnabled(enabled: boolean): Promise<void> {
+    await refreshStatus();
+    await writeEntryEnabled(enabled);
+    entryEnabled.value = enabled;
+  }
+
+  /**
+   * 翻转意愿层**发送**开关（§7.3）。**先落盘、后改内存**（R57）。
+   *
+   * ⚠️ 唯一一道拒绝是「服务端**明确**说没配」（C4.3 的防呆）：那种状态下开启也发不出去，
+   * 提前告诉用户比让他点进去等一次失败好。**拒绝前不写盘**（`writeSetting` 零调用）。
+   * 老实现拒绝的是 `host === null`（地址/登录态还没就绪也算进去）⇒ 与"开关不渲染"
+   * 合成死锁（`host` 永远拿不到、开关永远点不开），本轮删掉。关闭方向不受限。
    */
   async function setSendingEnabled(enabled: boolean): Promise<void> {
-    if (enabled && host.value === null) {
-      console.warn("[ai/store] 拿不到 host，不允许开启 AI 助手（§7.3）");
-      return;
+    if (enabled && configured.value === false) {
+      console.warn("[ai/store] 服务端明确未配置 AI，不允许开启发送（C4.3）");
+      throw new Error(AI_NOT_CONFIGURED_TEXT);
     }
     await writeSendingEnabled(enabled);
     sendingEnabled.value = enabled;
@@ -876,12 +972,17 @@ export const useAiChatStore = defineStore("aiChat", () => {
   }
 
   /**
-   * 探一次 AI 能力。**不轮询**（M2 契约第 4 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶），
-   * 自动调用点**只有一处**：`App.vue` 的启动钩子（tab 存不存在取决于它）。
+   * 探一次 AI 能力。**不轮询**（M2 契约第 4 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶）。
    *
-   * ⚠️ 页面**不许**再自动探一次：用户刚问完一句再进 AI 页，第二次探测会吃 `ai_rate_limited`
+   * **本函数不设"地址就绪"守卫**：守卫放在**触发点**（`App.vue` 那个 `watch(auth.baseUrlReady)`，
+   * 只有 `hasBaseUrl()` 为真时才调它）。理由是可测的 —— 把守卫塞进这里会让所有直接调
+   * `refreshStatus()` 的既有用例（`aiChat.status.test.ts`、`AiChatPage.test.ts:770`、
+   * `SecurityPage.aiSwitch.test.ts:51` 等，它们的 fixture 从不配 base URL）全部红，
+   * 而那些用例钉的是"探测结果怎么写进 store"，与"什么时候允许自动探"是两件事。
+   * 用户显式路径（隐私区「重新检测」、`setEntryEnabled`）也必须永远可达（C6.3）。
+   *
+   * ⚠️ 页面**不许**自动探一次：用户刚问完一句再进 AI 页，第二次探测会吃 `ai_rate_limited`
    * （同一个每分钟桶），而一个给不出结论的探测**不该**把已经确认可用的入口关掉（第 47 条）。
-   * 要刷新只能由**用户显式**触发（`refreshStatus` 仍然可调：任务 7 的隐私区就该由用户点）。
    *
    * **永不抛**（`fetchAiStatus` 的契约），但**只有服务端明确表态才改已知状态**：
    * - 请求成功（无 `failure`）⇒ 服务端说的 `enabled` 就是答案（没配 AI 是 200 + `enabled:false`）；
@@ -890,12 +991,24 @@ export const useAiChatStore = defineStore("aiChat", () => {
    */
   async function refreshStatus(): Promise<void> {
     const next = await fetchAiStatus();
-    if (next.failure === undefined || next.failure.kind === "disabled") {
+    if (next.failure === undefined) {
       status.value = next;
       statusUnknown.value = false;
+      configured.value = next.enabled;
+      statusFailureKind.value = null;
       return;
     }
-    // 不可判定：上一次已知的 `status`（含 host/model）原样留着；从没有过已知状态 ⇒ 记成"未知"
+    if (next.failure.kind === "disabled") {
+      // 503 `ai_disabled`：服务端**明确**表态没配（与 200 + enabled:false 同类）
+      status.value = next;
+      statusUnknown.value = false;
+      configured.value = false;
+      statusFailureKind.value = null;
+      return;
+    }
+    // 不可判定：上一次已知的 `status`（含 host/model）与 `configured` 原样留着；
+    // 从没有过已知状态 ⇒ 记成"未知"。失败类型**只**用于文案分流（C3.5），不用来改门控。
+    statusFailureKind.value = next.failure.kind;
     if (status.value === null) statusUnknown.value = true;
   }
 
@@ -981,9 +1094,15 @@ export const useAiChatStore = defineStore("aiChat", () => {
     rejectedDrafts,
     status,
     enabled,
+    configured,
+    statusFailureKind,
     host,
     model,
+    entryEnabled,
+    setEntryEnabled,
     sendingEnabled,
+    sendingHint,
+    hostStateText,
     privacyCardSeen,
     revealed,
     attachedImage,

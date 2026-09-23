@@ -3,7 +3,8 @@
 // §7.3 的「我的 → 隐私」入口：AI 意愿层开关 + 说明卡。
 //
 // 单独一份（而不是往 `SecurityPage.test.ts` 里加）：那份文件里**没有** AI 的桩
-// （`/ai/status` 探不到 ⇒ `host` 为 null ⇒ 这一整块根本不渲染），而本文件必须先让 `host` 可知。
+// （`/ai/status` 探不到 ⇒ `host` 为 null ⇒ 说明卡不渲染、文案走 C3.4 那一档），
+// 而本文件必须先让 `host` 可知才能钉"说明卡 + 开关"这组既有语义。
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
@@ -26,7 +27,8 @@ vi.mock("@/services/screenshotProtection", () => ({
   applyScreenshotProtection: vi.fn(async () => undefined),
 }));
 vi.mock("vue-router", () => ({ useRouter: () => ({ back: vi.fn(), push: vi.fn() }) }));
-// `/ai/status`：默认给一个可知的 host；`unknownHost` 打开时给 null（拿来钉"没 host 就整块不渲染"）
+// `/ai/status`：默认给一个可知的 host；`unknownHost` 打开时给 null（拿来钉"没 host 时开关照样在、
+// 说明卡不出"）
 const unknownHost = vi.hoisted(() => ({ value: false }));
 vi.mock("@/services/ai/transport", async () => {
   const actual = await vi.importActual<typeof import("@/services/ai/transport")>(
@@ -61,15 +63,20 @@ beforeEach(() => {
 });
 
 describe("SecurityPage 的 AI 意愿层开关（§7.3）", () => {
-  it("拿不到 `host` ⇒ 说明卡与开关**都不渲染**（M2→M3 的硬约束）", async () => {
+  it("拿不到 `host` ⇒ **开关照常渲染、照常可开**，只有说明卡不出（G2/C2.1/C2.2）", async () => {
     unknownHost.value = true;
     await withHost();
     const w = mount(SecurityPage);
     await flushPromises();
 
-    // 杀手：把 `v-if="ai.host !== null"` 换成 `v-if="true"`（或改成"变灰"）⇒ 三条全红
-    expect(w.find('[data-test="ai-privacy-group"]').exists()).toBe(false);
-    expect(w.find('[data-test="ai-sending-enabled"]').exists()).toBe(false);
+    // 本用例的两条既有断言（原意图：`host` 未知 ⇒ 整块不渲染）与新规则 2「开启入口永远可达」
+    // 直接冲突 ⇒ 按 `AGENTS.md` 的例外条款改写。接管者：`SecurityPage.aiEntry.test.ts` ①②
+    // （区块 / 开关 / 「重新检测」恒可达）。**改哪一行能让它红**：把 `SecurityPage.vue` 的
+    // `v-if="ai.host !== null"` 加回 `ai-privacy-group`、或给开关加 `:disabled="ai.host === null"`。
+    expect(w.find('[data-test="ai-privacy-group"]').exists()).toBe(true);
+    expect(w.get('[data-test="ai-sending-enabled"]').element).toHaveProperty("disabled", false);
+    // 原意图的**安全半边**原样保留（不知道数据发给谁就不给同意书）—— 这一条仍是原断言，
+    // 由 `AiPrivacyCard.vue:28` 的守卫承担（C2.4）
     expect(w.find('[data-test="ai-privacy-card"]').exists()).toBe(false);
   });
 

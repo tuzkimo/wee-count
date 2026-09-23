@@ -1,8 +1,23 @@
 // src/services/api.ts
+import { computed, ref } from "vue";
 import type { TeamMember } from "@/types";
 import { readRefreshToken, writeRefreshToken, deleteRefreshToken } from "./tokenStorage";
 
 let baseUrl: string | null = null
+
+/**
+ * `baseUrl` 的**响应式镜像**：它一变就通知订阅者。
+ *
+ * 为什么需要：`setBaseUrl()` 的三个调用点全在异步初始化之后（`stores/auth.ts:65/124/237`，
+ * 另有 `BindSyncPage.vue:138/156`），而"地址就绪之后才允许探 AI 能力"（C6.1）这件事在
+ * 组件里**没有任何可 watch 的对象** —— 模块级 `let` 变了不会触发任何重算，探测要么挂在
+ * `onMounted`（早于就绪 ⇒ 真机上必然失败）要么靠轮询。这里只暴露一个布尔视图，
+ * `baseUrl` 仍是唯一真相源，取值口径与 `hasBaseUrl()` 逐字相同（`!== null`）。
+ */
+const baseUrlSet = ref(false)
+
+/** 只读视图：地址是否已配置。`App.vue` 用它当"就绪后探一次"的触发条件（C6）。 */
+export const baseUrlReady = computed(() => baseUrlSet.value)
 
 let accessToken: string | null = null
 let refreshToken: string | null = null
@@ -14,6 +29,7 @@ let refreshInFlight: Promise<boolean> | null = null
 
 export function setBaseUrl(url: string): void {
   baseUrl = url.replace(/\/$/, '') // 去掉末尾斜杠
+  baseUrlSet.value = true
 }
 
 export function getBaseUrl(): string {

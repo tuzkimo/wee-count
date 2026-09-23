@@ -32,6 +32,7 @@ vi.mock("@/services/ai/agent", () => ({ runAgent }));
 
 import { useAiChatStore } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
+import { fetchAiStatus } from "@/services/ai/transport";
 
 const LEDGER_ID = "55555555-5555-4555-8555-555555555555";
 const T0 = "2026-03-01T00:00:00.000Z";
@@ -74,7 +75,7 @@ describe("意愿层开关（§7.3）", () => {
   });
 
   it("② 打开后**落盘**：写到 `ai_sending_enabled`，且写失败时状态不变（不许假确认）", async () => {
-    await useAiChatStore().refreshStatus(); // 拿到 host（开启的硬门槛）
+    await useAiChatStore().refreshStatus(); // 拿到 host（`configured=true` ⇒ 开启不被防呆拦下）
     const store = useAiChatStore();
 
     await store.setSendingEnabled(true);
@@ -102,14 +103,32 @@ describe("意愿层开关（§7.3）", () => {
     expect(store.sending).toBe(false);
   });
 
-  it("④ 拿不到 `host` 时**不允许开启**（store 层第二道守卫，开关本身由 UI 不渲染）", async () => {
-    // 没有 refreshStatus ⇒ status 仍是 null ⇒ host 为 null
+  it("④ 拿不到 `host` 时**允许开启**（C4.1：开关的可操作性不依赖 `host`）", async () => {
+    // 没有 refreshStatus ⇒ status 仍是 null ⇒ host 为 null、configured 也没表态
     const store = useAiChatStore();
     expect(store.host).toBeNull();
+    expect(store.configured).toBeNull();
 
     await store.setSendingEnabled(true);
 
-    // 杀手：去掉 `if (enabled && host.value === null)` 那道守卫 ⇒ `writeSetting` 被调 + 状态变 true
+    // 原断言（"host 未知 ⇒ 拒绝开启 + `writeSetting` 零调用"）与新规则「开启入口永远可达、
+    // 可操作性不依赖 host」直接冲突 ⇒ 按 `AGENTS.md` 的例外条款改写。接管者：
+    // 下半条「零调用」移交给 ④b（`configured === false` 时拒绝且零落盘，C4.3）。
+    // **改哪一行能让它红**：把 `if (enabled && host.value === null) return;` 加回
+    // `setSendingEnabled`（死锁只是从入口搬到了发送键）。
+    expect(writeSetting).toHaveBeenCalledWith("ai_sending_enabled", true, expect.anything());
+    expect(store.sendingEnabled).toBe(true);
+  });
+
+  it("④b 服务端**明确**没配 ⇒ 拒绝开启，且**零落盘**（C4.3：防呆，不是死锁）", async () => {
+    vi.mocked(fetchAiStatus).mockResolvedValueOnce({ enabled: false, model: null, host: null });
+    const store = useAiChatStore();
+    await store.refreshStatus();
+    expect(store.configured).toBe(false);
+
+    await expect(store.setSendingEnabled(true)).rejects.toThrow("未配置");
+
+    // 杀手：删掉 `configured === false` 那道拒绝 ⇒ 前一条红；把拒绝写在落盘之后 ⇒ 这一条红
     expect(writeSetting).not.toHaveBeenCalled();
     expect(store.sendingEnabled).toBe(false);
   });

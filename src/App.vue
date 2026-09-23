@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Home, BarChart3, Wallet, User, Sparkles } from "lucide-vue-next";
 import { useAutoLock } from "@/composables/useAutoLock";
 import { useLockStore } from "@/stores/lock";
+import { useAuthStore } from "@/stores/auth";
 import { useAiChatStore } from "@/stores/aiChat";
 import { sanitizeRedirect } from "@/router/lockGuard";
 import AppLockPrompt from "@/components/lock/AppLockPrompt.vue";
@@ -11,6 +12,7 @@ import AppLockPrompt from "@/components/lock/AppLockPrompt.vue";
 const route = useRoute();
 const router = useRouter();
 const lock = useLockStore();
+const auth = useAuthStore();
 const ai = useAiChatStore();
 
 // 前后台切换自动锁定：挂在根组件上，随应用生命周期只注册一次。
@@ -42,17 +44,35 @@ watch(
 );
 
 /**
- * 启动探一次 AI 能力（M2 契约第 4 条：**不要轮询** —— `/ai/status` 与 `/ai/chat` 共用一个
- * 每分钟桶）。这次探测是 AI tab 能否出现的**唯一**依据（`enabled` 默认 false）⇒ 不能等用户
- * 进 AI 页再探：tab 不显示就永远点不进去。
+ * 探一次 AI 能力（M2 契约第 4 条：**不要轮询** —— `/ai/status` 与 `/ai/chat` 共用一个
+ * 每分钟桶）。这次探测**不再挂在 `onMounted`**：地址（`setBaseUrl`）由 auth 的异步初始化
+ * 写入，挂载那一刻必然还没配 ⇒ `apiFetch` 里的 `getBaseUrl()` 直接抛、被 transport 吞成
+ * `failure:network`、`host` 恒为 null，而三种观测手段同时隐身（真机事故的完整链路，C6）。
+ *
+ * 现在只在**地址就绪后**探，且一个就绪窗口内只探一次：`watch` 只在 `false → true` 那次
+ * 触发（`immediate` 覆盖"挂载前地址就已配好"的冷启动），不轮询、不重入。用户显式点
+ * 「重新检测」（隐私区）走 `aiChat.refreshStatus()`，不受这里约束（C6.3）。
+ *
+ * "地址就绪"这道判据**只在这一处**（触发点）：`refreshStatus()` 自己不带守卫，否则所有直接
+ * 调它的既有用例（fixture 从不配 base URL）会一起红 —— 那些用例钉的是"探测结果怎么写进 store"。
+ *
+ * 能力探测与入口显隐已经**解耦**：tab 是否出现只看本地意愿层（`entryEnabled`），
+ * 探测结果只影响 AI 页内文案与"发送开关"是否可用（G1/C1）。
  */
-onMounted(() => {
-  void ai.refreshStatus();
-});
+watch(
+  () => auth.baseUrlReady,
+  (ready) => {
+    if (!ready) return;
+    void ai.refreshStatus();
+  },
+  { immediate: true },
+);
 
 /**
- * tab 列表。`/ai` 只在服务端启用了 AI 时才出现（需求：后端没配 AI 时**整个 tab 不显示**，
- * 而不是"点了再报错"）。位置在「报表」与「账户」之间。
+ * tab 列表。`/ai` 只在**用户自己开启过 AI 助手**时才出现（G1：入口的唯一判据是本地意愿层，
+ * 不是探测结果）。服务端没配 AI 时不再"整个 tab 不显示"—— 那正是把"客户端不掌握的状态"
+ * 当成渲染判据的老毛病；已知没配只影响 AI 页内的说明与发送开关。
+ * 位置在「报表」与「账户」之间。
  */
 const TABS = [
   { path: "/", label: "首页", icon: Home },
@@ -62,7 +82,7 @@ const TABS = [
   { path: "/me", label: "我的", icon: User },
 ];
 
-const tabs = computed(() => TABS.filter((tab) => tab.path !== "/ai" || ai.enabled));
+const tabs = computed(() => TABS.filter((tab) => tab.path !== "/ai" || ai.entryEnabled));
 
 function isActive(tabPath: string): boolean {
   if (tabPath === "/") {

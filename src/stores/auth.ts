@@ -30,6 +30,11 @@ export const useAuthStore = defineStore("auth", () => {
 
   const isAuthenticated = computed(() => mode.value !== 'none');
   const isOnline = computed(() => mode.value === 'online');
+  // 服务端地址是否已就绪（C6.1：探测不得早于它）。**只做镜像**，判据仍是 `api.ts` 的 `hasBaseUrl()`
+  // （同一形态：`services/sync.ts:165` 也是"地址没配就不动作"，不另造等价判断）。
+  // 需要它是因为地址由三条异步路径写入（下面的 localLogin / bindOnline / restoreOnlineSession），
+  // 组件侧"就绪后探一次"必须有一个能 watch 到的信号。
+  const baseUrlReady = computed(() => api.baseUrlReady.value);
   // 是否绑定过在线同步（与当前是否连上解耦）：绑定了但服务下线退到 local 时为 true。
   // 用于 UI 区分「纯本地用户」与「在线用户降级」，避免降级时误显示「配置在线同步」。
   const isOnlineBound = computed(
@@ -346,6 +351,7 @@ export const useAuthStore = defineStore("auth", () => {
     isAuthenticated,
     isOnline,
     isOnlineBound,
+    baseUrlReady,
     localLogin,
     createLocalAccount,
     bindOnline,

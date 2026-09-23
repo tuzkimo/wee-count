@@ -482,8 +482,23 @@ function readStatusData(data: unknown): Pick<AiStatus, "enabled" | "model" | "ho
 }
 
 /**
+ * `catch` 里的原因 → 一行日志文本。
+ *
+ * `String(err)` 对 `Error("")` 会拿到 `"Error"`、对 `null` 会拿到 `"null"` —— 都还有信息；
+ * 但对"有 message 的 Error"要拿到的是**原因本身**，不能是 `"Error: xxx"` 这种把原因埋掉的形态。
+ * 单独一个函数是为了让每个吞异常的分支**都必须显式调它**（G5：吞异常必留痕）。
+ */
+function throwReason(err: unknown): string {
+  return err instanceof Error && err.message !== "" ? err.message : String(err);
+}
+
+/**
  * 探一次 AI 能力。**不轮询**：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶
- * （M2 契约第 4 条），轮询会平白吃掉用户的每分钟额度。调用点只有"启动 / 进入 AI 页"。
+ * （M2 契约第 4 条），轮询会平白吃掉用户的每分钟额度。
+ *
+ * 自动调用点只有一处：`App.vue` 那个"地址就绪后探一次"的钩子（C6：**地址没配就不发请求**）；
+ * 用户点「重新检测」是显式路径，不受那条守卫限制。页面 `onMounted` **不许**再探
+ * （`App.aiProbe.test.ts` 钉着"自动探针只有一处"）。
  *
  * **永不抛**，失败一律 `enabled: false` + `failure` —— 拿不到能力就等于没启用，
  * tab 不显示，这是安全的一侧。status 的 429 **不是"额度耗尽"**：日配额只约束
@@ -493,7 +508,13 @@ export async function fetchAiStatus(): Promise<AiStatus> {
   let res: Awaited<ReturnType<typeof apiFetch>>;
   try {
     res = await apiFetch(STATUS_PATH);
-  } catch {
+  } catch (err) {
+    // G5（吞异常必留痕）：`apiFetch` 契约上不抛，但 base URL 未配置时 `getBaseUrl()` 会抛，
+    // 而这个 catch 过去**一个字都不打** ⇒ 真机上 Network 无请求（异常在 fetch 之前）、
+    // Console 空、后端无日志 —— 三种观测手段同时隐身（本轮事故的最贵教训）。
+    // 日志里必须同时有**这条路**（STATUS_PATH）与**抛出原因**：排障时要能一眼分清
+    // "地址/登录态未就绪"与"网络层真的抛了"。降级形状不变（上面的契约）。
+    console.warn(`[ai] status ${STATUS_PATH} 未发出（吞掉异常并降级）：${throwReason(err)}`);
     return { enabled: false, model: null, host: null, failure: { kind: "network" } };
   }
 

@@ -110,6 +110,17 @@ async function onPrivacyDismiss(): Promise<void> {
   }
 }
 
+/**
+ * 提示条里的「重新检测」：**用户显式**触发一次能力探测（G6/C5.3/C6.3）。
+ *
+ * 本页只有这一处探测入口，且必须由用户点击产生 —— 自动探测仍然只有 `App.vue` 那一次
+ * （第 47 条：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶，页面自动重探会平白吃掉额度）。
+ * `refreshStatus` 永不抛，成功与否由提示条文案如实呈现。
+ */
+async function onRecheck(): Promise<void> {
+  await ai.refreshStatus();
+}
+
 async function scrollToBottom(): Promise<void> {
   await nextTick();
   const el = scroller.value;
@@ -288,19 +299,44 @@ watch(
     </div>
 
     <!--
-      意愿层关着时**必须让用户看见为什么发不出去**（§7.3）：两种情形文案不同 ——
-      没有 host = 服务端没配（能力层），有 host 但开关关着 = 去隐私设置里打开（意愿层）。
+      发不出去时必须让用户看见**为什么**（§7.3 + G3/C5）。三类情形分开说，一律由 store 的
+      纯函数出文案（`services/ai/failureText.ts`），页面里**不许**再出现
+      `host === null ? "服务端未配置 AI…"` 式的三元 —— 真机事故正是那句话把
+      "地址/登录态未就绪"说成了"服务端没配"，把用户引向完全错误的方向。
+
+      三种状态（互斥，顺序即优先级）：
+      1. 意愿层关着 ⇒ 说"去哪打开"（`我的 → 隐私`，`AiChatPage.test.ts:747` 逐字钉住）；
+      2. 服务端**明确**没配 ⇒ 唯一允许出现「未配置」的情形（C5.4）；
+      3. 已开启但拿不到结论 ⇒ 说清这轮是哪一类失败，并给一个**用户显式**的重试入口（C5.3）。
     -->
     <p
-      v-if="!ai.sendingEnabled && ai.enabled"
+      v-if="!ai.sendingEnabled"
       class="border-t border-gray-100 px-4 py-2 text-xs text-text-secondary"
       data-test="ai-sending-off-hint"
     >
-      {{
-        ai.host === null
-          ? "服务端未配置 AI：这台设备暂时用不了助手。"
-          : "AI 助手已关闭，去「我的 → 隐私」打开后才能发送。"
-      }}
+      {{ ai.sendingHint }}
+    </p>
+    <p
+      v-else-if="ai.configured === false"
+      class="border-t border-gray-100 px-4 py-2 text-xs text-text-secondary"
+      data-test="ai-not-configured"
+    >
+      {{ ai.sendingHint }}
+    </p>
+    <p
+      v-else-if="ai.host === null"
+      class="flex items-center gap-2 border-t border-gray-100 px-4 py-2 text-xs text-text-secondary"
+      data-test="ai-sending-unknown"
+    >
+      <span>{{ ai.sendingHint }}</span>
+      <button
+        type="button"
+        data-test="ai-recheck"
+        class="rounded-lg border border-gray-200 bg-surface px-2 py-1 text-xs text-text-secondary"
+        @click="onRecheck"
+      >
+        重新检测
+      </button>
     </p>
 
     <!--
