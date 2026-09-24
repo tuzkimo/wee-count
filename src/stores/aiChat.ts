@@ -478,6 +478,10 @@ export const useAiChatStore = defineStore("aiChat", () => {
         // `transactions.user_id` 那个真值 —— 只给名字的形态下模型说得出"小明"、链路却查不了
         // （旧实现拿序号编了个 `member-0`，于是成员筛选恒 0 行、静默回一个"0 元"）。
         members,
+        // 当前用户 id：团队账本里解析表的账户候选要按它收窄（`LookupScope`）。agent 那层
+        // 拿不到这个身份（快照刻意只有名字），只能由这里给 —— 与 `buildSnapshot` 里
+        // 过滤账户用的是**同一个** `currentUserId()`。
+        currentUserId: currentUserId(),
         deps: { transport: createTransport(), session: AGENT_SESSION },
         signal: controller.signal,
       });
@@ -1030,6 +1034,18 @@ export const useAiChatStore = defineStore("aiChat", () => {
   // -------------------------------------------------------------------------
 
   /**
+   * 当前用户 id（**唯一**取值口径，与手动记账 `useTransactionForm.currentUserId:47`、
+   * `AccountPickerSheet:33`、`DraftCard:175-177` 逐字一致）。
+   *
+   * 团队账本里它就是账户 `owner_id` 的比对对象：AI 名下的账户必须与记账页能选的账户
+   * 是**同一批**（两处口径一分叉，就变成"记账页能选、AI 说没有"这类只在一端复现的缺陷）。
+   * 这里显式收成一个函数，正是因为快照与解析表两处都要它，且都不该各写一份表达式。
+   */
+  function currentUserId(): string {
+    return useAuthStore().currentLocalUser?.server_user_id || getCurrentUserId() || "";
+  }
+
+  /**
    * 账本快照（§7.1）：**只有名字与类型**，逐字段白名单。
    *
    * ⚠️ 别写成 `categories: categoryStore.categories` —— 那些实体带 `id`/`ledger_id`/`owner_id`，
@@ -1045,14 +1061,23 @@ export const useAiChatStore = defineStore("aiChat", () => {
    */
   async function buildSnapshot(members: { name: string }[]): Promise<LedgerSnapshot> {
     const ledger = ledgerStore.currentLedger;
+    const isTeam = ledger !== null && ledger.type === "team";
+    const me = currentUserId();
     return {
-      kind: ledger !== null && ledger.type === "team" ? "team" : "personal",
+      kind: isTeam ? "team" : "personal",
       categories: useCategoryStore().categories.map((c) => ({ name: c.name, type: c.type })),
-      accounts: useAccountStore().accounts.map((a) => ({
-        name: a.name,
-        // 中文类型名（招行(银行卡)）：快照给的是**人话**，模型照着它跟用户对话（§7.1 的示例）
-        type: ACCOUNT_TYPE_LABELS[a.type],
-      })),
+      // ⚠️ 账户只列**当前用户自己的**（团队账本口径，判据照 `useTransactionForm.availableAccounts:48-54`
+      //    与 `DraftCard.accountOptions:178-184`；解析表那侧的同一规则落在 `buildLookupContext`
+      //    的 SQL 上，由 `send` 传下去的 `currentUserId` 驱动）。
+      //    少了这一条，两个成员各有一个「现金」时模型收到的是**无法区分**的清单，
+      //    用户说"用我的"也没用（实机缺陷）。
+      accounts: useAccountStore()
+        .accounts.filter((a) => !isTeam || a.owner_id === me)
+        .map((a) => ({
+          name: a.name,
+          // 中文类型名（招行(银行卡)）：快照给的是**人话**，模型照着它跟用户对话（§7.1 的示例）
+          type: ACCOUNT_TYPE_LABELS[a.type],
+        })),
       tags: useTagStore().tags.map((t) => t.name),
       members,
     };
@@ -1082,7 +1107,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
         add(row.user_id, (await info.getMember(row.user_id)).displayName);
       }
     }
-    const selfId = useAuthStore().currentLocalUser?.server_user_id || getCurrentUserId() || "";
+    const selfId = currentUserId();
     if (selfId !== "") add(selfId, (await info.getMember(selfId)).displayName);
     return table;
   }

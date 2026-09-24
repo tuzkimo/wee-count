@@ -643,9 +643,18 @@ function readName(v: unknown): { ok: true; value: string | null } | { ok: false 
   return { ok: true, value: v.trim() === "" ? null : v.trim() };
 }
 
+/**
+ * 过滤后**一个可用账户都没有**时给模型的那句话。
+ *
+ * 必须是**确定性**的（"文案说真话"：没有候选时"请反问用户是哪个账户"没有信息量，
+ * 模型只会回"无法分辨"，实机上就是这样记不了账）。
+ */
+export const NO_ACCOUNT_TEXT =
+  "当前用户在这个账本里还没有可用的账户（记账只能用你自己的账户），请先在账户页创建一个账户，然后再说一遍这笔账。";
+
 function accountCandidates(ctx: ToolContext): string {
   const names = ctx.lookup.accounts.map((a) => a.name);
-  return names.length > 0 ? names.join("、") : "（这个账本还没有账户）";
+  return names.length > 0 ? names.join("、") : NO_ACCOUNT_TEXT;
 }
 
 /**
@@ -757,6 +766,15 @@ function createDraftTool(raw: Record<string, unknown>, ctx: ToolContext): ToolOu
     return { ok: false, error: "bad_string: 分类 / 账户 / 备注必须是非空字符串，tags 必须是非空字符串数组" };
   }
 
+  // 过滤后一个可用账户都没有 ⇒ 任何记账**必然**失败（账户名解析不出 id）：直接给确定性的
+  // "先去创建账户"，不让模型去反问用户"是哪个账户"（候选为空时那句话没有信息量，
+  // 实机上模型会回"无法分辨"，用户就卡在这里）。
+  // ⚠️ 放在这里（字段校验之后、必填校验之前）是刻意的：它同时覆盖"模型给了账户名"与
+  //    "模型没给账户名"两条路 —— 走到下面那两条 missing_account 时，账户池必定非空。
+  if (ctx.lookup.accounts.length === 0) {
+    return { ok: false, error: `missing_account: ${accountCandidates(ctx)}` };
+  }
+
   // —— 必填校验（照抄 useTransactionForm.doSave 的四条） ——
   if (type === "transfer" && category.value !== null) {
     return { ok: false, error: "bad_combination: 转账没有分类，请去掉 category" };
@@ -864,6 +882,22 @@ export async function executeTool(
 // ---------------------------------------------------------------------------
 
 /**
+ * 账户候选的作用域：**当前用户自己的账户**（产品规则：记账只能用当前用户自己的账户）。
+ *
+ * 口径照既有的两处（`useTransactionForm.availableAccounts:46-54`、`DraftCard.accountOptions:178-184`）：
+ * **只在团队账本里**按 `owner_id` 过滤 —— 个人账本里账户就是自己的，多一道过滤只会把
+ * （历史数据里 owner_id 与当前身份对不上的）自己的账户藏掉。
+ *
+ * ⚠️ 需要调用方注入：本层是服务层，不依赖 Vue / auth store，自己算不出"当前用户是谁"。
+ *    `viewerUserId` 为空串（身份未知）时不过滤：此时说"你没有账户"是**假话**（我们自己不知道），
+ *    宁可退回旧行为，也不能把"不知道"说成"没有"。
+ */
+export interface LookupScope {
+  kind: "personal" | "team";
+  viewerUserId: string;
+}
+
+/**
  * 组装名字解析所需的查找表：分类 / 账户 / 标签来自**本账本**的本地表，
  * 成员由调用方传入（成员显示名要经 `useMemberInfo` 的别名 > 昵称 > username 规则，
  * 那是 Vue 侧的东西，工具层不依赖 Vue —— 与 resolve.ts「查找表注入」同一条纪律）。
@@ -874,13 +908,24 @@ export async function executeTool(
  * ⚠️ 但**不吞真正的查询异常**：若 `db.select` 抛了（库损坏 / 锁住），把它吞成"空表"
  * 会让模型对用户说"这个账本还没有账户"——把故障说成事实。这里让它抛，由编排层
  * 按 §5.3 映射成一条 assistant 错误消息。
+ *
+ * `scope` 不给 ⇒ 不过滤账户（旧行为；只该出现在不关心归属的调用里，生产路径由 store 注入）。
  */
 export async function buildLookupContext(
   ledgerId: string,
   members: { userId: string; name: string }[],
+  scope?: LookupScope,
 ): Promise<LookupContext> {
   const db = getUserDb();
   if (!db) return { categories: [], accounts: [], tags: [], members: [] };
+
+  // 账户候选的归属过滤：团队账本 + 知道当前用户是谁时，**只**取他自己名下的账户。
+  // 少了这一条，两个成员各有一个「现金」时会同时进解析表 ⇒ `resolve.ts:108` 判 ambiguous
+  // （同名两个候选）⇒ 工具响亮失败、模型只能回"无法分辨"（实机缺陷）。
+  const ownerId =
+    scope !== undefined && scope.kind === "team" && scope.viewerUserId !== ""
+      ? scope.viewerUserId
+      : null;
 
   // 三条查询都带 ledger_id 与 is_deleted：少任一条件都会把别的账本（或已删）的名字
   // 变成解析候选，而"候选"会直接进反问给用户的那句话里。
@@ -888,10 +933,15 @@ export async function buildLookupContext(
     "SELECT id, name, type FROM categories WHERE ledger_id = ? AND is_deleted = 0",
     [ledgerId],
   );
+  // 账户的 `owner_id` 仍然**只在本层用**（决定候选），不进返回的 LookupContext ——
+  // §7.3：往上走一步就离"进 prompt"更近一步，而模型那边只需要名字。
   const accounts = await db.select<{ id: string; name: string }[]>(
-    "SELECT id, name FROM accounts WHERE ledger_id = ? AND is_deleted = 0",
-    [ledgerId],
+    ownerId === null
+      ? "SELECT id, name FROM accounts WHERE ledger_id = ? AND is_deleted = 0"
+      : "SELECT id, name FROM accounts WHERE ledger_id = ? AND is_deleted = 0 AND owner_id = ?",
+    ownerId === null ? [ledgerId] : [ledgerId, ownerId],
   );
+
   const tags = await db.select<{ id: string; name: string }[]>(
     "SELECT id, name FROM tags WHERE ledger_id = ? AND is_deleted = 0",
     [ledgerId],

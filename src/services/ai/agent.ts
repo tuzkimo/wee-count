@@ -169,6 +169,15 @@ export interface RunAgentArgs {
    * 会在工具层**响亮失败**，绝不伪造 id 去查（伪造的表现是"小明这个月花了 0 元"这种静默错答案）。
    */
   members?: LookupMember[];
+  /**
+   * 当前用户 id（与 `stores/aiChat.ts` 记账侧**同一个**取值口径：
+   * `auth.currentLocalUser?.server_user_id || getCurrentUserId() || ""`）。
+   *
+   * 只用于一件事：团队账本里把**别人名下的账户**排除出候选（`buildLookupContext` 的
+   * `LookupScope`）。本层拿不到这个身份 —— 快照刻意只有名字（§7.1）—— 所以只能由调用方给；
+   * 不给就退回不过滤（身份未知时说"你没有账户"是假话）。
+   */
+  currentUserId?: string;
   deps: AgentDeps;
   signal: AbortSignal;
 }
@@ -484,6 +493,11 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
   try {
     // 名字查找表：不注入就走真实的 buildLookupContext（它的抛 ⇒ §5.3 的通用失败消息）。
     //
+    // ⚠️ 账户候选要按**当前用户**收窄（团队账本里只用他自己的账户，见 `LookupScope`）：
+    //    账本类型从快照拿（`kind` 本来就是它的一半语义），当前用户 id 只能由调用方注入。
+    //    少了这一条，两个成员各有一个「现金」⇒ 解析表里两个同名候选 ⇒ ambiguous ⇒
+    //    模型只能回"无法分辨"（实机缺陷）。
+    //
     // ⚠️ 成员表**只传 `args.members`，绝不凭空造 id**：这里的 `userId` 会被
     //    `buildLookupContext` 原样当成解析表的 `id`（`tools.ts` 的 `members:` 那一行），再经 `resolveFilter`
     //    进 SQL 的 `t.user_id IN (...)`（`querySql.ts:119-121`）。曾经这里传的是
@@ -496,7 +510,10 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
     try {
       lookup =
         args.lookup ??
-        (await buildLookupContext(args.ledgerId, memberRows(args.members ?? [])));
+        (await buildLookupContext(args.ledgerId, memberRows(args.members ?? []), {
+          kind: args.snapshot.kind,
+          viewerUserId: args.currentUserId ?? "",
+        }));
     } catch (e) {
       console.warn("[ai/agent] buildLookupContext 失败：", e);
       return { ...emptyTurn(), text: DB_FAILURE_TEXT };
