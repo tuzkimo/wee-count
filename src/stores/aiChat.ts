@@ -637,12 +637,24 @@ export const useAiChatStore = defineStore("aiChat", () => {
    * ⚠️ 四处限定（要求 5）：
    *  - `conversation_id = ?`：**那个账本**的会话（`ledger_id` UNIQUE ⇒ 一会话一账本）；不限定就是
    *    "另一个账本里同 draftId 的草稿被一起改掉"；
-   *  - `role = 'assistant'` + `id = ?`：**那条消息**（草稿只产生在 assistant 消息上）；
-   *  - `json_each … draftId = ?`：**那一张**草稿（一个 payload 里可以有多张，只 patch 命中的那张）；
+   *  - `role = 'assistant'`：草稿只产生在 assistant 消息上；
+   *  - `json_each … draftId = ?`：**那一张**草稿（一个 payload 里可以有多张，只 patch 命中的那张）。
+   *    它同时就是"哪一条消息"的判据 —— 见下面那段关于两套 id 的警告；
    *  - 状态守卫：`pending` 只接受"当前是 confirmed"（撤销），其余只接受"还没决定过"。
    *    重复点击 / 双确认因此改不动第二笔，`rowsAffected = 0` ⇒ 调用方不动内存。
    *
    * 硬删过的消息（`clearConversation`）⇒ 这里必然 0 行 ⇒ 返回 false，调用方保持"待确认"。
+   *
+   * 🔴 **不许再拿 `messageId` 当库键**（Bug 3 的根因，实测：首次确认/拒绝/撤销**必然**返回 false，
+   * 切页回来才正常）。同一轮 assistant 消息有**两套身份**：
+   *  - store 内存那份的 id 是 `appendAssistant` 里 `crypto.randomUUID()` 造的（`:556`）；
+   *  - 库里那行的 id 是 `agent.ts:404` **另外**造的一个 UUID。
+   * 两者永不相等 ⇒ `... AND id = ?` 恒不命中 ⇒ 0 行。而 `load()` 用 `r.id` 重建草稿
+   * （`messages.value` 那条路），`messageId` 于是换成库 id ⇒ **切页回来就"好了"**。
+   * `allDrafts[].messageId` 只在**同一份会话的内存投影内**自洽（它服务于 UI 分组，见 `runTurn` 里
+   * 那段"两套独立身份"的注释），拿它去 `WHERE id = ?` 正是被明令禁止的那件事。
+   * 真正的稳定身份是 `draftId`（`tools.ts:821` 造的 UUID），它随 payload 一起落库 —— 因此
+   * "哪一条消息"由 `conversation_id + role + draftId` 唯一确定，不需要第二个键。
    */
   async function updateDraftPayload(
     draftId: string,
@@ -651,8 +663,10 @@ export const useAiChatStore = defineStore("aiChat", () => {
   ): Promise<boolean> {
     const db = getUserDb();
     const conversationId = await findConversationId(ledgerStore.currentLedgerId ?? "");
-    const messageId = allDrafts.value.find((d) => d.draftId === draftId)?.messageId ?? null;
-    if (db === null || conversationId === null || messageId === null) return false;
+    // 草稿不在内存投影里 ⇒ 这条决定无从谈起（`applyDraftDecision` 已经拦过一道，这里是本函数
+    // 自己的守卫：真链路里 `draftId` 只可能来自一张渲染中的草稿卡）
+    if (!allDrafts.value.some((d) => d.draftId === draftId)) return false;
+    if (db === null || conversationId === null) return false;
 
     try {
       // 为什么要这么写：SQLite 的 `json_set` **只能**按路径精确落值，而"数组里哪个元素"是运行期
@@ -682,7 +696,6 @@ export const useAiChatStore = defineStore("aiChat", () => {
                 )))
           WHERE conversation_id = ?
             AND role = 'assistant'
-            AND id = ?
             AND EXISTS (
                   SELECT 1 FROM json_each(json_extract(payload, '$.drafts'))
                   WHERE json_extract(value, '$.draftId') = ?
@@ -693,7 +706,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
                           AND json_extract(value, '$.status') IS NOT 'rejected')
                     )
                 )`,
-        [draftId, status, transactionId, conversationId, messageId, draftId, status, status],
+        [draftId, status, transactionId, conversationId, draftId, status, status],
       );
       // 没改到行 ⇒ 这条决定不成立（重复点击 / 消息已被清掉 / 草稿已被别人决定）
       return applied.rowsAffected > 0;
