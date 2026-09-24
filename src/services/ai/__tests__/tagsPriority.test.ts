@@ -98,6 +98,22 @@ describe("system prompt：写明「能用标签就用标签」（保守措辞）
     expect(p).toMatch(/备注[^。\n]*(?:仍|还是|照样|要写|写进|写进备注)|装不下[^。\n]*备注/);
   });
 
+  it("不得用标签重复分类 / 金额 / 时间 / 账户已经表达清楚的内容", () => {
+    const p = prompt();
+    // 口径（人类补充）：结构化字段说清了的，不再用标签说第二遍（"买菜 58" 不该再打「生鲜」）。
+    // 只写"优先用标签"会诱导模型把分类名原样塞进 tags —— 这条把那个方向堵住。
+    expect(p).toMatch(/不要(?:再)?(?:用标签)?重复|别重复|重复打标签|重复地?打标签/);
+    // 被点名的结构化字段至少要有 分类 / 金额，措辞里必须能看出"是它们已经表达清楚"
+    expect(p).toMatch(/分类/);
+    expect(p).toMatch(/金额/);
+    expect(p).toMatch(/标签[^。\n]*(?:留给|只用于|用于)[^。\n]*(?:装不下|补充|表达不了)/);
+  });
+
+  it("点明标签补充的是什么：用途 / 对象这类结构化字段承载不了的信息", () => {
+    const p = prompt();
+    expect(p).toMatch(/报销|用途|对象/);
+  });
+
   it("只用账本里**已有**的标签名，明说解析不到会失败、不许编造", () => {
     const p = prompt();
     // 依据 tools.ts:770-781 的草稿解析：名字对不上账本 ⇒ ok:false，草稿根本出不来
@@ -106,11 +122,30 @@ describe("system prompt：写明「能用标签就用标签」（保守措辞）
     expect(p).toMatch(/不要编造|不许编造|不得编造|不要自己编|别编造/);
   });
 
+  it("把当前可用的标签逐个列给模型（不然它只能猜，或者自己在快照里翻）", () => {
+    // ⚠️ 这条**不能**只断言 `toContain("生鲜")`：快照那一行本来就印了标签清单，
+    // 那种断言恒真、看不见"引导行有没有把可选值列出来"。所以要钉住引导行本身。
+    const line = prompt().split("\n").find((l) => l.startsWith("账本里当前可用的标签只有："));
+    expect(line, "引导行里没有把可用标签列出来").toBeDefined();
+    expect(line).toContain("生鲜");
+    expect(line).toContain("报销");
+  });
+
+  it("空标签账本时那一行也自洽（复用「（暂无）」，不留半句话）", () => {
+    const empty: LedgerSnapshot = { ...SNAPSHOT, tags: [] };
+    const line = buildSystemPrompt(empty, new Date(2026, 2, 1))
+      .split("\n")
+      .find((l) => l.startsWith("账本里当前可用的标签只有："));
+    expect(line).toBeDefined();
+    expect(line).toContain("（暂无）");
+  });
+
   it("反空转：这几句话必须落在「工具与示例」一节里，不是别处的偶然撞词", () => {
     const p = prompt();
     const section = p.slice(p.indexOf("## 4. 工具与示例"), p.indexOf("## 5."));
     expect(section).toMatch(/优先[^。\n]*标签|尽量[^。\n]*标签/);
     expect(section).toMatch(/已有|已存在|现有/);
+    expect(section).toMatch(/不要(?:再)?用?标签重复|不要重复|别重复|重复打标签/);
   });
 });
 
@@ -129,8 +164,33 @@ describe("system prompt：few-shot 要有带 tags 的草稿示例", () => {
     expect(tags.some((t) => known.includes(t))).toBe(true);
   });
 
-  it("示例体现「能用标签就不写备注」：不再给同一个示例塞一个长备注", () => {
+  it("示例里的标签必须与同一行的分类名不同（不得用标签重复分类）", () => {
+    // 口径的直接体现：「买菜」是分类，同一行再出现 tags=["买菜"] 就是把分类抄进标签。
+    // 旧的 tags=["生鲜"]（买菜 ⊆ 生鲜）也是同一个毛病，所以这条同时钉住"同义标签也不行"。
     const withTags = draftCallLines(prompt()).filter((l) => /tags\s*=\s*\[/.test(l));
+    for (const line of withTags) {
+      const category = /category\s*=\s*"([^"]*)"/.exec(line)?.[1];
+      expect(category, `带 tags 的草稿示例必须写明 category 才能检查重复：${line}`).toBeDefined();
+      const tags = /tags\s*=\s*\[([^\]]*)\]/.exec(line)?.[1] ?? "";
+      const names = [...tags.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      expect(names.length).toBeGreaterThan(0);
+      expect(names, "标签不得重复同一行的分类名").not.toContain(category);
+      // 与分类同名或互为子串（买菜 / 买菜早餐）都算重复表达，示例里不许出现
+      for (const n of names) {
+        expect(category!.includes(n) || n.includes(category!), `标签「${n}」与分类「${category}」重复表达`).toBe(false);
+      }
+    }
+  });
+
+  it("示例体现「标签承载结构化字段装不下的信息」：报销这类用途标签 + 极短备注", () => {
+    const withTags = draftCallLines(prompt()).filter((l) => /tags\s*=\s*\[/.test(l));
+    expect(withTags.some((l) => /报销/.test(l))).toBe(true);
+    // 反向：示例里**不再**出现与分类同义的标签（实测把报销换成生鲜时，只有这条会红）
+    for (const line of withTags) {
+      const names = [...(/tags\s*=\s*\[([^\]]*)\]/.exec(line)?.[1] ?? "").matchAll(/"([^"]+)"/g)]
+        .map((m) => m[1]);
+      expect(names, "示例里不该再用「生鲜」这种与分类同义的标签").not.toContain("生鲜");
+    }
     for (const line of withTags) {
       const note = /note\s*=\s*"([^"]*)"/.exec(line);
       // 备注要么省略，要么极短（"盒马" 这种长度以内）——长句备注说明这条示例
@@ -165,6 +225,15 @@ describe("工具描述：草稿工具与 tags schema 都要引导标签", () => 
     const d = tagsDescription();
     expect(d).toMatch(/优先|尽量/);
     expect(d).toMatch(/少写备注|不写备注|替代备注|代替备注|备注/);
+  });
+
+  it("tags 的 schema 描述写明：不得把分类 / 金额 / 时间 / 账户已表达的内容重复成标签", () => {
+    const d = tagsDescription();
+    // 同一口径落到 schema 上，避免模型把分类名（"买菜"）原样填进 tags 再重复一遍
+    expect(d).toMatch(/不要(?:再)?重复|别重复|重复/);
+    expect(d).toMatch(/分类/);
+    expect(d).toMatch(/金额/);
+    expect(d).toMatch(/标签[^。；]*(?:留给|只用于|用于|补充)/);
   });
 
   it("tags 的 schema 描述写明：只能用账本里已存在的标签名，不许自己编造", () => {
