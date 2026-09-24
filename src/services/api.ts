@@ -19,8 +19,29 @@ const baseUrlSet = ref(false)
 /** 只读视图：地址是否已配置。`App.vue` 用它当"就绪后探一次"的触发条件（C6）。 */
 export const baseUrlReady = computed(() => baseUrlSet.value)
 
+/**
+ * 登录凭据（access / refresh token）是否**已经拿到**的响应式镜像。
+ *
+ * 为什么需要它（Bug 1 的真机事故）：打开 App 后 token 是**异步**恢复的，而"地址就绪"
+ * （`setBaseUrl`，`stores/auth.ts:242`）发生在恢复**之前** —— `auth.restoreOnlineSession`
+ * 是先 `setBaseUrl()`、**后**才 `tryRestoreSession()`（`:243`）。于是"地址一就绪就探 AI 能力"
+ * 的自动探针会在**一个凭据都没有**的时候发出请求（`apiFetch` 只在有 accessToken 时才加
+ * Authorization 头、且 refresh 分支要求 refreshToken 非空）⇒ 服务端如实回 401。
+ *
+ * 所以这个视图有两个用途，都只关于"我们现在到底知不知道自己的登录态"：
+ *  1. 文案：没有凭据时的 401 **不是**"登录已过期"的证据（见 `services/ai/failureText.ts`）；
+ *  2. 时机：凭据就绪那一刻允许**自动补探一次**（`stores/aiChat.ts` 的 `watch`），用户不必手点
+ *     「重新检测」。
+ *
+ * 取值口径与两个 token 变量逐字一致（任一非 null ⇒ 就绪）：三处赋值点（`setTokens` /
+ * `tryRestoreSession` / `clearTokens`）都在同一处翻这个开关，别只改一边。
+ */
+export const authTokenReady = computed(() => authTokenSet.value)
+
 let accessToken: string | null = null
 let refreshToken: string | null = null
+/** `authTokenReady` 的真相源（见上）；与下面两个 token 变量同生同灭 */
+let authTokenSet = ref(false)
 // 当前会话归属的服务端用户 id：refresh_token 按它独立存取，避免同设备多账号串号。
 let currentUserId: string | null = null
 
@@ -128,6 +149,7 @@ export function setTokens(userId: string, access: string, refresh: string): void
   currentUserId = userId
   accessToken = access
   refreshToken = refresh
+  authTokenSet.value = true
   void writeRefreshToken(userId, refresh)
 }
 
@@ -136,6 +158,7 @@ export function clearTokens(): void {
   currentUserId = null
   accessToken = null
   refreshToken = null
+  authTokenSet.value = false
 }
 
 export async function getStoredRefreshToken(): Promise<string | null> {
@@ -328,6 +351,7 @@ export async function tryRestoreSession(userId: string): Promise<User | null> {
     currentUserId = userId
     accessToken = data.access_token
     refreshToken = data.refresh_token
+    authTokenSet.value = true
     void writeRefreshToken(userId, data.refresh_token)
     return data.user
   } catch {

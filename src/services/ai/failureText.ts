@@ -30,10 +30,27 @@ export interface OffHintParams {
   configured: boolean | null;
   /** 地址是否已配置（`hasBaseUrl()`）。这一条是 ①② 的分界线 */
   hasBaseUrl: boolean;
+  /**
+   * 客户端是否**已经拿到登录凭据**（`api.authTokenReady`）。这一条是 ① 内部的第二条分界线：
+   * 地址有了、但 token 还没恢复时，请求是以**匿名**身份发出去的，401 只说明"我们自己还没登录"。
+   *
+   * ⚠️ 可选（不传 = 已就绪）**只**为让 `bf2ca9d` 之前那批表驱动用例逐字不变；`aiChat` store
+   * 必须传真实值，否则真机那句谎话会回来。
+   */
+  authTokenReady?: boolean;
 }
 
 /** 服务端明确没配时**唯一**允许出现「未配置」字样的文案 */
 const NOT_CONFIGURED = "服务端未配置 AI 功能。";
+
+/**
+ * 客户端还没拿到登录凭据时**唯一**允许说的话。
+ *
+ * 它与「检测失败：…」的区别就是 Bug 1 的要点：那次 401 发生在**请求没带任何凭据**的时候，
+ * 说的是"这次请求没有以某个身份发出去"，**不是**"服务端判定你的登录过期了"。也不许诺
+ * "稍后会自动重试" —— 会话恢复失败（服务下线 / 已解绑）时并没有谁会去重试。
+ */
+const AUTH_NOT_READY = "登录状态还没就绪，登录成功后再试。";
 
 /**
  * `host === null` 的三类来源 → 三句**不同**的话；意愿层关着 → 另起一句。
@@ -56,8 +73,19 @@ export function describeOffHint(params: OffHintParams): string {
   if (!params.hasBaseUrl) {
     return "还没有连接到服务器，登录或配置服务器地址后再试。";
   }
-  if (params.failureKind !== null) {
+  // 401 **只在"我们确实带着身份发出去"时**才算"登录已过期"的证据（Bug 1）：没有凭据时那次
+  // 401 什么都不说明 ⇒ 不许说成「检测失败」。
+  // ⚠️ 这条豁免**只给 `unauthorized`**：网络 / 超时 / 429 / 形状坏与登录态无关，没凭据也照样
+  // 如实说「检测失败」—— 把它们也改成"登录状态还没就绪"是把网络故障说成了"你去登录一下"
+  // （`AiChatPage.offHint.test.ts:97` 钉着这条，那是对的）。
+  const unauthorizedWithoutCredentials =
+    params.failureKind === "unauthorized" && params.authTokenReady === false;
+  if (params.failureKind !== null && !unauthorizedWithoutCredentials) {
     return `检测失败：${describeFailure({ kind: params.failureKind } as TransportFailure)}`;
+  }
+  // 没有失败结论、凭据又还没恢复：这时唯一能确定的事实就是"我们还没登录"
+  if (params.authTokenReady === false) {
+    return AUTH_NOT_READY;
   }
   return "尚未检测到可用的 AI 服务，点「重新检测」再试。";
 }
@@ -72,9 +100,14 @@ export function describeHostState(params: Omit<OffHintParams, "sendingEnabled">)
   if (params.configured === false) return NOT_CONFIGURED;
   if (params.host !== null) return `数据将发送到 ${params.host}。`;
   if (!params.hasBaseUrl) return "还没有连接到服务器，登录或配置服务器地址后再试。";
-  if (params.failureKind !== null) {
+  // 与 `describeOffHint` 逐条同序（两处必须一起改，否则同一状态在两条提示条上说两种话）
+  const unauthorizedWithoutCredentials =
+    params.failureKind === "unauthorized" && params.authTokenReady === false;
+  if (params.failureKind !== null && !unauthorizedWithoutCredentials) {
     return `检测失败：${describeFailure({ kind: params.failureKind } as TransportFailure)}`;
   }
+  // 没凭据 ⇒ 不是"检测失败"，是"还没登录"
+  if (params.authTokenReady === false) return AUTH_NOT_READY;
   return "尚未检测 AI 服务，可点「重新检测」。";
 }
 

@@ -56,7 +56,7 @@ import {
   AI_SENDING_ENABLED_DEFAULT,
 } from "@/services/aiPrivacySettings";
 import { AI_NOT_CONFIGURED_TEXT, describeHostState, describeOffHint } from "@/services/ai/failureText";
-import { hasBaseUrl } from "@/services/api";
+import { authTokenReady, hasBaseUrl } from "@/services/api";
 import type { LedgerSnapshot } from "@/services/ai/prompt";
 // ⚠️ 草稿形状的**唯一真相**在 `tools.ts` 的草稿工具产出里（Ruling 66 R3）：store 侧只 `import type`
 // 引入，绝不重声明第二份 —— 字段改名的漂移后果是**静默**的（`readDrafts` 把草稿当"形状不全"跳过，
@@ -582,6 +582,12 @@ export const useAiChatStore = defineStore("aiChat", () => {
    * 卡片凭空消失（实测：`AiChatPage.test.ts` 的两条遮罩用例因此红，且只在全量跑时红）。
    */
   function appendTurn(turn: AgentTurn): void {
+    // Bug 1：这一轮**真的拿到了回答** ⇒ 链路可用是既成事实，任何"检测失败 / 登录态未就绪"
+    // 的旧结论都已过期，清掉它（真机形态：那句话一直挂在提示条上，而用户照样能正常发消息）。
+    // ⚠️ 这里**不补探**：`/ai/status` 与 `/ai/chat` 共用一个每分钟桶，刚聊完再探大概率吃
+    // `ai_rate_limited`（那条文案会挂在一次成功的回答下面，比旧结论更让人困惑）。
+    // 补探由"凭据就绪"那一处负责（`watch(authTokenReady)`）。
+    statusFailureKind.value = null;
     const message = appendAssistant(turn.text, {
       chips: ownJson(turn.chips),
       drafts: ownJson(turn.drafts),
@@ -971,6 +977,10 @@ export const useAiChatStore = defineStore("aiChat", () => {
       failureKind: statusFailureKind.value,
       configured: configured.value,
       hasBaseUrl: hasBaseUrl(),
+      // Bug 1：凭据还没恢复时那次探测的 401 不是"登录已过期"的证据（见 `refreshStatus`）。
+      // ⚠️ 传的是**响应式**的 `authTokenReady.value`（而不是 `hasBaseUrl()` 那种一次性取值）：
+      // 凭据一到位，这句话必须立刻改口 —— 用户不必等那次自动补探回来才看见真话。
+      authTokenReady: authTokenReady.value,
     }),
   );
 
@@ -981,6 +991,7 @@ export const useAiChatStore = defineStore("aiChat", () => {
       failureKind: statusFailureKind.value,
       configured: configured.value,
       hasBaseUrl: hasBaseUrl(),
+      authTokenReady: authTokenReady.value,
     }),
   );
 
@@ -1077,8 +1088,15 @@ export const useAiChatStore = defineStore("aiChat", () => {
    * - 请求成功（无 `failure`）⇒ 服务端说的 `enabled` 就是答案（没配 AI 是 200 + `enabled:false`）；
    * - `failure.kind === "disabled"`（503 `ai_disabled`）⇒ 明确关闭；
    * - 其它失败（网络 / 超时 / 429 / 形状坏 / 401 / 5xx）⇒ 这次探测**不可判定** ⇒ 保留上一次已知状态。
+   *
+   * ⚠️ 唯一的例外是 **401 且出发时客户端手里没有凭据**（Bug 1 的真机形态，见下面那段注释）：
+   * 那一次 401 不是"服务端说你的登录过期了"，而是"我们根本没以任何身份发这个请求" ⇒ 连
+   * "不可判定的失败"都不算，一条结论都不记。
    */
   async function refreshStatus(): Promise<void> {
+    // 先取"出发这一刻有没有凭据"的**快照**，再发请求：探测在途期间 token 恢复完成的话，
+    // 拿请求**回来时**的状态去判就会把这次匿名 401 当成"登录过期的证据"（那正是要修的错）。
+    const hadCredentials = authTokenReady.value;
     const next = await fetchAiStatus();
     if (next.failure === undefined) {
       status.value = next;
@@ -1095,11 +1113,47 @@ export const useAiChatStore = defineStore("aiChat", () => {
       statusFailureKind.value = null;
       return;
     }
+    // Bug 1（真机）：**401 且出发时没有凭据** ⇒ 这一次探测给不出任何关于登录态的结论，一条都不记。
+    //
+    // 机制：`App.vue` 的自动探针由"地址就绪"触发，而 `auth.restoreOnlineSession` 是先
+    // `api.setBaseUrl()`、**后**才 `api.tryRestoreSession()`（`stores/auth.ts:242-243`）——
+    // 地址就绪那一刻两个 token 都还是 null，请求带着**空 Authorization** 出去
+    // （`apiFetch` 只在有 accessToken 时加头、refresh 分支还要求 refreshToken 非空）
+    // ⇒ 服务端如实回 401。把它记成 `unauthorized` 就会渲染成
+    // 「检测失败：登录状态已过期，请重新登录后再试。」—— 而登录态其实是好的
+    // （发送路径走 `apiFetch` 内建的 refresh 单飞，照常拿到 200）。
+    //
+    // 为什么不记成"其它失败"：文案会变成"这次是哪一类失败"，同样把"我自己还没登录"说成了
+    // 关于**服务端/链路**的结论。这里保持 `statusFailureKind = null`，文案由
+    // `failureText` 的 `authTokenReady === false` 那一支说真话（"登录状态还没就绪"）。
+    if (next.failure.kind === "unauthorized" && !hadCredentials) {
+      if (status.value === null) statusUnknown.value = true;
+      return;
+    }
     // 不可判定：上一次已知的 `status`（含 host/model）与 `configured` 原样留着；
     // 从没有过已知状态 ⇒ 记成"未知"。失败类型**只**用于文案分流（C3.5），不用来改门控。
     statusFailureKind.value = next.failure.kind;
     if (status.value === null) statusUnknown.value = true;
   }
+
+  /**
+   * Bug 1 的另一半：**登录凭据就绪时自动补探一次**（用户点「重新检测」才会好的那件事，
+   * 现在不用他点）。
+   *
+   * 触发条件刻意收得最窄（`/ai/status` 与 `/ai/chat` 共用一个每分钟桶，自动请求要省着用）：
+   *  - 凭据**刚**变得可用（`false → true` 那一次：`setTokens` / `tryRestoreSession` 成功）；
+   *  - 地址也就绪（没地址时探测只会被 `apiFetch` 抛成 `network`，那是噪声不是结论）；
+   *  - 而且我们**还没有已知状态**（`status === null`）。已经有结论时再探一次纯属浪费配额 ——
+   *    那种情况下"旧结论过期"由成功发送那一处负责清掉（见 `appendTurn`）。
+   *
+   * ⚠️ 补探**不**改门控语义：它走的就是 `refreshStatus`，失败照样"保留上一次已知状态"。
+   */
+  watch(authTokenReady, (ready) => {
+    if (!ready) return;
+    if (!hasBaseUrl()) return;
+    if (status.value !== null) return;
+    void refreshStatus();
+  });
 
   // -------------------------------------------------------------------------
   // 快照
