@@ -15,8 +15,11 @@
 //
 // 与记账页的一处**刻意**差异：**不**再调 `round2` —— `tools.ts:787` 生成草稿时已经 `round2` 过，
 // `transactionStore.add` 也不做金额变换 ⇒ 这里再 round 一次是**等价冗余**（不是防线）。
-// ⚠️ 内联编辑**改了**这条：编辑区是**用户输入**，进来的是任意字符串 ⇒ `applyDraftEdit` 里
-// 必须 `round2`（§4.4:162 / §10.7 点名复用 `utils/transaction.ts` 的规则），这不是冗余。
+//
+// ⚠️ **卡片只读**（§4.4.2/§4.4.3，2026-09-24 人工批准的设计变更）：金额、分类、账户、日期、备注、
+// tag 一律不能在卡上改，卡上**没有任何输入控件**、也没有「修改」按钮。觉得 AI 生成得不对 ⇒ 在
+// 对话里用自然语言重说一句（重新生成一张卡）；要精修 ⇒ 去**流水列表**改那条已入账的流水。
+// 原内联编辑区（编辑缓冲、编辑期校验、`applyDraftEdit`）整条路径已随新设计删除。
 //
 // ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面据此把
 // **决定**写进 payload（`aiChat.confirmDraft`）并**保留这张卡**（§4.4:164 的「已记账 ✓ + 撤销」）；
@@ -32,11 +35,10 @@
 // （页面换 `draft`、不换 `:key`）`savedId` 会指向**上一笔** ⇒ 用户点「撤销」删掉的是**旧账**。
 // 卡内自清 + 6c 按 `draftId` 加 `:key`，两边都做（复审 ③-2）。
 import { computed, ref, watch } from "vue";
-import { Check, Pencil, Undo2, X } from "lucide-vue-next";
+import { Check, Undo2, X } from "lucide-vue-next";
 import { useTransactionStore } from "@/stores/transaction";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
-import { useCategoryStore } from "@/stores/category";
 import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
 import { useAmountMask } from "@/composables/useAmountMask";
@@ -44,12 +46,7 @@ import { useMemberInfo } from "@/composables/useMemberInfo";
 // 别人的账户名与提示词快照 / 解析表**同一个格式来源**（`小明的现金`）。本组件不碰 AI 编排，
 // 只借这一个纯函数：两处各写一份模板串，漂移的表现就是"卡上的名字与快照里的对不上"。
 import { otherAccountLabel } from "@/services/ai/prompt";
-import {
-  applyDraftEdit,
-  buildDraftData,
-  validateDraft,
-  type DraftEditForm,
-} from "@/components/ai/draftData";
+import { buildDraftData, validateDraft } from "@/components/ai/draftData";
 import type { AiDraftFields, AiDraftIds } from "@/stores/aiChat";
 
 const props = withDefaults(
@@ -101,14 +98,11 @@ const emit = defineEmits<{
 const transactionStore = useTransactionStore();
 const ledgerStore = useLedgerStore();
 const accountStore = useAccountStore();
-const categoryStore = useCategoryStore();
 const auth = useAuthStore();
 const { maskCurrency, amountsHidden } = useAmountMask();
 
 /**
  * 遮罩判定（§7.4）：调用方给了 `masked` 就用它（按消息判），没给就跟随全局开关。
- * ⚠️ **编辑区的金额输入框也要跟着遮** —— 否则"历史消息遮住了金额"，用户一点「修改」,
- * 输入框里就明明白白写着 128.5（同一个屏幕上、同一个数字）。做法见 `onStartEdit`。
  */
 const hidden = computed(() => props.masked ?? amountsHidden.value);
 
@@ -116,10 +110,10 @@ const hidden = computed(() => props.masked ?? amountsHidden.value);
  * `saving` / `undoing` 分开：两者都"有事在途"，但**视图不同**
  * —— 加账在途仍是待确认视图（两颗按钮禁用），撤销在途必须**留在已记账视图**。
  * 曾共用一个 `"saving"`：点下「撤销」的同一帧卡片会翻回"待确认"，remove 落地才翻回来（复审 ③-1）。
+ *
+ * `rejected` 是**静态卡**（§4.4.4）：没有按钮、也不会有在途态。
  */
 const state = ref<"pending" | "saving" | "saved" | "undoing">(
-  // 播种**持久化的决定**（收口 C-P1）：重进页面那张卡一上来就是「已记账 ✓ + 撤销」。
-  // `saving`/`undoing` 是**在途**态，永远不可能来自库（没有"在途"落库这一说）。
   props.status === "confirmed" ? "saved" : "pending"
 );
 /** 已记账那笔的 id（`add` 的返回值，或从 payload 恢复回来的那个）。撤销只用它。 */
@@ -127,31 +121,12 @@ const savedId = ref(props.transactionId ?? "");
 const error = ref("");
 
 /**
- * 内联编辑的**本地覆盖**（§4.4:162）。`null` = 用户还没改过 ⇒ 一律读 props。
- *
- * 为什么不是"把 props 拷一份进 ref"：那样 `resolved` 单独变化（页面换草稿、`readDrafts` 重产）
- * 就再也进不来，而"没编辑过的卡必须跟着 props 走"是这张卡本来的行为。
- * 也不用把编辑写回 store：`pendingDrafts` 是草稿的唯一真相，多一个可变点没有规格依据
- * （`§4.4` 只要求"卡上能改"）；代价是**实例销毁即丢**（页面按 `draftId` 给了 `:key`，
- * 同账本内新消息不重建它，`load()`/切账本会）。
+ * 这张卡**当前**代表的草稿。卡片只读（§4.4.3）⇒ 没有本地覆盖，一律就是 props；
+ * 保留这两个 computed 只是为了让模板与 `onConfirm` 读同一个名字（曾经它们是"编辑后的值 vs props"
+ * 那个二选一的落点，编辑路径删除后二选一消失，唯一真相回到 props/store）。
  */
-const editedFields = ref<AiDraftFields | null>(null);
-const editedIds = ref<AiDraftIds | null>(null);
-/** 编辑区开着（只可能出现在 `pending`） */
-const editing = ref(false);
-/** 编辑区当前的表单值（字符串，由 `<input>` / `<select>` 直接 v-model） */
-const form = ref<DraftEditForm>({
-  amount: "",
-  categoryId: null,
-  fromAccountId: null,
-  toAccountId: null,
-  occurredAt: "",
-  note: "",
-});
-
-/** 这张卡**当前**代表的草稿：用户改过就是改后的，否则就是 props（唯一真相仍是 props/store） */
-const fields = computed<AiDraftFields>(() => editedFields.value ?? props.draft);
-const ids = computed<AiDraftIds>(() => editedIds.value ?? props.resolved);
+const fields = computed<AiDraftFields>(() => props.draft);
+const ids = computed<AiDraftIds>(() => props.resolved);
 
 const TYPE_LABEL: Record<AiDraftFields["type"], string> = {
   expense: "支出",
@@ -159,49 +134,23 @@ const TYPE_LABEL: Record<AiDraftFields["type"], string> = {
   transfer: "转账",
 };
 
-/** 支出/转账要转出账户；收入/转账要转入账户（与 `buildDraftData` 的两个三元同一判据） */
-const needFrom = computed(() => fields.value.type !== "income");
-const needTo = computed(() => fields.value.type !== "expense");
-
 /**
- * 分类候选：照 `useTransactionForm.filteredCategories:39-41`（只按 `type` 过滤）。
- * `categoryStore.categories` 自己已经排除软删行，这里不重复判。
- */
-const categoryOptions = computed(() =>
-  categoryStore.categories.filter((c) => c.type === fields.value.type),
-);
-
-/**
- * 账户候选：照 `useTransactionForm.availableAccounts:48-54`（排除软删；团队账本只给自己名下的账户）。
- * ⚠️ 这两行是那条规则的**第二份**写法，改一处必须改另一处；不复用 composable 是因为它
- * `useRoute()`（记账页的路由形态），草稿卡要能在没有 router 的组件测试里挂起来。
+ * 当前用户 id：只服务**归属名**（"这个账户是谁的"）—— 与快照（`aiChat.ts:1073-1075`）、
+ * 解析表（`resolve.ts`）同一判据。
  *
- * 它只服务**本人账户**那两个出口（支出/转账的转出、收入的入账）—— 转账的**转入**侧另有一份
- * 合并池（见下 `toAccountOptions`），这一处刻意不为它放宽。
+ * ⚠️ 卡片只读（§4.4.3）之后，这里**不再**有"账户下拉候选"那两份（`ownAccountOptions` /
+ * `toAccountOptions`）：候选清单是**编辑**才需要的东西，随编辑路径一起删除。只读展示要的是
+ * `displayAccount`（下面那个以 `resolved` 的 id 为准的反查）。
  */
 const currentUserId = computed(
   () => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "",
 );
-/** 下拉候选项：`name` 可能是**带归属**的名字（别人的账户），所以不是 `Account` 本身 */
-interface AccountOption {
-  id: string;
-  name: string;
-}
-const ownAccountOptions = computed<AccountOption[]>(() =>
-  accountStore.accounts
-    .filter((a) => {
-      if (a.is_deleted) return false;
-      if (ledgerStore.currentLedger?.type === "team" && a.owner_id !== currentUserId.value) return false;
-      return true;
-    })
-    .map((a) => ({ id: a.id, name: a.name })),
-);
 
 /**
  * 别人名下账户在卡上的名字：**与提示词快照 / 解析表逐字相同**（`otherAccountLabel`，`小明的现金`）。
- * 裸名不行 —— 卡上那一行写着「小明的现金」而下拉里是一个叫「现金」的选项，两个成员各有一个
- * 「现金」时更是两条一模一样的选项，用户分不出选的是谁。归属名拿不到时 `otherAccountLabel`
- * 回落「其他成员」，与 `prompt.ts:54-56` 同一口径（绝不用 id 前缀当名字）。
+ * 裸名不行 —— 卡上那一行写着「小明的现金」而快照里是「现金」，两处对不上；两个成员各有一个
+ * 「现金」时更是两条一模一样的行，用户分不出这笔钱进了谁的口袋。归属名拿不到时
+ * `otherAccountLabel` 回落「其他成员」，与 `prompt.ts:54-56` 同一口径（绝不用 id 前缀当名字）。
  *
  * 名字走 `useMemberInfo`（别名 > 昵称 > username）—— 它也是 `AccountPickerSheet:39-44`
  * 在手动记账的账户面板里给成员加归属时用的同一个实现。
@@ -233,30 +182,6 @@ watch(
   },
   { immediate: true },
 );
-
-/**
- * **转入侧**的账户候选（只可能是转账 / 收入）。
- *
- * - **转账 ⇒ 所有人的账户**：与手动记账逐条一致（`RecordPage.vue:58-62`：to 侧 `scope="all"` +
- *   `showMember`），也与解析侧一致（`tools.ts:669` 的 `accountsForTransferIn`）。
- *   少了它，"转入是别人账户"的草稿在卡上是**既选不了也显示不出来**的：`onSaveEdit` 靠下拉做
- *   名字反查，查不到就写出 `toAccount: null`，而 `resolved.toAccountId` 仍是别人的 id
- *   （`draftData.ts:162/171`）⇒ 卡上转入那一行整行消失、确认却照样把那笔钱写到别人账户上。
- * - **收入 ⇒ 仍然只给本人**（钱不会进别人的账户，与 `tools.ts:870` 同一口径）。
- * - 归属标注**只在团队账本**加（`scoped = team && 身份已知` 与快照/解析表同一判据：
- *   `aiChat.ts:1073-1075`）。个人账本里 `owner_id` 不是"谁的账户"这层含义，逐字保留裸名。
- */
-const toAccountOptions = computed<AccountOption[]>(() => {
-  if (fields.value.type !== "transfer") return ownAccountOptions.value;
-  const scoped = ledgerStore.currentLedger?.type === "team" && currentUserId.value !== "";
-  return accountStore.accounts
-    .filter((a) => !a.is_deleted)
-    .map((a) =>
-      scoped && a.owner_id !== currentUserId.value
-        ? { id: a.id, name: otherAccountLabel(ownerNames.value[a.owner_id], a.name) }
-        : { id: a.id, name: a.name },
-    );
-});
 
 /**
  * 只读展示里那一行账户名：**以解析出的账户为准**（`resolved` 里的 id 才是"确认后会写进账"的
@@ -294,10 +219,6 @@ function resetForNewDraft(): void {
 // `props.draft` 是父级直接传下来的**新对象**（payload 反序列化出来的），引用一变就触发。
 watch(() => props.draft, () => {
   resetForNewDraft();
-  // 换草稿连编辑缓冲一起丢：留着就成"这张卡显示 A、确认时写 B"
-  editedFields.value = null;
-  editedIds.value = null;
-  editing.value = false;
 });
 
 /**
@@ -310,6 +231,10 @@ watch(() => props.draft, () => {
  *
  * ⚠️ 反向（`pending → confirmed`）不在这里处理：那一路是**卡自己**确认的（`onConfirm` 已经进了
  * 已记账态），重复置位会把状态机踩回去。
+ *
+ * `pending → rejected` 要跟（撤回的决定由 `aiChat.rejectDraft` 写库）：同一实例被复用、`status`
+ * 变了而 `state` 不跟，卡上就还挂着两颗按钮 —— 用户再点一次「确认记账」，那笔**不该入账**的钱
+ * 就真进流水了（静态卡的意义正是"这张卡不再有任何动作"）。
  */
 watch(() => props.status, (next) => {
   if (next === "pending" && state.value !== "pending") resetForNewDraft();
@@ -325,8 +250,7 @@ watch(() => props.status, (next) => {
  * 不回退的后果（实测形态）：账上多了一笔、库里没有决定 ⇒ 卡片写着「已记账 ✓」，重进页面草稿复活成
  * 待确认 ⇒ 用户再确认一次 = 第二笔真账。
  *
- * ⚠️ 只调 `resetForNewDraft()`，**不**清 `editedFields`：用户手改过的金额还在，重试时不用重敲
- * （与"换草稿就清编辑缓冲"那条区分开 —— 这里换的不是草稿，是同一条草稿的失败重试）。
+ * ⚠️ 只调 `resetForNewDraft()`：**不**碰任何"用户输入"（卡片只读，没有输入缓冲可留）。
  */
 watch(() => props.rollback, (next, prev) => {
   if (next === prev) return;
@@ -334,59 +258,13 @@ watch(() => props.rollback, (next, prev) => {
   error.value = props.rollbackMessage;
 });
 
-/** 打开编辑区：从**当前**草稿播种表单（改过就是改后的值，没改过就是 props） */
-function onStartEdit(): void {
-  error.value = "";
-  form.value = {
-    // ⚠️ 遮罩态下**不把真金额填进输入框**（那等于把刚遮住的数字又摆到屏幕正中）。
-    // 代价是用户得重新输一遍金额 —— 遮蔽的语义本来就是"不该在屏幕上出现"，而不是"看不见但能编辑"。
-    // 其余四个字段（分类/账户/时间/备注）不是金额，照常回填。
-    amount: hidden.value ? "" : String(fields.value.amount),
-    categoryId: ids.value.categoryId,
-    fromAccountId: ids.value.fromAccountId,
-    toAccountId: ids.value.toAccountId,
-    occurredAt: fields.value.occurredAt,
-    note: fields.value.note ?? "",
-  };
-  editing.value = true;
-}
-
-function onCancelEdit(): void {
-  editing.value = false;
-  error.value = "";
-}
-
-/** 保存编辑：校验全在 `applyDraftEdit`（纯函数，复用 `utils/transaction.ts` 的规则 + `round2`） */
-function onSaveEdit(): void {
-  const name = (list: { id: string; name: string }[], id: string | null): string | null =>
-    id === null ? null : (list.find((it) => it.id === id)?.name ?? null);
-
-  const result = applyDraftEdit(fields.value, ids.value, form.value, {
-    category: name(categoryOptions.value, form.value.categoryId),
-    // ⚠️ 转出侧查**本人池**、转入侧查**合并池**：两处查反了的表现都是静默的 ——
-    //   转入侧查本人池时，别人的账户名反查成 null ⇒ `applyDraftEdit` 写出 `toAccount: null`
-    //   （`draftData.ts:162`）而 `resolved.toAccountId` 仍是别人的 id（`:171`）⇒ 卡上转入整行消失。
-    fromAccount: name(ownAccountOptions.value, form.value.fromAccountId),
-    toAccount: name(toAccountOptions.value, form.value.toAccountId),
-  });
-  if (!result.ok) {
-    // 校验没过就**留在编辑区**：收起表单等于把用户刚敲的东西藏起来，而他只看到一句错误
-    error.value = result.error;
-    return;
-  }
-  editedFields.value = result.draft;
-  editedIds.value = result.resolved;
-  editing.value = false;
-  error.value = "";
-}
-
 function onConfirm(): void {
   const ledgerId = ledgerStore.currentLedger?.id;
   if (!ledgerId) {
     error.value = "没有可用的账本";
     return;
   }
-  // ⚠️ 用 `fields`/`ids`（可能是编辑后的），不是 props —— 内联编辑的意义就在这里
+  // ⚠️ 用 `fields`/`ids`（= props）：校验与写库读同一份，不许一处读 draft 一处读 resolved
   const invalid = validateDraft(fields.value, ids.value);
   if (invalid !== "") {
     error.value = invalid;
@@ -471,73 +349,8 @@ function onReject(): void {
       {{ TYPE_LABEL[fields.type] }} {{ maskCurrency(fields.amount, hidden) }}
     </p>
 
-    <!-- 编辑区（§4.4:162）：只列规格点名的五个字段，type / tags 不给改 -->
-    <div v-if="editing" class="mt-1 space-y-1.5 text-xs" data-test="draft-edit-form">
-      <label class="flex items-center gap-2">
-        <span class="w-10 shrink-0 text-text-secondary">金额</span>
-        <input
-          v-model="form.amount"
-          type="text"
-          inputmode="decimal"
-          :placeholder="hidden ? '请输入金额' : '0.00'"
-          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
-          data-test="draft-edit-amount"
-        />
-      </label>
-      <label v-if="fields.type !== 'transfer'" class="flex items-center gap-2">
-        <span class="w-10 shrink-0 text-text-secondary">分类</span>
-        <select
-          v-model="form.categoryId"
-          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
-          data-test="draft-edit-category"
-        >
-          <option :value="null">请选择分类</option>
-          <option v-for="c in categoryOptions" :key="c.id" :value="c.id">{{ c.name }}</option>
-        </select>
-      </label>
-      <label v-if="needFrom" class="flex items-center gap-2">
-        <span class="w-10 shrink-0 text-text-secondary">转出</span>
-        <select
-          v-model="form.fromAccountId"
-          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
-          data-test="draft-edit-from"
-        >
-          <option :value="null">请选择账户</option>
-          <option v-for="a in ownAccountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
-        </select>
-      </label>
-      <label v-if="needTo" class="flex items-center gap-2">
-        <span class="w-10 shrink-0 text-text-secondary">转入</span>
-        <select
-          v-model="form.toAccountId"
-          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
-          data-test="draft-edit-to"
-        >
-          <option :value="null">请选择账户</option>
-          <option v-for="a in toAccountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
-        </select>
-      </label>
-      <label class="flex items-center gap-2">
-        <span class="w-10 shrink-0 text-text-secondary">时间</span>
-        <input
-          v-model="form.occurredAt"
-          type="datetime-local"
-          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
-          data-test="draft-edit-occurred-at"
-        />
-      </label>
-      <label class="flex items-center gap-2">
-        <span class="w-10 shrink-0 text-text-secondary">备注</span>
-        <input
-          v-model="form.note"
-          type="text"
-          class="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-text"
-          data-test="draft-edit-note"
-        />
-      </label>
-    </div>
-
-    <dl v-else class="mt-1 space-y-0.5 text-xs text-text-secondary">
+    <!-- 摘要（§4.4.2 的字段清单，**全部只读**）：编辑路径删除后，这里就是卡片唯一的内容区。 -->
+    <dl class="mt-1 space-y-0.5 text-xs text-text-secondary">
       <div v-if="fields.category" class="flex gap-1">
         <dt>分类</dt>
         <dd data-test="draft-category">{{ fields.category }}</dd>
@@ -561,29 +374,12 @@ function onReject(): void {
     </dl>
     <p v-if="error" class="mt-2 text-xs text-red-500" data-test="draft-error">{{ error }}</p>
 
-    <!-- 编辑中：确认/不要 收起，换成 保存/取消（不验收就等于没改） -->
-    <div v-if="editing" class="mt-3 flex gap-2">
-      <button
-        type="button"
-        class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary py-2 text-sm text-white"
-        data-test="draft-edit-save"
-        @click="onSaveEdit"
-      >
-        <Check :size="16" />保存修改
-      </button>
-      <button
-        type="button"
-        class="flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-4 py-2 text-sm text-text-secondary"
-        data-test="draft-edit-cancel"
-        @click="onCancelEdit"
-      >
-        <X :size="16" />取消
-      </button>
-    </div>
-
-    <!-- 已记账（含撤销在途）：确认/不要 换成 已记账 ✓ + 撤销（§4.4） -->
+    <!--
+      两个动作（§4.4.3）：**待确认** ⇒ 确认记账 / 不要；**已记账 ✓**（含撤销在途）⇒ 撤销。
+      卡上没有任何输入控件，也没有「修改」按钮 —— 要改就在对话里重说一句（重新出卡）。
+    -->
     <div
-      v-else-if="state === 'saved' || state === 'undoing'"
+      v-if="state === 'saved' || state === 'undoing'"
       class="mt-3 flex gap-2"
       data-test="draft-saved"
     >
@@ -601,15 +397,6 @@ function onReject(): void {
       </button>
     </div>
     <div v-else class="mt-3 flex gap-2">
-      <button
-        type="button"
-        class="flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-text-secondary disabled:opacity-50"
-        :disabled="state === 'saving'"
-        data-test="draft-edit"
-        @click="onStartEdit"
-      >
-        <Pencil :size="16" />修改
-      </button>
       <button
         type="button"
         class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary py-2 text-sm text-white disabled:opacity-50"

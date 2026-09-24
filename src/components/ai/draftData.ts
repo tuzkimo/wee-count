@@ -5,7 +5,11 @@
 //
 // 字段口径的**唯一**依据是既有记账路径 `useTransactionForm.doSave`
 // （`src/composables/useTransactionForm.ts:156-173`）；这里逐条照抄，**不新增规则**。
-import { round2 } from "@/utils/transaction";
+//
+// ⚠️ 2026-09-24：卡片删除内联编辑（§4.4.3）后，只为编辑服务的 `parseEditedAmount` /
+// `applyDraftEdit` / `DraftEditForm` / `DraftEditNames` / `DraftEditResult` 全部删除 ——
+// 本文件现在只有"**确认那一刻**"的两个入口：`buildDraftData`（字段来源）与 `validateDraft`（必填校验）。
+// 金额也不再在这里 `round2`：草稿是 `tools.ts` 生成时 round 过的（`DraftCard.vue` 有同一段说明）。
 import type { AiDraftFields, AiDraftIds } from "@/stores/aiChat";
 
 /** `transactionStore.add` 的入参形状（照 `useTransactionForm.doSave` 的 `data`） */
@@ -88,98 +92,3 @@ export function validateDraft(draft: AiDraftFields, resolved: AiDraftIds): strin
   return "";
 }
 
-// ---------------------------------------------------------------------------
-// §4.4 卡片内联可改（编辑区 → 草稿字段）
-// ---------------------------------------------------------------------------
-
-/**
- * 编辑区的**表单原始值**（`<input>` / `<select>` 给的都是字符串）。
- *
- * 拆成"表单字符串 → 草稿字段"的纯映射，理由与上面 `buildDraftData` 相同：模板里现算金额
- * （`Number(...)`、`round2`、`> 0`）就只能靠挂载组件去猜，而这三个规则恰恰是
- * `§4.4:162` / `§10.7` 点名"必须复用、不许新写一套"的东西。
- */
-export interface DraftEditForm {
-  amount: string;
-  categoryId: string | null;
-  fromAccountId: string | null;
-  toAccountId: string | null;
-  occurredAt: string;
-  note: string;
-}
-
-/** 编辑区选中的 id 对应的**名字**（草稿存名字，id 是本地解析出来的；查不到给 null） */
-export interface DraftEditNames {
-  category: string | null;
-  fromAccount: string | null;
-  toAccount: string | null;
-}
-
-export type DraftEditResult =
-  | { ok: true; draft: AiDraftFields; resolved: AiDraftIds }
-  | { ok: false; error: string };
-
-/**
- * 编辑区的金额 → 落库用的数字。`round2` 来自 `utils/transaction.ts`（`§4.4:162` 点名复用），
- * 非正数 / 不可解析一律 `null`（`§10.7` 点名的"金额 > 0"）。
- *
- * 空串**不必单独判**：`Number("")` 是 `0`、`Number("  ")` 也是 `0`，两者都落在 `<= 0` 上
- * （单独加一条 `text === ""` 是等价防御，按 Ruling 35 不留）。`isFinite` 不是等价的：
- * `Number("abc")` 是 `NaN`，而 `NaN <= 0` 是 **false** ⇒ 少了它就会返回 `NaN`。
- */
-export function parseEditedAmount(raw: string): number | null {
-  const n = Number(raw.trim());
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return round2(n);
-}
-
-/**
- * 编辑区 → 新草稿 + 新 id。**校验顺序**：金额 → 时间 → 账户/分类（`validateDraft`）→ 账户相同。
- *
- * 为什么"转出≠转入"要在这里补（`validateDraft` 里刻意没有）：`doSave:149` 有这条规则，而草稿
- * 的账户在**生成链路**上由 `tools.ts:801` 拦过 ⇒ 从前它不可达。内联编辑让**用户**能自己挑两个
- * 账户 ⇒ 这条规则第一次变得可达，不复用就会写出一笔"自己转给自己"的账。
- */
-export function applyDraftEdit(
-  base: AiDraftFields,
-  baseIds: AiDraftIds,
-  form: DraftEditForm,
-  names: DraftEditNames,
-): DraftEditResult {
-  const amount = parseEditedAmount(form.amount);
-  if (amount === null) return { ok: false, error: "金额要大于 0" };
-
-  const occurredAt = form.occurredAt.trim();
-  // 空时间会一路写进 `occurred_at`（add 不校验）⇒ 与必填账户同族的守卫，放在这里
-  if (occurredAt === "") return { ok: false, error: "请选择时间" };
-
-  const note = form.note.trim();
-  const draft: AiDraftFields = {
-    type: base.type,
-    amount,
-    category: base.type === "transfer" ? null : names.category,
-    fromAccount: base.type === "expense" || base.type === "transfer" ? names.fromAccount : null,
-    toAccount: base.type === "income" || base.type === "transfer" ? names.toAccount : null,
-    occurredAt,
-    note: note === "" ? null : note,
-    tags: base.tags,
-  };
-  const resolved: AiDraftIds = {
-    categoryId: base.type === "transfer" ? null : form.categoryId,
-    fromAccountId:
-      base.type === "expense" || base.type === "transfer" ? form.fromAccountId : null,
-    toAccountId: base.type === "income" || base.type === "transfer" ? form.toAccountId : null,
-    tagIds: baseIds.tagIds,
-  };
-
-  const invalid = validateDraft(draft, resolved);
-  if (invalid !== "") return { ok: false, error: invalid };
-  if (
-    base.type === "transfer" &&
-    form.fromAccountId !== null &&
-    form.fromAccountId === form.toAccountId
-  ) {
-    return { ok: false, error: "转出和转入账户不能相同" };
-  }
-  return { ok: true, draft, resolved };
-}
