@@ -663,7 +663,10 @@ describe("草稿卡接线", () => {
     warn.mockRestore();
   });
 
-  it("拒绝：立刻收起，不记账", async () => {
+  // ⚠️ 2026-09-24 规格变更（人工批准，§4.4.4）：撤回后卡**不再收起**，而是留在消息流里变成
+  // 一张静态「已撤回」卡。本用例原先断言 `draft-card` 消失 —— 那条与**新规格直接冲突**，
+  // 按 AGENTS.md 的例外条款改写（只动这一条断言，其余不动：依然不记账、依然离开待确认）。
+  it("撤回：卡留成静态「已撤回」，不记账", async () => {
     const sqlite = await useRealDb();
     seedLedger(sqlite);
     runMock().mockResolvedValue(turn({ text: "给你一张草稿", drafts: [DRAFT_A] }));
@@ -675,7 +678,11 @@ describe("草稿卡接线", () => {
     await flushPromises();
 
     expect(tx.add).not.toHaveBeenCalled();
-    expect(wrapper.find('[data-test="draft-card"]').exists()).toBe(false);
+    // 卡**留在原地**（静态卡，零按钮）
+    const card = wrapper.find('[data-test="draft-card"]');
+    expect(card.exists()).toBe(true);
+    expect(card.attributes("data-draft-state")).toBe("rejected");
+    expect(wrapper.find('[data-test="draft-confirm"]').exists()).toBe(false);
     // 拒绝是一条**决定**（不是"把草稿删掉"）：它必须离开待确认列表（重进页面才不会复活）
     expect(useAiChatStore().pendingDrafts).toEqual([]);
     expect(useAiChatStore().rejectedDrafts.map((d) => d.draftId)).toEqual(["d-1"]);

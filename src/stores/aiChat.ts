@@ -107,11 +107,13 @@ export interface PendingDraft {
 }
 
 /**
- * 草稿的**决定**（§4.4:160 的状态机 `pending → confirmed | discarded`）。
+ * 草稿的**决定**（§4.4.1 的状态机，三个取值都在这里：`pending` / `confirmed` / `rejected`）。
  *
  * 它**落库**：写在 `payload.drafts[i].status` 上（同层的 `transactionId` 是撤销要用的交易 id）。
  * 只存内存的后果已经实测过（收口 C-P1）：任何一次 `load()` 都把草稿复活成待确认，
  * 用户再点一次「确认记账」就写**第二笔**真账。
+ *
+ * ⚠️ 三个取值页面**都要渲染**（§4.4.4 / §4.5:271）：`rejected` 是静态「已撤回」卡，不是"不渲染"。
  */
 export type DraftStatus = "pending" | "confirmed" | "rejected";
 

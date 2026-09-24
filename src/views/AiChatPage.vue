@@ -47,16 +47,19 @@ const scroller = ref<HTMLElement | null>(null);
 /**
  * 草稿按产生它的 assistant 消息分组（`messageId` 只在 store 的草稿条目上）。
  *
- * ⚠️ 必须同时收**待确认**与**已确认**两份：确认之后卡片要留在原地进「已记账 ✓ + 撤销」
- * （§4.4:164）—— 只渲染 `pendingDrafts` 的话，确认的同一个 flush 里卡片就被卸载（C-P2）。
- * 已拒绝的那份不在这里：它不该再渲染（但决定仍在 store/库里，重进页面不会复活成待确认）。
+ * ⚠️ **三种决定都要收**（§4.4.4 / §4.5:271）：
+ * - 待确认、已确认：确认之后卡片要留在原地进「已记账 ✓ + 撤销」（§4.4:164）—— 只渲染
+ *   `pendingDrafts` 的话，确认的同一个 flush 里卡片就被卸载（C-P2）。
+ * - **已撤回**：渲染成一张静态「已撤回」卡（保留完整摘要、零按钮）。★ 本改动推翻了旧行为
+ *   「已拒绝的不渲染、卡从列表里消失」：卡一消失，历史就断了，用户也没法照着摘要重新口述或手记。
+ *   决定仍在 store/库里，重进页面照旧是静态卡，**不会**复活成待确认。
  *
  * 类型是 `DecidedDraft`（不是 `PendingDraft`）：卡要拿 `status` 决定初始视图、拿
  * `savedTransactionId` 去撤销 —— 只给 `PendingDraft` 的话这两样在模板里都不存在。
  */
 const draftsByMessage = computed<Record<string, DecidedDraft[]>>(() => {
   const grouped: Record<string, DecidedDraft[]> = {};
-  for (const draft of [...ai.pendingDrafts, ...ai.confirmedDrafts]) {
+  for (const draft of [...ai.pendingDrafts, ...ai.confirmedDrafts, ...ai.rejectedDrafts]) {
     const list = grouped[draft.messageId];
     if (list === undefined) grouped[draft.messageId] = [draft];
     else list.push(draft);
@@ -172,11 +175,12 @@ function rollbackOf(draftId: string): { seq: number; text: string } {
 }
 
 /**
- * 拒绝：把这条草稿的决定写成 `rejected`（页面不再渲染已拒绝的草稿 ⇒ 卡从列表里消失）。
+ * 撤回：把这条草稿的决定写成 `rejected`（§4.4.4：卡**留在消息流里**变成静态「已撤回」，
+ * 摘要完整、零按钮 —— 它对应的那笔钱从未入账）。
  *
  * ⚠️ 与 `confirm` **不同**（§4.4:164）：确认后卡片要留着显示「已记账 ✓ + 撤销」，所以
  * `onDraftConfirmed` 只把**决定**写进 payload（`confirmDraft`）—— 卡片因为 `status === "confirmed"`
- * 继续被 `draftsFor()` 渲染，只是换了视图。
+ * 继续被 `draftsFor()` 渲染，只是换了视图；撤回这条路同样只写决定，卡片的视图由 `status` 播种。
  *
  * ⚠️ `draftId` 必须是**这张卡自己的**（模板里从 `v-for` 的 item 直接传进来），不能取"当前第一张"
  * 或"列表里最后一张"：`transactionStore.add` 在途期间草稿列表可能被重建（新的一轮、清空、

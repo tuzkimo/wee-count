@@ -21,6 +21,10 @@
 // 对话里用自然语言重说一句（重新生成一张卡）；要精修 ⇒ 去**流水列表**改那条已入账的流水。
 // 原内联编辑区（编辑缓冲、编辑期校验、`applyDraftEdit`）整条路径已随新设计删除。
 //
+// **四个可见形态**（§4.4.1）：待确认 / 已记账 ✓ + 撤销 / **已撤回**（静态卡，零按钮）/ 已撤销回退
+// 到待确认。已撤回那一份**照样渲染**（页面的 `draftsFor()` 收它），且与待确认卡**共用同一份摘要**——
+// 摘要不缩水是硬要求：两张卡各写一份渲染就是"撤回过一次就少显示两个字段"这类缺陷的温床。
+//
 // ⚠️ **对外契约只有三个事件**（`confirm` / `undo` / `reject`）：`confirm` 带新交易 id，页面据此把
 // **决定**写进 payload（`aiChat.confirmDraft`）并**保留这张卡**（§4.4:164 的「已记账 ✓ + 撤销」）；
 // 曾经同时发 `confirm` + `saved` 两个同 id 同义事件 —— 页面两个都监听就会把同一个决定处理两次
@@ -113,8 +117,10 @@ const hidden = computed(() => props.masked ?? amountsHidden.value);
  *
  * `rejected` 是**静态卡**（§4.4.4）：没有按钮、也不会有在途态。
  */
-const state = ref<"pending" | "saving" | "saved" | "undoing">(
-  props.status === "confirmed" ? "saved" : "pending"
+const state = ref<"pending" | "saving" | "saved" | "undoing" | "rejected">(
+  // 播种**持久化的决定**（收口 C-P1）：重进页面那张卡一上来就是「已记账 ✓ + 撤销」/「已撤回」。
+  // `saving`/`undoing` 是**在途**态，永远不可能来自库（没有"在途"落库这一说）。
+  props.status === "confirmed" ? "saved" : props.status === "rejected" ? "rejected" : "pending"
 );
 /** 已记账那笔的 id（`add` 的返回值，或从 payload 恢复回来的那个）。撤销只用它。 */
 const savedId = ref(props.transactionId ?? "");
@@ -238,6 +244,7 @@ watch(() => props.draft, () => {
  */
 watch(() => props.status, (next) => {
   if (next === "pending" && state.value !== "pending") resetForNewDraft();
+  else if (next === "rejected" && state.value !== "rejected") state.value = "rejected";
 });
 
 /**
@@ -326,10 +333,15 @@ function onUndo(): void {
 }
 
 /**
- * 拒绝：**只发事件**（本层不写任何东西 —— 卡从列表里消失是**页面**调 `rejectDraft` 的结果：
- * 那条决定落库后草稿进 `rejectedDrafts`，而页面只渲染待确认 + 已确认两份）。
+ * 撤回（文案是「撤回」，代码标识符仍是 `reject`，§4.4.1）：**只发事件**。
+ *
+ * 本层不写任何东西（权限边界：卡只调 `transactionStore` 的读写，会话表由 `agent → session` 负责）。
+ * 卡换成**静态「已撤回」**（§4.4.4）：它**留在消息流里**、摘要照旧、零按钮 —— 对应那笔钱
+ * **从未入账**，所以这里既不 `add` 也不 `remove`。`state` 先落位，`emit` 后的落库与页面渲染
+ * 由 `aiChat.rejectDraft` 完成（失败时页面用 `rollback` 把它弹回待确认）。
  */
 function onReject(): void {
+  state.value = "rejected";
   emit("reject");
 }
 </script>
@@ -341,15 +353,20 @@ function onReject(): void {
     data-test="draft-card"
   >
     <!-- ⚠️ 这一行只在**待确认视图**里出现（R86-5）：已记账卡同一屏写着「待确认的记账」与「已记账 ✓」
-         是自相矛盾的文案（本轮之前 saved 视图在页面里画不出来，所以看不出来）。 -->
-    <p v-if="state !== 'saved' && state !== 'undoing'" class="mb-2 text-xs text-text-secondary">
+         是自相矛盾的文案（本轮之前 saved 视图在页面里画不出来，所以看不出来）。
+         已撤回卡写它自己的状态（§4.4.1 的四个可见形态：待确认 / 已记账 ✓ / **已撤回** / 已撤销回退）。 -->
+    <p v-if="state === 'rejected'" class="mb-2 text-xs text-text-secondary" data-test="draft-rejected-text">
+      已撤回
+    </p>
+    <p v-else-if="state !== 'saved' && state !== 'undoing'" class="mb-2 text-xs text-text-secondary">
       待确认的记账
     </p>
-    <p class="text-sm font-medium text-text">
+    <p class="text-sm font-medium text-text" data-test="draft-amount">
       {{ TYPE_LABEL[fields.type] }} {{ maskCurrency(fields.amount, hidden) }}
     </p>
 
-    <!-- 摘要（§4.4.2 的字段清单，**全部只读**）：编辑路径删除后，这里就是卡片唯一的内容区。 -->
+    <!-- 摘要（§4.4.2 的字段清单，**全部只读**）：待确认卡与已撤回静态卡**共用这一份**——
+         两张卡各写一份渲染就是"撤回过一次就少显示两个字段"这类缺陷的温床（§4.4.4「摘要不缩水」）。 -->
     <dl class="mt-1 space-y-0.5 text-xs text-text-secondary">
       <div v-if="fields.category" class="flex gap-1">
         <dt>分类</dt>
@@ -371,11 +388,28 @@ function onReject(): void {
         <dt>备注</dt>
         <dd data-test="draft-note">{{ fields.note }}</dd>
       </div>
+      <!--
+        标签芯片（§4.4.2）：草稿里存的是**名字**（`NormalizedDraft.tags`），照名字渲染成只读徽章。
+        "有才显示"：空数组时整行（连「标签」这个 dt）都不渲染，不留空壳行。
+        产品原则 tags 优先于备注 —— 标签必须和金额、账户一样看得见，用户才能确认"AI 打了什么标签"。
+      -->
+      <div v-if="fields.tags.length > 0" class="flex gap-1">
+        <dt>标签</dt>
+        <dd class="flex flex-wrap gap-1" data-test="draft-tags">
+          <span
+            v-for="tag in fields.tags"
+            :key="tag"
+            class="rounded-full bg-gray-100 px-2 py-0.5 text-text"
+            data-test="draft-tag"
+          >{{ tag }}</span>
+        </dd>
+      </div>
     </dl>
     <p v-if="error" class="mt-2 text-xs text-red-500" data-test="draft-error">{{ error }}</p>
 
     <!--
-      两个动作（§4.4.3）：**待确认** ⇒ 确认记账 / 不要；**已记账 ✓**（含撤销在途）⇒ 撤销。
+      三个动作（§4.4.3）：**待确认** ⇒ 确认记账 / 撤回；**已记账 ✓**（含撤销在途）⇒ 撤销；
+      **已撤回** ⇒ 什么都不渲染（静态卡零按钮，§4.4.4：那张卡对应的钱**从未入账**）。
       卡上没有任何输入控件，也没有「修改」按钮 —— 要改就在对话里重说一句（重新出卡）。
     -->
     <div
@@ -396,7 +430,7 @@ function onReject(): void {
         <Undo2 :size="16" />撤销
       </button>
     </div>
-    <div v-else class="mt-3 flex gap-2">
+    <div v-else-if="state !== 'rejected'" class="mt-3 flex gap-2">
       <button
         type="button"
         class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary py-2 text-sm text-white disabled:opacity-50"
@@ -413,7 +447,7 @@ function onReject(): void {
         data-test="draft-reject"
         @click="onReject"
       >
-        <X :size="16" />不要
+        <X :size="16" />撤回
       </button>
     </div>
   </div>

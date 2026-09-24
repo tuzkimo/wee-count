@@ -294,7 +294,10 @@ describe("DraftCard", () => {
     expect(addSpy).not.toHaveBeenCalled();
     expect(removeSpy).not.toHaveBeenCalled();
     for (const fn of Object.values(sessionSpy)) expect(fn).not.toHaveBeenCalled();
-    expect(w.attributes("data-draft-state")).toBe("pending");
+    // ⚠️ 2026-09-24 规格变更（人工批准，§4.4.4）：撤回后卡进**静态「已撤回」**（零按钮），
+    // 不是留在 pending。本用例原先断言 `"pending"` —— 与新规格直接冲突的那一条已改写，
+    // 其余不动（只发事件、一次写库都不做）。
+    expect(w.attributes("data-draft-state")).toBe("rejected");
   });
 
   it("名字没解析出 id 时**不记账**，并把原因显示出来（add 不做校验，会静默记出脏账）", async () => {
