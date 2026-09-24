@@ -92,6 +92,46 @@ export function draftToolFailed(trace: AgentTurn["trace"]): boolean {
 }
 
 /**
+ * 模型那句话里"宣称草稿已生成"的字面同现（真机原文：「已生成草稿，请确认：支出 20 元…」）。
+ *
+ * ⚠️ 这是 2026-09-24 实机证据逼出来的**第二类**判据（`draftToolFailed` 是第一类）：
+ * 真机会话 `3f0adab6-…db` 里那一轮（2026-09-24T05:43:41.907Z = 13:43:41 +0800）的 payload 逐字是
+ * `{"chips":[],"drafts":[],"refs":{},"trace":[],"promptVersion":1}` —— **零工具调用**，
+ * 正文里的"20 元"还是字面量（真调通的那几轮写的是 `{{q1.amount}}`）。
+ * 工具**没被调用**时 trace 是空的，`draftToolFailed` 恒 false ⇒ 9f251ff 的提示覆盖不到它。
+ *
+ * 判据刻意收在"草稿"与"生成/创建/建好/写好"的**同现**上（间隔 ≤ 8 字，不跨句）：
+ * - 只认「请确认」会把反问句（"请确认你要查哪个月"）算进来；
+ * - 只认「草稿」会把解释性回答（"草稿要在 AI 助手里生成"）算进来。
+ * 即使偶尔误判，补出那句话说的也是**结构事实**（这一轮确实一张草稿都没有），不会凭空造卡。
+ */
+export function claimsGeneratedDraft(text: string): boolean {
+  return /草稿[^。！？\n]{0,8}(?:生成|创建|建好|写好|做好)|(?:生成|创建|建好|写好|做好)[^。！？\n]{0,8}草稿/.test(
+    text,
+  );
+}
+
+/**
+ * 本轮要不要补一句「这次没有生成草稿」（`NO_DRAFT_NOTICE_TEXT`）。
+ *
+ * 两个**独立**触发条件（取或，不许删任何一个）：
+ *  ① `draftToolFailed(trace)`：草稿工具报过错（9f251ff 的原始形态，工具调了但失败）；
+ *  ② `claimsGeneratedDraft(text)`：模型宣称草稿已生成（2026-09-24 真机形态，工具**没调**）。
+ * 两者都要求"这一轮结束时一张草稿都没有"：有草稿就是有卡片，任何提示都会变成噪声。
+ * `aborted`（取消）不补：整轮结果都会被丢弃，没有用户要安抚。
+ */
+export function needsNoDraftNotice(
+  draftCount: number,
+  trace: AgentTurn["trace"],
+  text: string,
+  aborted = false,
+): boolean {
+  if (aborted || draftCount > 0) return false;
+  if (HONEST_FINALS.includes(text)) return false;
+  return draftToolFailed(trace) || claimsGeneratedDraft(text);
+}
+
+/**
  * `draftToolFailed` 那一轮之后由**客户端**补的一句确定性提示（模型的话不作数，这句作数）。
  *
  * 不是"把草稿补出来"：这一轮确实没有任何草稿对象，卡片的唯一来源是 `turn.drafts`
@@ -679,6 +719,16 @@ async function persistAssistant(
     promptVersion: PROMPT_VERSION,
   };
   await persistMessage(p, "assistant", content, payload);
+  // 文案说真话（2026-09-24 真机补丁）：这一轮一张草稿都没有、而模型那句话宣称"草稿已生成"
+  // （或草稿工具报过错）时，客户端那句事实提示**也要写进会话** —— 否则重进页面它就没了
+  // （内存那份是 store 加的），更要紧的是模型**看不见 UI**：用户下一句说"我没看到卡片"时，
+  // 它的上下文里只有自己那句「已生成草稿」⇒ 它会以为"草稿没建成"而**把草稿又建一遍**（实机：
+  // 同一轮 trace 里两条 `create_transaction_draft success`，库里因此多了重复草稿）。
+  // 落成**另起一条** assistant 消息：不改模型原话（那是历史），但它进 `recentTurns` ⇒ 下一轮模型看得到。
+  // 不带 payload：这一轮没有 chips/drafts/refs/trace 可带（也免得被草稿决定的 UPDATE 扫到）。
+  if (needsNoDraftNotice(state.drafts.length, trace, content)) {
+    await persistMessage(p, "assistant", NO_DRAFT_NOTICE_TEXT);
+  }
 }
 
 /** 返回值里的 text 由调用方给（这里是"到目前为止"的账：chips/drafts/refs/trace） */
@@ -695,10 +745,11 @@ function buildTurn(
     refs: state.refs,
     trace,
     aborted,
-    // 文案说真话（真机缺陷）：草稿工具报过错、这一轮结束时**又没有**任何草稿 ⇒ 模型那句话不作数，
-    // 客户端要另起一句「这次没有生成草稿」（`NO_DRAFT_NOTICE_TEXT` + `draftToolFailed`）。
+    // 文案说真话（真机缺陷）：草稿工具报过错、**或者**模型压根没调工具却宣称草稿已生成，
+    // 而这一轮结束时**又没有**任何草稿 ⇒ 模型那句话不作数，客户端要另起一句「这次没有生成草稿」
+    // （判据是结构事实，见 `needsNoDraftNotice`；文案由 `NO_DRAFT_NOTICE_TEXT` 一处给）。
     // 取消的那一轮不算（`aborted`）：它整轮都会被丢弃，没有用户要安抚。
-    ...(!aborted && state.drafts.length === 0 && draftToolFailed(trace) && !HONEST_FINALS.includes(text)
+    ...(needsNoDraftNotice(state.drafts.length, trace, text, aborted)
       ? { noDraftNotice: NO_DRAFT_NOTICE_TEXT }
       : {}),
   };

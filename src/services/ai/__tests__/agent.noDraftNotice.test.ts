@@ -83,6 +83,24 @@ async function run(...replies: Reply[]) {
 /** 一个"只调工具、不说话"的模型回复（脚本里的每一轮都是一条 `Reply`） */
 const toolCall = (call: Call): Reply => ({ text: "", toolCalls: [call] });
 
+/**
+ * 假会话（单测默认不落库；要断言"提示也写进会话"时必须注入它）。
+ * 形状照 `agent.test.ts:182-206`：只实现 `runAgent` 真正用到的那四个方法。
+ */
+function fakeSession() {
+  const appended: Record<string, unknown>[] = [];
+  const session = {
+    ensureConversation: vi.fn(async (ledgerId: string) => `conv-${ledgerId}`),
+    recentTurns: vi.fn(async (_convId: string, _n?: number) => []),
+    appendMessage: vi.fn(async (row: Record<string, unknown>) => {
+      appended.push(row);
+      return true;
+    }),
+    setTitleIfEmpty: vi.fn(async (_convId: string, _text: string) => undefined),
+  };
+  return { session, appended };
+}
+
 describe("草稿工具报错、本轮没有草稿 ⇒ 客户端要另起一句确定性提示", () => {
   it("① 模型说「已生成草稿，请确认」但本轮 drafts 为空（trace 里工具 ok:false）⇒ 出提示", async () => {
     const turn = await run(toolCall(CALL_DRAFT_BAD), CLAIM);
@@ -118,5 +136,74 @@ describe("草稿工具报错、本轮没有草稿 ⇒ 客户端要另起一句�
 
     expect(turn.text).toBe(CLARIFY_FAILURE_TEXT);
     expect(turn.noDraftNotice).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // 真机补丁（2026-09-24 实机证据）：模型**压根没调**草稿工具，却照着 prompt 的话术回
+  // 「已生成草稿，请确认：支出 20 元…」。
+  //
+  // 库里那一轮的 payload 逐字是：`{"chips":[],"drafts":[],"refs":{},"trace":[],"promptVersion":1}`
+  // （真机会话 `3f0adab6-…db`，2026-09-24T05:43:41.907Z = 13:43:41 +0800）—— **零工具调用**，
+  // 正文里的"20 元"还是字面量（有 ref 的成功轮写的是 `{{q1.amount}}`）。
+  //
+  // `draftToolFailed(trace)` 要求 trace 里**存在**草稿工具且 `ok:false` ⇒ 空 trace 时恒 false，
+  // 9f251ff 的判据**覆盖不到这一形态**（用户看着"说有草稿"、消息流里却没有卡）。
+  // -------------------------------------------------------------------------
+
+  it("⑤ 模型没调工具却宣称「已生成草稿」⇒ 照样补提示（判据是结构事实，不是工具失败）", async () => {
+    const turn = await run(CLAIM);
+
+    // 前提：这一轮**零**工具调用（正是真机那一轮的形态）
+    expect(turn.trace).toEqual([]);
+    expect(turn.drafts).toEqual([]);
+    expect(draftToolFailed(turn.trace)).toBe(false);
+    // 改哪一行能让它红：把 `buildTurn` 的判据退回 `draftToolFailed(trace)` ⇒ 这条 undefined
+    expect(turn.noDraftNotice).toBe(NO_DRAFT_NOTICE_TEXT);
+    // 模型那句话仍然原样留着（提示是另起的一条）
+    expect(turn.text).toBe("已生成草稿，请确认");
+  });
+
+  it("⑥ 同一轮真有草稿时，同样的话术**不**触发提示（防误伤）", async () => {
+    const turn = await run(toolCall(CALL_DRAFT_OK), CLAIM);
+
+    expect(turn.drafts.length).toBe(1);
+    expect(turn.noDraftNotice).toBeUndefined();
+  });
+
+  it("⑦ 提示要**落进会话**（另起一条 assistant 消息）——下一轮模型才知道「这一轮没有草稿」", async () => {
+    const { session, appended } = fakeSession();
+    const { transport } = scriptedTransport(CLAIM);
+    await runAgent({
+      userText: "记一笔 20 的粉",
+      ledgerId: LEDGER,
+      snapshot: SNAPSHOT,
+      lookup: LOOKUP,
+      deps: { transport, session },
+      signal: new AbortController().signal,
+    });
+
+    // 一条 user + 一条 assistant（模型那句）+ 一条 assistant（客户端的事实提示）
+    const roles = appended.map((row) => row.role);
+    expect(roles).toEqual(["user", "assistant", "assistant"]);
+    expect(appended[1]!.content).toBe("已生成草稿，请确认");
+    // 改哪一行能让它红：删掉 `persistAssistant` 里那次 `persistMessage(p, "assistant", NO_DRAFT_NOTICE_TEXT)`
+    expect(appended[2]!.content).toBe(NO_DRAFT_NOTICE_TEXT);
+    // 提示那条**不带 payload**（没有 chips/drafts/trace 可带，也不该被草稿决定的 UPDATE 命中）
+    expect(appended[2]!.payload).toBeUndefined();
+  });
+
+  it("⑧ 纯查询轮（没有草稿、也没宣称草稿）⇒ 不写提示那条消息", async () => {
+    const { session, appended } = fakeSession();
+    const { transport } = scriptedTransport({ text: "这个月一共花了 128 元。", toolCalls: [] });
+    await runAgent({
+      userText: "这个月花了多少",
+      ledgerId: LEDGER,
+      snapshot: SNAPSHOT,
+      lookup: LOOKUP,
+      deps: { transport, session },
+      signal: new AbortController().signal,
+    });
+
+    expect(appended.map((row) => row.role)).toEqual(["user", "assistant"]);
   });
 });
