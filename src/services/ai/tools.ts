@@ -318,8 +318,14 @@ const DRAFT_PROPERTIES: Record<string, unknown> = {
   fromAccount: { type: "string", description: "扣款 / 转出账户名；expense / transfer 必填" },
   toAccount: { type: "string", description: "入账 / 转入账户名；income / transfer 必填" },
   occurredAt: { type: "string", description: '本地时间 "YYYY-MM-DDTHH:mm"；省略表示现在' },
-  note: { type: "string", description: "备注" },
-  tags: { type: "array", items: { type: "string" }, description: "标签名数组" },
+  note: { type: "string", description: "备注：标签装不下的补充信息" },
+  tags: {
+    type: "array",
+    items: { type: "string" },
+    description:
+      "标签名数组。能表达清楚的信息尽量用标签、少写备注（检索主要靠标签）；" +
+      "只能用账本里已存在的标签名，不要自己编造——名字对不上的标签会让草稿生成失败。",
+  },
 };
 
 const DRAFT_TOOL: ToolSchema = {
@@ -327,7 +333,7 @@ const DRAFT_TOOL: ToolSchema = {
   function: {
     name: DRAFT_TOOL_NAME,
     description:
-      "生成一条待用户确认的草稿（金额、分类、账户、日期、备注），**不写库**。" +
+      "生成一条待用户确认的草稿（金额、分类、账户、日期、备注、tags），**不写库**。" +
       "草稿已生成，等待用户确认；你不得声称已经记账成功——用户点了「确认」之后才会真正入账。",
     parameters: {
       type: "object",
