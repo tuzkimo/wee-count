@@ -40,6 +40,10 @@ import { useCategoryStore } from "@/stores/category";
 import { useAuthStore } from "@/stores/auth";
 import { getCurrentUserId } from "@/db/userDb";
 import { useAmountMask } from "@/composables/useAmountMask";
+import { useMemberInfo } from "@/composables/useMemberInfo";
+// 别人的账户名与提示词快照 / 解析表**同一个格式来源**（`小明的现金`）。本组件不碰 AI 编排，
+// 只借这一个纯函数：两处各写一份模板串，漂移的表现就是"卡上的名字与快照里的对不上"。
+import { otherAccountLabel } from "@/services/ai/prompt";
 import {
   applyDraftEdit,
   buildDraftData,
@@ -171,17 +175,85 @@ const categoryOptions = computed(() =>
  * 账户候选：照 `useTransactionForm.availableAccounts:48-54`（排除软删；团队账本只给自己名下的账户）。
  * ⚠️ 这两行是那条规则的**第二份**写法，改一处必须改另一处；不复用 composable 是因为它
  * `useRoute()`（记账页的路由形态），草稿卡要能在没有 router 的组件测试里挂起来。
+ *
+ * 它只服务**本人账户**那两个出口（支出/转账的转出、收入的入账）—— 转账的**转入**侧另有一份
+ * 合并池（见下 `toAccountOptions`），这一处刻意不为它放宽。
  */
 const currentUserId = computed(
   () => auth.currentLocalUser?.server_user_id || getCurrentUserId() || "",
 );
-const accountOptions = computed(() =>
-  accountStore.accounts.filter((a) => {
-    if (a.is_deleted) return false;
-    if (ledgerStore.currentLedger?.type === "team" && a.owner_id !== currentUserId.value) return false;
-    return true;
-  }),
+/** 下拉候选项：`name` 可能是**带归属**的名字（别人的账户），所以不是 `Account` 本身 */
+interface AccountOption {
+  id: string;
+  name: string;
+}
+const ownAccountOptions = computed<AccountOption[]>(() =>
+  accountStore.accounts
+    .filter((a) => {
+      if (a.is_deleted) return false;
+      if (ledgerStore.currentLedger?.type === "team" && a.owner_id !== currentUserId.value) return false;
+      return true;
+    })
+    .map((a) => ({ id: a.id, name: a.name })),
 );
+
+/**
+ * 别人名下账户在卡上的名字：**与提示词快照 / 解析表逐字相同**（`otherAccountLabel`，`小明的现金`）。
+ * 裸名不行 —— 卡上那一行写着「小明的现金」而下拉里是一个叫「现金」的选项，两个成员各有一个
+ * 「现金」时更是两条一模一样的选项，用户分不出选的是谁。归属名拿不到时 `otherAccountLabel`
+ * 回落「其他成员」，与 `prompt.ts:54-56` 同一口径（绝不用 id 前缀当名字）。
+ *
+ * 名字走 `useMemberInfo`（别名 > 昵称 > username）—— 它也是 `AccountPickerSheet:39-44`
+ * 在手动记账的账户面板里给成员加归属时用的同一个实现。
+ */
+const ownerNames = ref<Record<string, string>>({});
+const { getMember } = useMemberInfo();
+async function loadOwnerName(ownerId: string): Promise<void> {
+  if (ownerNames.value[ownerId] !== undefined) return;
+  const info = await getMember(ownerId);
+  ownerNames.value[ownerId] = info.displayName;
+}
+/** 归属人 id 的**串**当 watch 键：数组字面量每次都是新引用，直接 watch 会每轮重算都触发一次 */
+const otherOwnerIds = computed(() => {
+  if (ledgerStore.currentLedger?.type !== "team") return [];
+  const ids = accountStore.accounts
+    .filter((a) => !a.is_deleted && a.owner_id !== currentUserId.value)
+    .map((a) => a.owner_id);
+  return [...new Set(ids)].sort();
+});
+watch(
+  () => otherOwnerIds.value.join(","),
+  () => {
+    for (const id of otherOwnerIds.value) {
+      if (id !== "") void loadOwnerName(id);
+    }
+  },
+  { immediate: true },
+);
+
+/**
+ * **转入侧**的账户候选（只可能是转账 / 收入）。
+ *
+ * - **转账 ⇒ 所有人的账户**：与手动记账逐条一致（`RecordPage.vue:58-62`：to 侧 `scope="all"` +
+ *   `showMember`），也与解析侧一致（`tools.ts:669` 的 `accountsForTransferIn`）。
+ *   少了它，"转入是别人账户"的草稿在卡上是**既选不了也显示不出来**的：`onSaveEdit` 靠下拉做
+ *   名字反查，查不到就写出 `toAccount: null`，而 `resolved.toAccountId` 仍是别人的 id
+ *   （`draftData.ts:162/171`）⇒ 卡上转入那一行整行消失、确认却照样把那笔钱写到别人账户上。
+ * - **收入 ⇒ 仍然只给本人**（钱不会进别人的账户，与 `tools.ts:870` 同一口径）。
+ * - 归属标注**只在团队账本**加（`scoped = team && 身份已知` 与快照/解析表同一判据：
+ *   `aiChat.ts:1073-1075`）。个人账本里 `owner_id` 不是"谁的账户"这层含义，逐字保留裸名。
+ */
+const toAccountOptions = computed<AccountOption[]>(() => {
+  if (fields.value.type !== "transfer") return ownAccountOptions.value;
+  const scoped = ledgerStore.currentLedger?.type === "team" && currentUserId.value !== "";
+  return accountStore.accounts
+    .filter((a) => !a.is_deleted)
+    .map((a) =>
+      scoped && a.owner_id !== currentUserId.value
+        ? { id: a.id, name: otherAccountLabel(ownerNames.value[a.owner_id], a.name) }
+        : { id: a.id, name: a.name },
+    );
+});
 
 /** 清掉"上一笔"的状态：换草稿时调，别让 `savedId` 指着别人的账 */
 function resetForNewDraft(): void {
@@ -263,8 +335,11 @@ function onSaveEdit(): void {
 
   const result = applyDraftEdit(fields.value, ids.value, form.value, {
     category: name(categoryOptions.value, form.value.categoryId),
-    fromAccount: name(accountOptions.value, form.value.fromAccountId),
-    toAccount: name(accountOptions.value, form.value.toAccountId),
+    // ⚠️ 转出侧查**本人池**、转入侧查**合并池**：两处查反了的表现都是静默的 ——
+    //   转入侧查本人池时，别人的账户名反查成 null ⇒ `applyDraftEdit` 写出 `toAccount: null`
+    //   （`draftData.ts:162`）而 `resolved.toAccountId` 仍是别人的 id（`:171`）⇒ 卡上转入整行消失。
+    fromAccount: name(ownAccountOptions.value, form.value.fromAccountId),
+    toAccount: name(toAccountOptions.value, form.value.toAccountId),
   });
   if (!result.ok) {
     // 校验没过就**留在编辑区**：收起表单等于把用户刚敲的东西藏起来，而他只看到一句错误
@@ -400,7 +475,7 @@ function onReject(): void {
           data-test="draft-edit-from"
         >
           <option :value="null">请选择账户</option>
-          <option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
+          <option v-for="a in ownAccountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
         </select>
       </label>
       <label v-if="needTo" class="flex items-center gap-2">
@@ -411,7 +486,7 @@ function onReject(): void {
           data-test="draft-edit-to"
         >
           <option :value="null">请选择账户</option>
-          <option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
+          <option v-for="a in toAccountOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
         </select>
       </label>
       <label class="flex items-center gap-2">
