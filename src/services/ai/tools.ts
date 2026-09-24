@@ -301,7 +301,9 @@ const QUERY_TOOL: ToolSchema = {
     description:
       "查询当前账本的流水，只返回汇总值（各桶总额 / 笔数 / 分组）与" +
       `最多 ${MAX_PROMPT_ITEMS} 条精简明细，绝不返回完整流水或账户余额。` +
-      "返回值里有一个 refs 键值表；回答里陈述数字时必须写 {{refs 的键}}（如 {{q1.total}}），不要自己写数字。",
+      "返回值里有一个 refs 键值表；回答里陈述数字时必须写 {{refs 的键}}（如 {{q1.total}}），不要自己写数字。" +
+      "回答里不要用 markdown 表格（手机上会横向溢出），要列几项就用列表；" +
+      "用户想看逐笔明细时，回复只给汇总数字并让他去流水页 / 报表页看，不要把明细罗列在回答里。",
     parameters: {
       type: "object",
       properties: QUERY_PROPERTIES,
