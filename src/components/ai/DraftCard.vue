@@ -216,10 +216,13 @@ async function loadOwnerName(ownerId: string): Promise<void> {
 /** 归属人 id 的**串**当 watch 键：数组字面量每次都是新引用，直接 watch 会每轮重算都触发一次 */
 const otherOwnerIds = computed(() => {
   if (ledgerStore.currentLedger?.type !== "team") return [];
-  const ids = accountStore.accounts
-    .filter((a) => !a.is_deleted && a.owner_id !== currentUserId.value)
+  // 这张卡指向的那两个账户**无论如何都要**有归属名（哪怕它已被软删）：只读展示要显示它，
+  // 而选择器才需要过滤软删行 —— 两件事的判据不同，别把 `is_deleted` 混进来。
+  const referenced = new Set([ids.value.fromAccountId, ids.value.toAccountId]);
+  const ownerIds = accountStore.accounts
+    .filter((a) => a.owner_id !== currentUserId.value && (!a.is_deleted || referenced.has(a.id)))
     .map((a) => a.owner_id);
-  return [...new Set(ids)].sort();
+  return [...new Set(ownerIds)].sort();
 });
 watch(
   () => otherOwnerIds.value.join(","),
@@ -254,6 +257,31 @@ const toAccountOptions = computed<AccountOption[]>(() => {
         : { id: a.id, name: a.name },
     );
 });
+
+/**
+ * 只读展示里那一行账户名：**以解析出的账户为准**（`resolved` 里的 id 才是"确认后会写进账"的
+ * 那个账户），解析不到才回落到模型/用户写的那串字。
+ *
+ * ⚠️ 不能照抄 `fields.fromAccount` / `fields.toAccount`：那是**模型写的字**。用户说"转到现金"、
+ * 而"现金"是别人名下的账户时，工具的匹配是"精确 → 双向包含"（`resolve.ts:117-123`），转入侧的
+ * 同名保护（`tools.ts:696-702`）**只在解析结果落在我名下**时才拦 ⇒ 解析成功、落到**小明**的
+ * 账户，而模型写下的 `toAccount` 是裸名「现金」。照抄的表现就是卡上只写「转入 现金」，
+ * 用户看不出这笔钱要进谁的账户（实机缺陷）。id 是账的真相，字只是模型的转述。
+ *
+ * 归属名只在"团队账本 + 身份已知 + 不是我名下"时加，与快照（`aiChat.ts:1073-1075`）同一判据；
+ * 名字格式复用 `otherAccountLabel`（`小明的现金`）—— 且前缀加在**账户自己的 name** 上，
+ * 所以模型即便已经写了「小明的现金」也不会叠成「小明的小明的现金」。
+ */
+function displayAccount(id: string | null, written: string | null): string | null {
+  if (id === null) return written;
+  const account = accountStore.accounts.find((a) => a.id === id);
+  if (account === undefined) return written;
+  const scoped = ledgerStore.currentLedger?.type === "team" && currentUserId.value !== "";
+  if (!scoped || account.owner_id === currentUserId.value) return account.name;
+  return otherAccountLabel(ownerNames.value[account.owner_id], account.name);
+}
+const displayFrom = computed(() => displayAccount(ids.value.fromAccountId, fields.value.fromAccount));
+const displayTo = computed(() => displayAccount(ids.value.toAccountId, fields.value.toAccount));
 
 /** 清掉"上一笔"的状态：换草稿时调，别让 `savedId` 指着别人的账 */
 function resetForNewDraft(): void {
@@ -514,13 +542,13 @@ function onReject(): void {
         <dt>分类</dt>
         <dd data-test="draft-category">{{ fields.category }}</dd>
       </div>
-      <div v-if="fields.fromAccount" class="flex gap-1">
+      <div v-if="displayFrom" class="flex gap-1">
         <dt>转出</dt>
-        <dd data-test="draft-from">{{ fields.fromAccount }}</dd>
+        <dd data-test="draft-from">{{ displayFrom }}</dd>
       </div>
-      <div v-if="fields.toAccount" class="flex gap-1">
+      <div v-if="displayTo" class="flex gap-1">
         <dt>转入</dt>
-        <dd data-test="draft-to">{{ fields.toAccount }}</dd>
+        <dd data-test="draft-to">{{ displayTo }}</dd>
       </div>
       <div class="flex gap-1">
         <dt>日期</dt>
