@@ -107,15 +107,41 @@ export interface PendingDraft {
 }
 
 /**
- * 草稿的**决定**（§4.4.1 的状态机，三个取值都在这里：`pending` / `confirmed` / `rejected`）。
+ * 草稿的**决定**（§4.4.1 的状态机，`pending` / `confirmed` / `rejected` / `superseded`）。
  *
  * 它**落库**：写在 `payload.drafts[i].status` 上（同层的 `transactionId` 是撤销要用的交易 id）。
  * 只存内存的后果已经实测过（收口 C-P1）：任何一次 `load()` 都把草稿复活成待确认，
  * 用户再点一次「确认记账」就写**第二笔**真账。
  *
- * ⚠️ 三个取值页面**都要渲染**（§4.4.4 / §4.5:271）：`rejected` 是静态「已撤回」卡，不是"不渲染"。
+ * ⚠️ `pending` / `confirmed` / `rejected` 三个取值页面**都要渲染**（§4.4.4 / §4.5:271）：
+ * `rejected` 是静态「已撤回」卡，不是"不渲染"。
+ * ⚠️ `superseded`（§4.4.6）相反：**它完全不渲染** —— 新草稿生成时被取代的旧**待确认**草稿，
+ * 既不是待确认、也**不是**「已撤回」（那是"用户主动否决"的语义，会误导）。它落库只为了一件事：
+ * 重进页面时别再复活成待确认。
+ *
+ * 读写兼容：老 payload 只有前三个取值（`readDecision` 本来就把"没有 status"当 `pending`），
+ * 不需要数据迁移；反向（旧客户端读 `superseded`）会按未知字面量当 `pending`，只在"升级又回退"
+ * 的机器上出现，不为它写迁移（§4.4.6）。
  */
-export type DraftStatus = "pending" | "confirmed" | "rejected";
+export type DraftStatus = "pending" | "confirmed" | "rejected" | "superseded";
+
+/**
+ * **会被渲染**的决定（§4.4.1 的三个视图）：`superseded` 被排除在外（§4.4.6 它**完全不渲染**）。
+ *
+ * ⚠️ 这个类型不是注释式的约定：页面只拿得到这三个取值，把一条作废的草稿传给草稿卡会**编译不过**
+ * —— "作废的卡不许出现在消息流里"这条规则由类型守住，而不用指望每个渲染出口都记得过滤。
+ */
+export type RenderableDraftStatus = Exclude<DraftStatus, "superseded">;
+
+/** 一条**会被渲染**的草稿：`status` 收窄到三种可见决定（见上） */
+export type RenderableDraft = DecidedDraft & { status: RenderableDraftStatus };
+
+/** 一个按 `status` 收窄的类型守卫工厂（`filter` 只有拿到类型守卫才会收窄元素类型） */
+function withStatus<S extends RenderableDraftStatus>(
+  status: S,
+): (draft: DecidedDraft) => draft is RenderableDraft & { status: S } {
+  return (draft): draft is RenderableDraft & { status: S } => draft.status === status;
+}
 
 /** 一条草稿 + 它的决定。UI 侧只按 `status` 分支（`confirmed` 渲染「已记账 ✓ + 撤销」） */
 export interface DecidedDraft extends PendingDraft {
@@ -164,6 +190,8 @@ function readDecision(raw: unknown): { status: DraftStatus; transactionId: strin
   if (!isRecord(raw)) return { status: "pending", transactionId: null };
   const { status, transactionId } = raw;
   if (status === "rejected") return { status: "rejected", transactionId: null };
+  // 被新草稿取代的旧待确认草稿（§4.4.6）：**不渲染**，且**不是**「已撤回」
+  if (status === "superseded") return { status: "superseded", transactionId: null };
   if (status === "confirmed") {
     if (typeof transactionId !== "string" || transactionId === "") {
       return { status: "pending", transactionId: null };
@@ -297,13 +325,13 @@ export const useAiChatStore = defineStore("aiChat", () => {
    */
   const allDrafts = ref<DecidedDraft[]>([]);
   /** **待确认**的草稿：只由 `allDrafts` 派生（UI 用它渲染"待确认"的卡） */
-  const pendingDrafts = computed(() => allDrafts.value.filter((d) => d.status === "pending"));
+  const pendingDrafts = computed(() => allDrafts.value.filter(withStatus("pending")));
   /** 已确认的草稿：渲染「已记账 ✓ + 撤销」（§4.4:164），撤销入口在这里存活 */
-  const confirmedDrafts = computed(() =>
-    allDrafts.value.filter((d) => d.status === "confirmed"),
-  );
-  /** 已拒绝的草稿：不再渲染（页面不显示它），但**不许**从状态里消失（下次 `load` 才不会复活） */
-  const rejectedDrafts = computed(() => allDrafts.value.filter((d) => d.status === "rejected"));
+  const confirmedDrafts = computed(() => allDrafts.value.filter(withStatus("confirmed")));
+  /** 已拒绝的草稿：渲染成静态「已撤回」卡（§4.4.4，保留摘要、零按钮） */
+  const rejectedDrafts = computed(() => allDrafts.value.filter(withStatus("rejected")));
+  // ⚠️ 没有 `supersededDrafts`（§4.4.6）：作废的草稿**不该**有"渲染出口"，谁想渲染它都得先
+  // 显式去 `allDrafts` 里捞 —— 加一个同名的 computed 等于给它开一个顺手可用的渲染入口。
 
   /** 在途那一轮的取消句柄（同时只允许一轮） */
   let inFlight: AbortController | null = null;
@@ -491,6 +519,14 @@ export const useAiChatStore = defineStore("aiChat", () => {
       });
       if (seq !== runSeq) return; // 已被新的一轮取代：它的账不该记进列表
       if (turn.aborted) return; // 取消：不追加任何消息、不设 error（§5.2/§5.3）
+      // §4.4.6：这一轮**确实产出了草稿** ⇒ 把当时仍待确认的旧草稿作废（写库 + 内存）。
+      // ⚠️ 判据是"这一轮有草稿"，不是"用户又发了一句"：纯查询轮不该让手里那张草稿卡凭空消失。
+      // ⚠️ 作废要写库（await）⇒ 之后**必须**再对一次令牌：await 期间可能被新的一轮或清空取代
+      //    （与上面那条 `seq !== runSeq` 同一个道理，只是这里多了一个异步窗口）。
+      if (turn.drafts.length > 0) {
+        await supersedePendingDrafts();
+        if (seq !== runSeq) return;
+      }
       appendTurn(turn);
     } catch (e) {
       // agent 的契约是"永不抛"，这里只兜住契约被改坏的那一天（照 agent 兜 buildLookupContext 的写法）。
@@ -563,6 +599,32 @@ export const useAiChatStore = defineStore("aiChat", () => {
     // ⚠️ 提示**另起一条**，不改模型那句话（它是历史）；判定在 agent 层（文案与判据都在那边，
     // 本 store 只做编排，不新增第二份文案真相）。
     if (turn.noDraftNotice !== undefined) appendAssistant(turn.noDraftNotice, null);
+  }
+
+  /**
+   * §4.4.6：**新草稿生成时**，把当时仍**待确认**的旧草稿作废（`superseded`）。
+   *
+   * 为什么要有它：用户在对话里改口（"不是微信，是招行"）会让草稿工具再调一次（§4.4.3 的正当路径 (a)）
+   * ⇒ 消息流里两张待确认卡：一张旧的错误版本、一张新的。用户只能确认其中一张，另一张要么被误确认、
+   * 要么一直挂在那儿骗人点。
+   *
+   * 三条边界（与 §4.4.6 逐条对应）：
+   * - **只挑 `pending`**：`confirmed` / `rejected` 的卡是用户真实的操作记录，一律不动；
+   * - **写库优先**（照 `applyDraftDecision` 的 R57 规则）：库没写上就不改内存 —— 若只改内存，
+   *   重进页面旧卡就复活成待确认，用户看着两张卡点确认仍有第二笔真账的风险；
+   * - 这是**自动**行为（没人点它），所以没有回滚 UI：写失败时**不静默**（`console.warn`），
+   *   那条草稿**保持待确认**（多留一张看得见的卡，好过留一张"界面上没了、库里还在"的幽灵草稿）。
+   */
+  async function supersedePendingDrafts(): Promise<void> {
+    const stale = allDrafts.value.filter((d) => d.status === "pending");
+    for (const draft of stale) {
+      const ok = await updateDraftPayload(draft.draftId, "superseded", null);
+      if (!ok) {
+        console.warn("[ai/store] 作废旧草稿没写进库，它仍是待确认：", draft.draftId);
+        continue;
+      }
+      markDraft(draft.draftId, "superseded", null);
+    }
   }
 
   function appendAssistant(content: string, payload: AiMessagePayload | null): UiMessage {

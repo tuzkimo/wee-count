@@ -77,6 +77,13 @@ const DRAFT = {
   resolved: { categoryId: CAT_ID, fromAccountId: ACC_ID, toAccountId: null, tagIds: [] },
 };
 
+/** 改口之后那一轮的新草稿（§4.4.6：它一出现，上面那张**待确认**的就被作废、不再渲染） */
+const DRAFT_B = {
+  draftId: "d-2",
+  draft: { ...DRAFT.draft, note: "改口后的新草稿", fromAccount: "现金" },
+  resolved: { ...DRAFT.resolved },
+};
+
 const runMock = () => vi.mocked(runAgent);
 
 function turn(over: Partial<AgentTurn> = {}): AgentTurn {
@@ -243,5 +250,32 @@ describe("撤回后的静态卡（§4.4.4）", () => {
     expect(after[0]!.attributes("data-draft-state")).toBe("rejected");
     // 复活成待确认就会重新出现确认按钮 ⇒ 用户再点一次 = 第二笔真账
     expect(wrapper.find('[data-test="draft-confirm"]').exists()).toBe(false);
+  });
+
+  it("③ 新草稿顶掉旧的待确认卡：消息流里只剩一张，且旧卡**不是**「已撤回」", async () => {
+    runMock().mockResolvedValue(turn());
+    const wrapper = await mountPage();
+    await ask(wrapper, "记一笔 128.5 的菜");
+    await persistDrafts();
+    expect(cards(wrapper).length).toBe(1);
+
+    // 用户在对话里改口 ⇒ 工具再调一次、又出一张卡（§4.4.3 的正当路径 (a)）
+    runMock().mockResolvedValue(turn({ drafts: [DRAFT_B] }));
+    await ask(wrapper, "不是招行，是现金");
+    await persistDrafts();
+    await flushPromises();
+
+    // 改哪一行能让它红：去掉 `runTurn` 里那次 `supersedePendingDrafts()` ⇒ 两张待确认卡同屏
+    // （旧那张还挂着"确认记账"，用户点错就是一笔他没要的账），这条与下一条同时红。
+    expect(cards(wrapper).length).toBe(1);
+    expect(wrapper.get('[data-test="draft-note"]').text()).toBe("改口后的新草稿");
+    // 作废不是撤回：屏幕上不该出现「已撤回」（那是"用户主动否决"的语义）
+    expect(wrapper.text()).not.toContain("已撤回");
+
+    // 重进页面：作废的卡仍不渲染（判定落了库）
+    await useAiChatStore().load();
+    await flushPromises();
+    expect(cards(wrapper).length).toBe(1);
+    expect(wrapper.get('[data-test="draft-note"]').text()).toBe("改口后的新草稿");
   });
 });

@@ -16,7 +16,7 @@
 // ⚠️ 消息列表**不**按 `conversationId` 分支：空账本首次发送时它是 `null`（R4 把建会话推迟到
 // agent 的 `ensureConversation`）⇒ 拿它当渲染条件的话，第一轮问答直接就看不见了。
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useAiChatStore, type DecidedDraft } from "@/stores/aiChat";
+import { useAiChatStore, type RenderableDraft } from "@/stores/aiChat";
 import { useLedgerStore } from "@/stores/ledger";
 import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
@@ -54,11 +54,13 @@ const scroller = ref<HTMLElement | null>(null);
  *   「已拒绝的不渲染、卡从列表里消失」：卡一消失，历史就断了，用户也没法照着摘要重新口述或手记。
  *   决定仍在 store/库里，重进页面照旧是静态卡，**不会**复活成待确认。
  *
- * 类型是 `DecidedDraft`（不是 `PendingDraft`）：卡要拿 `status` 决定初始视图、拿
+ * 类型是 `RenderableDraft`（不是 `PendingDraft`）：卡要拿 `status` 决定初始视图、拿
  * `savedTransactionId` 去撤销 —— 只给 `PendingDraft` 的话这两样在模板里都不存在。
+ * 同时它也**排掉了 `superseded`**（§4.4.6：被新草稿取代的旧待确认草稿不渲染），所以这里
+ * 三份列表的拼接就是"消息流里该出现的全部草稿"，不许再加第四路。
  */
-const draftsByMessage = computed<Record<string, DecidedDraft[]>>(() => {
-  const grouped: Record<string, DecidedDraft[]> = {};
+const draftsByMessage = computed<Record<string, RenderableDraft[]>>(() => {
+  const grouped: Record<string, RenderableDraft[]> = {};
   for (const draft of [...ai.pendingDrafts, ...ai.confirmedDrafts, ...ai.rejectedDrafts]) {
     const list = grouped[draft.messageId];
     if (list === undefined) grouped[draft.messageId] = [draft];
@@ -67,7 +69,7 @@ const draftsByMessage = computed<Record<string, DecidedDraft[]>>(() => {
   return grouped;
 });
 
-function draftsFor(messageId: string): DecidedDraft[] {
+function draftsFor(messageId: string): RenderableDraft[] {
   return draftsByMessage.value[messageId] ?? [];
 }
 
