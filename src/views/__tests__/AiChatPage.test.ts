@@ -72,6 +72,7 @@ import { useAccountStore } from "@/stores/account";
 import { useCategoryStore } from "@/stores/category";
 import { useLedgerStore } from "@/stores/ledger";
 import { useTagStore } from "@/stores/tag";
+import { usePrefsStore } from "@/stores/prefs";
 import { AMOUNT_PLACEHOLDER } from "@/composables/useAmountMask";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import DraftCard from "@/components/ai/DraftCard.vue";
@@ -977,5 +978,71 @@ describe("Bug 1：发送中的可见反馈", () => {
     await flushPromises();
     expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
     expect(bubbleTexts(wrapper)).toEqual(["问一句"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2：AI 页就地切换金额遮蔽（实机：金额被遮成星号，本页却没有眼睛图标，只能去别的页面开完再切回来）
+//
+// ⚠️ 眼睛控的是**全局** `amountsHidden`（其他页面同一个组件、同一条语义），
+// 而 §7.4 乙方案的 `revealed`（本轮问出来的显示真值）**一点都不能动** —— 两者是两件事：
+// 前者是"用户现在想不想看"，后者是"这条消息是不是我刚问出来的"。所以下面第二条点击
+// 专门钉"全局关回去之后，本轮那条仍显示真值、历史那条重新遮上"。
+// ---------------------------------------------------------------------------
+
+describe("Bug 2：AI 页就地切换金额遮蔽", () => {
+  it("页头有眼睛开关；点它 ⇒ 历史消息由遮变真，再点回去 ⇒ 历史重新遮上、本轮的仍显示真值", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    // 历史消息（`load()` 读回来的，不在 `revealed` 里）⇒ 跟随全局遮罩
+    const convId = (await ensureConversation(LEDGER_ID, new Date(T0)))!;
+    await appendMessage({
+      id: "m-hist",
+      conversation_id: convId,
+      role: "assistant",
+      content: "上月买菜花了 {{q1.total}} 元",
+      created_at: T0,
+      payload: { refs: { "q1.total": "128" } },
+    });
+    await useLedgerStore().init();
+    runMock().mockResolvedValue(
+      turn({ text: "这个月花了 {{q2.total}} 元", refs: { "q2.total": "256" } }),
+    );
+    const wrapper = await mountPage();
+    await ask(wrapper, "这个月花了多少");
+
+    const HID = `上月买菜花了 ${AMOUNT_PLACEHOLDER} 元`;
+    const SHOWN = "上月买菜花了 128 元";
+    // 前提：一条历史（遮）+ 一轮刚问出来的（真值）—— 两种形态同时在屏上
+    expect(bubbleTexts(wrapper)).toEqual([HID, "这个月花了多少", "这个月花了 256 元"]);
+    expect(usePrefsStore().amountsHidden).toBe(true);
+
+    // 杀手：删掉页头那个 `<AmountMaskToggle />` ⇒ 这一行直接抛（找不到元素）
+    const eye = wrapper.get('[data-test="amount-mask-toggle"]');
+
+    await eye.trigger("click");
+    await flushPromises();
+
+    // 眼睛控的是**全局** `amountsHidden` ⇒ 历史那条跟着显示真值
+    expect(usePrefsStore().amountsHidden).toBe(false);
+    expect(bubbleTexts(wrapper)).toEqual([SHOWN, "这个月花了多少", "这个月花了 256 元"]);
+
+    await eye.trigger("click");
+    await flushPromises();
+
+    // 关回去：历史重新遮上（全局语义），而**本轮问出来的**仍显示真值（`revealed` 没被这次改动碰到）。
+    // 杀手：把"就地切换"实现成往 `revealed` 里塞消息 id / 清空 `revealed` ⇒ 这两条其中之一红。
+    expect(usePrefsStore().amountsHidden).toBe(true);
+    expect(bubbleTexts(wrapper)).toEqual([HID, "这个月花了多少", "这个月花了 256 元"]);
+  });
+
+  it("空会话也有眼睛开关：它是全局开关，不该等第一条消息才出现", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const wrapper = await mountPage();
+
+    expect(bubbleTexts(wrapper)).toEqual([]);
+    // 杀手：把 `<AmountMaskToggle />` 挪进 `v-for` 的消息块 / `messages.length > 0` 的分支 ⇒ 这条红
+    expect(wrapper.find('[data-test="amount-mask-toggle"]').exists()).toBe(true);
   });
 });

@@ -26,6 +26,7 @@ import { useAmountMask } from "@/composables/useAmountMask";
 import { shouldMaskAmounts } from "@/components/ai/amountMask";
 import type { AiMessagePayload } from "@/services/ai/session";
 import AppHeader from "@/components/AppHeader.vue";
+import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
 import MessageBubble from "@/components/ai/MessageBubble.vue";
 import FilterChips from "@/components/ai/FilterChips.vue";
 import DraftCard from "@/components/ai/DraftCard.vue";
@@ -235,15 +236,28 @@ watch(
   <div class="flex h-full flex-col bg-bg">
     <AppHeader title="AI 助手">
       <template #action>
-        <button
-          v-if="ai.messages.length > 0"
-          type="button"
-          class="text-sm text-text-secondary"
-          data-test="ai-clear"
-          @click="onClear"
-        >
-          清空
-        </button>
+        <!--
+          Bug 2：金额遮蔽的就地开关。本页确实按 `shouldMaskAmounts` 遮金额（三个出口都走
+          `isMasked()`），却没有眼睛图标 ⇒ 用户只能切去别的页面开完再切回来。
+
+          ⚠️ 它就是别的页面上那个 `AmountMaskToggle`，控的是**同一个全局** `amountsHidden`。
+          本页特有的 §7.4 乙方案（`revealed`：本轮问出来的显示真值）**不归它管**，
+          也不许为了它去改 `revealed` —— 两者是"用户现在想不想看"与"这条是不是我刚问的"。
+          它**恒渲染**（不像「清空」要看有没有消息）：全局开关跟本页有没有对话无关，
+          与 AccountList / ReportsPage / TransactionList 三处的形态一致。
+        -->
+        <div class="flex items-center gap-1">
+          <AmountMaskToggle />
+          <button
+            v-if="ai.messages.length > 0"
+            type="button"
+            class="text-sm text-text-secondary"
+            data-test="ai-clear"
+            @click="onClear"
+          >
+            清空
+          </button>
+        </div>
       </template>
     </AppHeader>
 
