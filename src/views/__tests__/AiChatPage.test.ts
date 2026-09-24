@@ -901,3 +901,81 @@ describe("M4 附件接线：附件归 store ⇒ 切页不丢（E12.1）", () => 
     expect(wrapper.get('[data-test="ai-message-thumb"]').attributes("src")).toBe(url);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug 1：发送期间必须看得见「正在思考」（实机：发问后页面毫无反馈，过一会结果一次性弹出）
+//
+// 三条**独立的**结束路径都要把提示收掉：成功、失败、取消。只钉成功那条 = 漏掉另外两条
+// （失败会被 `fail()` 兜成一条消息、取消走 `cancelInFlight()`，两者都不经过"回答到达"那一步）。
+// ---------------------------------------------------------------------------
+
+describe("Bug 1：发送中的可见反馈", () => {
+  it("等回答时显示「正在思考…」，回答到达后消失", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const pending = deferred<AgentTurn>();
+    runMock().mockReturnValue(pending.promise);
+    const wrapper = await mountPage();
+
+    await ask(wrapper, "问一句");
+
+    // 前提：这一轮确实在途中（composer 已经切成取消按钮 ⇒ 页面知道自己在等）
+    expect(useAiChatStore().sending).toBe(true);
+    expect(wrapper.find('[data-test="composer-cancel"]').exists()).toBe(true);
+    // 杀手：删掉模板里那条 `v-if="ai.sending"` 的进行中提示 ⇒ 下面两条红。
+    // ⚠️ 注意它**不是** `ai.loading`（那只服务首次读历史，`load()` 之外恒为 false）。
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="ai-thinking"]').text()).toContain("正在思考");
+
+    pending.resolve(turn({ text: "答" }));
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
+    expect(bubbleTexts(wrapper)).toEqual(["问一句", "答"]);
+  });
+
+  it("失败（agent 抛）之后提示也消失：不许因为没走到成功路径就永远挂着", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    let reject!: (e: Error) => void;
+    const pending = new Promise<AgentTurn>((_resolve, rej) => {
+      reject = rej;
+    });
+    runMock().mockReturnValue(pending);
+    const wrapper = await mountPage();
+
+    await ask(wrapper, "问一句");
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(true);
+
+    reject(new Error("agent 契约被改坏了"));
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
+    expect(useAiChatStore().sending).toBe(false);
+    expect(bubbleTexts(wrapper)).toEqual(["问一句", AGENT_FAILURE_TEXT]);
+  });
+
+  it("取消之后提示立刻消失（不等那一轮 settle），迟到的那轮也不许把它带回来", async () => {
+    const sqlite = await useRealDb();
+    seedLedger(sqlite);
+    const pending = deferred<AgentTurn>();
+    runMock().mockReturnValue(pending.promise);
+    const wrapper = await mountPage();
+
+    await ask(wrapper, "问一句");
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(true);
+
+    await wrapper.get('[data-test="composer-cancel"]').trigger("click");
+    await flushPromises();
+
+    // 杀手：提示只跟 `sending` 走（`cancelInFlight()` 立刻置 false）⇒ 这两条红
+    expect(useAiChatStore().sending).toBe(false);
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
+
+    // 被 abort 的那一轮仍可能回来（`runSeq` 已作废它）：不许把提示带回来、也不许追加回答
+    pending.resolve(turn({ text: "迟到的回答" }));
+    await flushPromises();
+    expect(wrapper.find('[data-test="ai-thinking"]').exists()).toBe(false);
+    expect(bubbleTexts(wrapper)).toEqual(["问一句"]);
+  });
+});

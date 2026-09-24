@@ -295,6 +295,19 @@ watch(
             @reject="onDraftDismissed(d.draftId)"
           />
         </div>
+        <!--
+          Bug 1：一轮对话**在途中**的可见反馈。
+
+          ⚠️ 判据是 `ai.sending`（`runTurn` 置位 / 三条结束路径都收：成功、失败走 `finally`，
+          取消走 `cancelInFlight()`），**不是** `ai.loading` —— 后者只服务首次读历史，
+          发送期间恒为 false，拿它当条件等于什么都没有（实机形态：发问后页面毫无反应、
+          过一会结果一次性弹出）。
+          ⚠️ 别再往 composer 那一侧加：它在 `sending` 时已经把发送键换成「取消」键了，
+          这里补的是**消息流**这一侧的"在等回答"（用户眼睛盯着的就是那里）。
+        -->
+        <p v-if="ai.sending" class="text-sm text-text-secondary" data-test="ai-thinking">
+          正在思考…
+        </p>
       </template>
     </div>
 
