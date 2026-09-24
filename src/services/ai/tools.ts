@@ -25,6 +25,7 @@ import {
 } from "@/services/ai/dsl";
 import {
   resolveFilter,
+  type LookupAccount,
   type LookupContext,
   type ResolveError,
 } from "@/services/ai/resolve";
@@ -39,6 +40,7 @@ import {
   TOOL_NAMES,
 } from "@/services/ai/toolNames";
 import { getUserDb } from "@/db/userDb";
+import { otherAccountLabel } from "@/services/ai/prompt";
 import { toDateKey } from "@/utils/dateRange";
 import { localDateKeyToDate, toLocalDatetimeString } from "@/utils/datetime";
 import { round2 } from "@/utils/transaction";
@@ -652,9 +654,58 @@ function readName(v: unknown): { ok: true; value: string | null } | { ok: false 
 export const NO_ACCOUNT_TEXT =
   "当前用户在这个账本里还没有可用的账户（记账只能用你自己的账户），请先在账户页创建一个账户，然后再说一遍这笔账。";
 
-function accountCandidates(ctx: ToolContext): string {
-  const names = ctx.lookup.accounts.map((a) => a.name);
+function accountCandidates(pool: LookupAccount[]): string {
+  const names = pool.map((a) => a.name);
   return names.length > 0 ? names.join("、") : NO_ACCOUNT_TEXT;
+}
+
+/**
+ * 转账**转入**侧的候选池：本人的账户 + 其他成员的账户（后者的名字带归属，见
+ * `LookupContext.otherAccounts`）—— 与手动记账一致（`RecordPage.vue:61` 转账 to 侧
+ * `scope="all"`：还钱给同事、转到家人的卡都是合法操作）。
+ *
+ * ⚠️ **只给转入用**：转出（fromAccount）与查询/筛选仍只看 `lookup.accounts`（只能是本人的）。
+ */
+function accountsForTransferIn(lookup: LookupContext): LookupAccount[] {
+  return lookup.otherAccounts === undefined ? lookup.accounts : [...lookup.accounts, ...lookup.otherAccounts];
+}
+
+/**
+ * `toAccount` 该用哪个池：**转账**的转入方可以是所有人的账户（手动记账 `RecordPage.vue:61`
+ * 转账 to 侧 `scope="all"`），而**收入**的入账方只能是自己名下的（同处 `else` 分支的
+ * `scope="own"`——钱不会进别人的账户）。
+ */
+function toAccountLookup(lookup: LookupContext, type: AiTxType): LookupContext {
+  if (type !== "transfer") return lookup;
+  return { ...lookup, accounts: accountsForTransferIn(lookup) };
+}
+
+/**
+ * 转入侧的**同名保护**：模型只写了一个"我名下也有的裸名字"（`现金`），而别的成员名下也有
+ * 同名账户 ⇒ 判歧义、让模型反问，绝不猜（猜错就是把钱转到错的账户上）。
+ *
+ * ⚠️ 判据刻意是"**值逐字等于本人账户名**"（大小写不敏感，与 `matchByName` 的精确匹配同口径）：
+ * 写成"我的现金"或"小明的现金"都算**说了归属**（前者由包含匹配落到本人账户、后者唯一命中
+ * 别人那条），不在这里拦 —— 否则"我的"这个说法就没法表达，用户会被反问到没路可走。
+ */
+function transferInAmbiguity(
+  lookup: LookupContext,
+  value: string,
+  resolvedId: string,
+): ResolveError | null {
+  const own = lookup.accounts.find((a) => a.id === resolvedId);
+  if (own === undefined) return null;
+  if (value.trim().toLowerCase() !== own.name.toLowerCase()) return null;
+  const shared = (lookup.otherAccounts ?? []).filter(
+    (o) => (o.baseName ?? o.name).toLowerCase() === own.name.toLowerCase(),
+  );
+  if (shared.length === 0) return null;
+  return {
+    kind: "ambiguous",
+    field: "accounts",
+    value: value.trim(),
+    candidates: [own.name, ...shared.map((o) => o.name)],
+  };
 }
 
 /**
@@ -664,14 +715,20 @@ function accountCandidates(ctx: ToolContext): string {
  *
  * 账户有两个方向（from / to），而 `AiFilter.account` 是**单个**字段（规格 §4.1 的决定），
  * 所以分两次调用：每次只解析一个账户，返回的 id 合并。分类用 `type` 消歧（「其他」收支都有）。
+ *
+ * ⚠️ 两个方向的**候选池不同**：转出只能是本人的账户，转入可以是所有人的
+ * （`accountsForTransferIn`）—— 这是本函数唯一按方向分叉的地方。
  */
 function resolveDraftNames(
   draft: NormalizedDraft,
   ctx: ToolContext,
 ): { ok: true; resolved: ResolvedDraftIds } | { ok: false; error: string } {
   const errors: ResolveError[] = [];
-  const collect = (filter: Parameters<typeof resolveFilter>[0]): ReturnType<typeof resolveFilter> => {
-    const r = resolveFilter(filter, ctx.lookup, ctx.now);
+  const collect = (
+    filter: Parameters<typeof resolveFilter>[0],
+    lookup: LookupContext = ctx.lookup,
+  ): ReturnType<typeof resolveFilter> => {
+    const r = resolveFilter(filter, lookup, ctx.now);
     if (!r.ok) errors.push(...r.errors);
     return r;
   };
@@ -685,16 +742,29 @@ function resolveDraftNames(
     if (r.ok) categoryId = r.resolved.categoryIds?.[0] ?? null;
   }
 
+  // 转出：只用**本人**账户（产品规则：不能用别人的账户出账）
   let fromAccountId: string | null = null;
   if (draft.fromAccount !== null) {
     const r = collect({ account: draft.fromAccount });
     if (r.ok) fromAccountId = r.resolved.accountId;
   }
 
+  // 转入：**转账**时本人 + 其他成员的账户（收入只有本人那些）；同名而没说清归属时
+  // 由 `transferInAmbiguity` 判歧义
   let toAccountId: string | null = null;
   if (draft.toAccount !== null) {
-    const r = collect({ account: draft.toAccount });
-    if (r.ok) toAccountId = r.resolved.accountId;
+    const r = collect({ account: draft.toAccount }, toAccountLookup(ctx.lookup, draft.type));
+    // `accountId` 为 null 只可能是"压根没给 account"（这里给了），但类型上是 `string | null`：
+    // 显式判掉，别用 `!` 把可能性藏起来。
+    if (r.ok && r.resolved.accountId !== null) {
+      const resolvedId = r.resolved.accountId;
+      const ambiguous =
+        draft.type === "transfer"
+          ? transferInAmbiguity(ctx.lookup, draft.toAccount, resolvedId)
+          : null;
+      if (ambiguous === null) toAccountId = resolvedId;
+      else errors.push(ambiguous);
+    }
   }
 
   let tagIds: string[] = [];
@@ -772,7 +842,7 @@ function createDraftTool(raw: Record<string, unknown>, ctx: ToolContext): ToolOu
   // ⚠️ 放在这里（字段校验之后、必填校验之前）是刻意的：它同时覆盖"模型给了账户名"与
   //    "模型没给账户名"两条路 —— 走到下面那两条 missing_account 时，账户池必定非空。
   if (ctx.lookup.accounts.length === 0) {
-    return { ok: false, error: `missing_account: ${accountCandidates(ctx)}` };
+    return { ok: false, error: `missing_account: ${accountCandidates(ctx.lookup.accounts)}` };
   }
 
   // —— 必填校验（照抄 useTransactionForm.doSave 的四条） ——
@@ -790,13 +860,16 @@ function createDraftTool(raw: Record<string, unknown>, ctx: ToolContext): ToolOu
   if ((type === "expense" || type === "transfer") && fromAccount.value === null) {
     return {
       ok: false,
-      error: `missing_account: ${BUCKET_LABEL[type]}必须指定 fromAccount（扣款 / 转出账户）。账本里的账户：${accountCandidates(ctx)}。请反问用户是哪个账户`,
+      error: `missing_account: ${BUCKET_LABEL[type]}必须指定 fromAccount（扣款 / 转出账户）。账本里你的账户：${accountCandidates(ctx.lookup.accounts)}。请反问用户是哪个账户`,
     };
   }
   if ((type === "income" || type === "transfer") && toAccount.value === null) {
     return {
+      // 转入侧把**其他成员的账户**一起列出来（转账时它们合法，只是名字带归属）：少列了，
+      // 用户说"转到小明的现金"时模型看不到这个选项，只能回一句"没有这个账户"。
+      // 收入那一侧不列（钱不会进别人的账户，见 `toAccountLookup`）。
       ok: false,
-      error: `missing_account: ${BUCKET_LABEL[type]}必须指定 toAccount（入账 / 转入账户）。账本里的账户：${accountCandidates(ctx)}。请反问用户是哪个账户`,
+      error: `missing_account: ${BUCKET_LABEL[type]}必须指定 toAccount（入账 / 转入账户）。可选账户：${accountCandidates(toAccountLookup(ctx.lookup, type).accounts)}。请反问用户是哪个账户`,
     };
   }
 
@@ -882,7 +955,8 @@ export async function executeTool(
 // ---------------------------------------------------------------------------
 
 /**
- * 账户候选的作用域：**当前用户自己的账户**（产品规则：记账只能用当前用户自己的账户）。
+ * 账户候选的作用域：把账本里的账户按归属切成**当前用户自己的**与**其他成员的**两组
+ * （产品规则：记账只能用当前用户自己的账户；转入例外，见 `accountsForTransferIn`）。
  *
  * 口径照既有的两处（`useTransactionForm.availableAccounts:46-54`、`DraftCard.accountOptions:178-184`）：
  * **只在团队账本里**按 `owner_id` 过滤 —— 个人账本里账户就是自己的，多一道过滤只会把
@@ -942,6 +1016,26 @@ export async function buildLookupContext(
     ownerId === null ? [ledgerId] : [ledgerId, ownerId],
   );
 
+  // 其他成员名下的账户：**只**喂转账的**转入**侧（`accountsForTransferIn`），与手动记账
+  // `RecordPage.vue:61` 的 `scope="all"` 同口径。名字**带归属**（`小明的现金`），而且必须与
+  // 提示词快照里那一组逐字相同 —— 模型照着快照写名字，这里才唯一命中。
+  // 归属显示名来自调用方传进的成员表（store 的 `memberTable()`，走 useMemberInfo 的别名规则）。
+  const ownerNames = new Map(
+    members.filter((m) => typeof m.userId === "string" && m.userId !== "").map((m) => [m.userId, m.name]),
+  );
+  const otherRows =
+    ownerId === null
+      ? []
+      : await db.select<{ id: string; name: string; owner_id: string }[]>(
+          "SELECT id, name, owner_id FROM accounts WHERE ledger_id = ? AND is_deleted = 0 AND owner_id <> ?",
+          [ledgerId, ownerId],
+        );
+  const otherAccounts = otherRows.map((a) => ({
+    id: a.id,
+    name: otherAccountLabel(ownerNames.get(a.owner_id), a.name),
+    baseName: a.name,
+  }));
+
   const tags = await db.select<{ id: string; name: string }[]>(
     "SELECT id, name FROM tags WHERE ledger_id = ? AND is_deleted = 0",
     [ledgerId],
@@ -950,6 +1044,7 @@ export async function buildLookupContext(
   return {
     categories,
     accounts,
+    otherAccounts,
     tags,
     // ⚠️ 只收**真 id** 的成员行：id 一旦是 `undefined`（形状对不上：例如调用方给的是
     // `{id, name}` 而不是 `{userId, name}`），它就会以"解析成功"的姿态进 `resolveFilter`，

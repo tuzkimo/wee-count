@@ -42,7 +42,8 @@ import { createTransport, fetchAiStatus, type AiStatus } from "@/services/ai/tra
 import type { ImageAttachment } from "@/services/ai/imageInput";
 // ⚠️ 这里取的是**常量**（`PROMPT_VERSION`），不是把 prompt.ts 的模块图拖进来当依赖：
 // `agent.ts`（本文件上面那行就 import 了它）运行期本来就要 `buildSystemPrompt`，模块图早就在了。
-import { PROMPT_VERSION } from "@/services/ai/prompt";
+// `otherAccountLabel` 是**同一个格式**的唯一来源：解析表里别人的账户名与快照里那一组必须逐字相同。
+import { otherAccountLabel, PROMPT_VERSION } from "@/services/ai/prompt";
 import {
   readEntryEnabled,
   readPrivacyCardSeen,
@@ -467,7 +468,8 @@ export const useAiChatStore = defineStore("aiChat", () => {
         return;
       }
       const members = await memberTable();
-      const snapshot = await buildSnapshot(members.map((m) => ({ name: m.name })));
+      // 整张成员表（带 id）进快照：别人的账户要按归属成员的**显示名**加标注，而快照本身只出名字
+      const snapshot = await buildSnapshot(members);
       const turn = await runAgent({
         userText,
         // 有图 ⇒ agent 层把本轮 content 组装成内容块数组（§4.2）并把图写进 payload（§4.1）
@@ -1056,13 +1058,27 @@ export const useAiChatStore = defineStore("aiChat", () => {
    * 只读既有 store 的**内存**：拉取名表是页面的责任（照 `FilterPage`/`RecordPage` 的做法，
    * 那些页面自己 `fetchAll`）—— 本 store 不在这里补读，免得同一份数据有两处加载时机。
    *
-   * `members` 只收名字：调用方从 `memberTable()` 里 `map((m) => ({ name: m.name }))` 剥掉 id
-   * （同一个成员表还喂给 `runAgent` 的解析表，见 `send`）。
+   * `members` 只收名字（**整张成员表**传进来，见下）：同一个成员表还喂给 `runAgent` 的解析表。
+   * 这里要的是它的 `id → 显示名` 映射 —— 其他成员的账户在快照里必须**带归属**，而归属写的是
+   * 显示名（别名 > 昵称 > username，`useMemberInfo` 那套），不是 id（§7.3）。
    */
-  async function buildSnapshot(members: { name: string }[]): Promise<LedgerSnapshot> {
+  async function buildSnapshot(members: { id: string; name: string }[]): Promise<LedgerSnapshot> {
     const ledger = ledgerStore.currentLedger;
     const isTeam = ledger !== null && ledger.type === "team";
     const me = currentUserId();
+    const all = useAccountStore().accounts;
+    // ⚠️ 只有"团队账本 **且** 知道当前用户是谁"时才分组 —— 与 `buildLookupContext` 里那条
+    // owner 过滤**同一个判据**。身份未知时两边都退回"不过滤（全当自己的）"：一边分组标注、
+    // 另一边不分组，会让模型抄一个解析表里根本不存在的名字。
+    const scoped = isTeam && me !== "";
+    const mine = scoped ? all.filter((a) => a.owner_id === me) : all;
+    const others = scoped ? all.filter((a) => a.owner_id !== me) : [];
+    const ownerNames = new Map(members.map((m) => [m.id, m.name]));
+    const item = (a: (typeof all)[number]): { name: string; type: string } => ({
+      name: a.name,
+      // 中文类型名（招行(银行卡)）：快照给的是**人话**，模型照着它跟用户对话（§7.1 的示例）
+      type: ACCOUNT_TYPE_LABELS[a.type],
+    });
     return {
       kind: isTeam ? "team" : "personal",
       categories: useCategoryStore().categories.map((c) => ({ name: c.name, type: c.type })),
@@ -1071,15 +1087,21 @@ export const useAiChatStore = defineStore("aiChat", () => {
       //    的 SQL 上，由 `send` 传下去的 `currentUserId` 驱动）。
       //    少了这一条，两个成员各有一个「现金」时模型收到的是**无法区分**的清单，
       //    用户说"用我的"也没用（实机缺陷）。
-      accounts: useAccountStore()
-        .accounts.filter((a) => !isTeam || a.owner_id === me)
-        .map((a) => ({
-          name: a.name,
-          // 中文类型名（招行(银行卡)）：快照给的是**人话**，模型照着它跟用户对话（§7.1 的示例）
-          type: ACCOUNT_TYPE_LABELS[a.type],
-        })),
+      accounts: mine.map(item),
+      // 其他成员的账户**另起一组**：它们合法，但**只能当转账的转入方**（与手动记账一致，
+      // `RecordPage.vue:61` 的 `scope="all"`）。名字带归属，且与解析表里那一条逐字相同
+      // （`otherAccountLabel`）—— 模型照着快照写，链路才唯一命中。
+      // 没有别的成员的账户时**不带这个键**（个人账本的快照逐字不变，§7.1 老会话不漂移）。
+      ...(others.length === 0
+        ? {}
+        : {
+            otherAccounts: others.map((a) => ({
+              ...item(a),
+              name: otherAccountLabel(ownerNames.get(a.owner_id), a.name),
+            })),
+          }),
       tags: useTagStore().tags.map((t) => t.name),
-      members,
+      members: members.map((m) => ({ name: m.name })),
     };
   }
 

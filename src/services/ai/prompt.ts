@@ -32,9 +32,33 @@ export const PROMPT_VERSION = 1;
 export interface LedgerSnapshot {
   kind: "personal" | "team";
   categories: { name: string; type: "expense" | "income" }[];
+  /** **当前用户自己的**账户，名字不带归属标注（记账的转出侧只用这些） */
   accounts: { name: string; type: string }[];
+  /**
+   * **其他成员名下**的账户，名字**带归属**（`小明的现金`，由 `otherAccountLabel` 生成）：
+   * 转账的**转入**方可以用它们（与手动记账 `RecordPage.vue:61` 的 `scope="all"` 同口径）。
+   *
+   * 缺省 / 空数组时不渲染这一行 —— 个人账本的 prompt 逐字不变（§7.1 的老会话行为不漂移）。
+   */
+  otherAccounts?: { name: string; type: string }[];
   tags: string[];
   members: { name: string; note?: string }[];
+}
+
+/**
+ * 别人的账户在**提示词快照**与**解析表**里的同一个显示名（`小明的现金`）。
+ *
+ * 两处必须逐字相同：模型只照着快照里的名字写工具参数，而解析表里那条候选必须能被这个名字
+ * 唯一命中（`tools.ts` 的 `otherAccounts`）。任何一处换格式，表现都是"模型写得出、链路查不到"。
+ *
+ * `ownerName` 拿不到时（账户归属的成员不在成员表里，例如缓存没同步到）退回"其他成员"：
+ * 宁可让用户看到"其他成员的现金"并反问，也不能用 id 当名字（§7.3）。
+ */
+export function otherAccountLabel(ownerName: string | null | undefined, accountName: string): string {
+  const owner = ownerName === null || ownerName === undefined || ownerName.trim() === ""
+    ? "其他成员"
+    : ownerName.trim();
+  return `${owner}的${accountName}`;
 }
 
 const KIND_LABEL: Record<LedgerSnapshot["kind"], string> = {
@@ -67,6 +91,13 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
 
   const categories = joinNames(s.categories.map((c) => `${c.name}(${CATEGORY_TYPE_LABEL[c.type]})`));
   const accounts = joinNames(s.accounts.map((a) => `${a.name}(${a.type})`));
+  // 其他成员的账户**单独一行**（§7.1）：它们只能当转账的转入方，混进"账户"那一行会让模型
+  // 以为可以拿别人的账户记账（实机缺陷的另一副面孔）。没有这一组时**整行不出现**。
+  const otherAccounts = (s.otherAccounts ?? []).map((a) => `${a.name}(${a.type})`);
+  const otherAccountsLine =
+    otherAccounts.length === 0
+      ? ""
+      : `其他成员账户（只能作为转账的转入方，名字要写全名）：${joinNames(otherAccounts)}\n`;
   const members = joinNames(s.members.map((m) => (m.note ? `${m.name}(备注: ${m.note})` : m.name)));
   const tags = joinNames(s.tags);
 
@@ -86,7 +117,7 @@ export function buildSystemPrompt(s: LedgerSnapshot, now: Date): string {
 账本：${KIND_LABEL[s.kind]}
 分类：${categories}
 账户：${accounts}
-标签：${tags}
+${otherAccountsLine}标签：${tags}
 成员：${members}
 以上只有名称与类型：单条流水、账户里的钱、以及别的账本都不在这里，也不在你的上下文里；要数字就必须调工具。
 

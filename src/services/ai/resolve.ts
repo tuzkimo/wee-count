@@ -8,14 +8,39 @@ export interface LookupCategory {
   name: string;
   type: "income" | "expense";
 }
-export interface LookupAccount { id: string; name: string }
+/**
+ * 解析表里的一个账户。
+ *
+ * `baseName` 只有 `otherAccounts` 的条目会填（见 `LookupContext.otherAccounts`）：
+ * `name` 是**带归属**的显示名（`小明的现金`），`baseName` 是账户本名（`现金`）。
+ * 匹配器（`matchByName`）只看 `name`，**本字段不参与匹配** —— 它只服务 `tools.ts` 里
+ * 转入侧那条"同名且没说清归属就反问"的保护。
+ */
+export interface LookupAccount {
+  id: string;
+  name: string;
+  baseName?: string;
+}
 export interface LookupTag { id: string; name: string }
 export interface LookupMember { id: string; name: string }
 
 /** 解析所需的全部查找表。由调用方从各 store / userDb 组装，本模块不碰 DB */
 export interface LookupContext {
   categories: LookupCategory[];
+  /**
+   * **当前用户自己的**账户，名字不带归属标注 —— 记账的转出侧 / 筛选 / 查询的唯一候选池
+   * （产品规则：记账只能用当前用户自己的账户）。
+   */
   accounts: LookupAccount[];
+  /**
+   * **其他成员名下**的账户：`name` 是带归属的显示名（`小明的现金`，与提示词快照里那一组
+   * 逐字相同），`baseName` 是账户本名。**只**用于转账的**转入**侧 —— 与手动记账一致
+   * （`RecordPage.vue:58-66`：转账 to 侧 `scope="all"`、from 侧 `scope="own"`）。
+   *
+   * 缺省 / 空数组 = 没有别的成员的账户（个人账本，或身份未知时压根没做归属过滤）。
+   * ⚠️ 转出侧与查询侧**绝不要**用它：那两处只能用 `accounts`。
+   */
+  otherAccounts?: LookupAccount[];
   tags: LookupTag[];
   members: LookupMember[];
 }
