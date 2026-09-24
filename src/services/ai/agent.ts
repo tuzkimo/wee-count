@@ -40,6 +40,7 @@ import {
   type ToolOutcome,
 } from "@/services/ai/tools";
 import { TOOLS } from "@/services/ai/tools";
+import { DRAFT_TOOL } from "@/services/ai/toolNames";
 import {
   describeFailure,
   type ChatMessage,
@@ -74,8 +75,44 @@ export const ROUND_LIMIT_TEXT =
 /** 纠错额度用尽（§5.3「DSL 校验失败（纠错后仍失败）」） */
 export const CLARIFY_FAILURE_TEXT = "我没理解这个请求，换个说法试试。";
 
+/**
+ * 「文案说真话」的第二处（`failureText.ts` 管**入口 / 门控**那一层，这里管**一轮的产物**）。
+ *
+ * 真机缺陷：一轮里草稿工具**报过错**、而这一轮结束时**没有任何草稿**时，模型照样回
+ * 「已生成草稿，请确认」—— prompt 与草稿工具的返回正文都明确教它这么写（`tools.ts` 的
+ * DRAFT_TOOL 结果），它不区分"工具成功了"与"我打算记账"。卡片只认 `turn.drafts`
+ * （`AiChatPage.vue:57-69`），于是用户看到"说有草稿"、等不到卡片，只能再催一句
+ * （下一轮模型重试、这次调通 ⇒ 卡片才出现）。
+ *
+ * 判据刻意是**结构**（工具 trace + 本轮草稿数），不是去匹配模型那句话：文本匹配既漏报
+ * （换个说法就不认），又会误伤（别的句子里带上这几个字）。
+ */
+export function draftToolFailed(trace: AgentTurn["trace"]): boolean {
+  return trace.some((t) => t.name === DRAFT_TOOL && !t.ok);
+}
+
+/**
+ * `draftToolFailed` 那一轮之后由**客户端**补的一句确定性提示（模型的话不作数，这句作数）。
+ *
+ * 不是"把草稿补出来"：这一轮确实没有任何草稿对象，卡片的唯一来源是 `turn.drafts`
+ * （绝不凭模型的文本去造一张卡 —— 那才会把钱记到没核对过的账户上）。
+ */
+export const NO_DRAFT_NOTICE_TEXT = "这次没有生成草稿，换个说法再说一次。";
+
 /** 本地库不可用 / 本地查询异常（§5.3「工具执行异常（DB 错）：记 console，回一条通用失败消息」） */
 export const DB_FAILURE_TEXT = "本地数据出了点问题，这次没能查。稍后再试试。";
+
+/**
+ * agent 自己的**收尾文案**（**不是**模型说的话）：它们已经把"这次没成"说清楚了、也从不声称
+ * 有草稿 ⇒ 后面再补一句「没有生成草稿」就是同一件事两个出口。
+ *
+ * ⚠️ 比的是**我们自己导出的常量**（编译期连着的同一份真相），不是去匹配模型那句「已生成草稿，
+ * 请确认」—— 后者换个说法就不认，还会误伤用户/模型别的话。
+ * ⚠️ `ROUND_LIMIT_TEXT` **不在这里**：它只说"我先停在这里"，没说"这次没生成草稿"，
+ * 而这一轮草稿工具报过错时，"没有草稿"正是用户最需要知道的那一条信息。
+ * ⚠️ 声明位置在 `DB_FAILURE_TEXT` **之后**：它是 `const`，写在上面的引用会踩 TDZ（模块直接加载失败）。
+ */
+const HONEST_FINALS: readonly string[] = [CLARIFY_FAILURE_TEXT, DB_FAILURE_TEXT];
 
 /**
  * §8「上游 400（模型不支持视觉等）」的文案（M4）。
@@ -142,6 +179,14 @@ export interface AgentTurn {
   refs: Record<string, string>;
   trace: { round: number; name: string; ok: boolean; note?: string }[];
   aborted: boolean;
+  /**
+   * 这一轮**没有**草稿、而草稿工具报过错时，客户端要**另起**一句的确定性提示（见
+   * `NO_DRAFT_NOTICE_TEXT`）。`undefined` = 不需要补。
+   *
+   * 为什么不把提示拼进 `text`：`text` 是**模型的话**，它同时是落库的历史（下一轮模型自己会读到）
+   * 与用户看到的原文 —— 往里塞客户端的话，等于篡改模型输出，事后也再查不到"模型到底说了什么"。
+   */
+  noDraftNotice?: string;
 }
 
 export interface RunAgentArgs {
@@ -550,7 +595,7 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
     let corrections = 0;
 
     for (let round = 1; round <= ROUND_LIMIT; round++) {
-      if (args.signal.aborted) return { ...buildTurn(state, trace), aborted: true };
+      if (args.signal.aborted) return buildTurn(state, trace, "", true);
 
       const messages = buildMessages(
         system,
@@ -561,11 +606,11 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
         roundMessagesForModel,
       );
       const outcome = await args.deps.transport.chat(messages, TOOLS, args.signal);
-      if (args.signal.aborted) return { ...buildTurn(state, trace), aborted: true };
+      if (args.signal.aborted) return buildTurn(state, trace, "", true);
 
       if (!outcome.ok) {
         // 用户的取消**不是**错误 ⇒ 不渲染任何消息（§5.2 的"丢弃结果"），返回 aborted
-        if (isCanceled(outcome)) return { ...buildTurn(state, trace), aborted: true };
+        if (isCanceled(outcome)) return buildTurn(state, trace, "", true);
         // §8：带图那一轮的 400 多半是"模型不支持视觉" ⇒ 换成一句能自救的话；
         // 不带图的 400 **一个字都不变**（沿用 M2 既有映射，不新增错误码）。
         const text =
@@ -573,7 +618,7 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
             ? IMAGE_UNSUPPORTED_TEXT
             : describeFailure(outcome.failure);
         await persistMessage(persist, "assistant", text);
-        return { ...buildTurn(state, trace), text };
+        return buildTurn(state, trace, text);
       }
 
       const reply = outcome.reply;
@@ -581,7 +626,7 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
         // 收口：占位符在**最后一步**回填（§5.2 第 5 步）。落库的永远是原文。
         const text = fillRefs(reply.text, state.refs);
         await persistAssistant(persist, reply.text, state, trace);
-        return { ...buildTurn(state, trace), text };
+        return buildTurn(state, trace, text);
       }
 
       const roundReport = await runToolRound(reply.toolCalls, { ledgerId: args.ledgerId, lookup, now }, round, refIndex, state);
@@ -595,7 +640,7 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
         if (corrections >= MAX_TOOL_CORRECTIONS) {
           // 额度用尽：给用户一句人话（§5.3「DSL 校验失败（纠错后仍失败）」）
           await persistMessage(persist, "assistant", CLARIFY_FAILURE_TEXT);
-          return { ...buildTurn(state, trace), text: CLARIFY_FAILURE_TEXT };
+          return buildTurn(state, trace, CLARIFY_FAILURE_TEXT);
         }
         // 把错误**回喂给模型一次**：这一轮照常发出去，`roundMessagesForModel` 里已经带上 tool 结果
         corrections++;
@@ -604,12 +649,12 @@ export async function runAgent(args: RunAgentArgs): Promise<AgentTurn> {
 
     // 轮数用尽：这是**收尾**不是错误 ⇒ 给建议 + 提示可手动筛选（§5.3）
     await persistMessage(persist, "assistant", ROUND_LIMIT_TEXT);
-    return { ...buildTurn(state, trace), text: ROUND_LIMIT_TEXT };
+    return buildTurn(state, trace, ROUND_LIMIT_TEXT);
   } catch (e) {
     // 契约是"永不抛"：任何意外（含序言里的）都变成一条消息，而不是未捕获的 rejection
     console.warn("[ai/agent] 编排（含序言）意外抛出：", e);
     await persistMessage(persist, "assistant", DB_FAILURE_TEXT);
-    return { ...buildTurn(state, trace), text: DB_FAILURE_TEXT };
+    return buildTurn(state, trace, DB_FAILURE_TEXT);
   }
 }
 
@@ -636,17 +681,25 @@ async function persistAssistant(
   await persistMessage(p, "assistant", content, payload);
 }
 
-/** 返回值里的 text 由调用方补（这里是"到目前为止"的账：chips/drafts/refs/trace） */
+/** 返回值里的 text 由调用方给（这里是"到目前为止"的账：chips/drafts/refs/trace） */
 function buildTurn(
   state: { chips: unknown[]; drafts: unknown[]; refs: Record<string, string> },
   trace: AgentTurn["trace"],
+  text: string,
+  aborted = false,
 ): AgentTurn {
   return {
-    text: "",
+    text,
     chips: state.chips,
     drafts: state.drafts,
     refs: state.refs,
     trace,
-    aborted: false,
+    aborted,
+    // 文案说真话（真机缺陷）：草稿工具报过错、这一轮结束时**又没有**任何草稿 ⇒ 模型那句话不作数，
+    // 客户端要另起一句「这次没有生成草稿」（`NO_DRAFT_NOTICE_TEXT` + `draftToolFailed`）。
+    // 取消的那一轮不算（`aborted`）：它整轮都会被丢弃，没有用户要安抚。
+    ...(!aborted && state.drafts.length === 0 && draftToolFailed(trace) && !HONEST_FINALS.includes(text)
+      ? { noDraftNotice: NO_DRAFT_NOTICE_TEXT }
+      : {}),
   };
 }

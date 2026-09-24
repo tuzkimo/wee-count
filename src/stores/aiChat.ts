@@ -555,6 +555,12 @@ export const useAiChatStore = defineStore("aiChat", () => {
       promptVersion: PROMPT_VERSION,
     });
     allDrafts.value.push(...readDrafts(message.payload, message.id));
+    // 文案说真话（真机缺陷）：`agent` 判定"这一轮草稿工具报过错、又没有草稿"时会给一句
+    // 确定性提示（`turn.noDraftNotice`）—— 模型常照着 prompt 的话术回「已生成草稿，请确认」，
+    // 而卡片只认 `turn.drafts` ⇒ 用户"看到说有草稿"却等不到卡片，只能再催一句。
+    // ⚠️ 提示**另起一条**，不改模型那句话（它是历史）；判定在 agent 层（文案与判据都在那边，
+    // 本 store 只做编排，不新增第二份文案真相）。
+    if (turn.noDraftNotice !== undefined) appendAssistant(turn.noDraftNotice, null);
   }
 
   function appendAssistant(content: string, payload: AiMessagePayload | null): UiMessage {
