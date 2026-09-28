@@ -44,9 +44,15 @@ jobs:
             exit 1
           fi
 
+      # Node 必须 >= 23（用 24 = 本机开发版本，也是当前 LTS）。
+      # node:sqlite 虽自 22.13.0 起免 --experimental-sqlite，但 module.builtinModules 直到
+      # Node 23 才收录 "node:sqlite" 这条；vitest 用 builtinModules 生成 Vite 的
+      # resolve.external 白名单（vitest/dist/chunks/cli-api.*.js），Node 22 下白名单缺该条目
+      # ⇒ vite:import-analysis 抛 Cannot bundle built-in module "node:sqlite"，20 个用例套件全红。
+      # 加 NODE_OPTIONS=--experimental-sqlite 无效：builtinModules 是编译期静态列表。
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - uses: actions/setup-java@v5
