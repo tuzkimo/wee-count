@@ -50,8 +50,9 @@ class MainActivity : TauriActivity() {
    * （相册、网盘）会在 `openInputStream` / `read` 上阻塞数秒 ⇒ 冷启动白屏、热启动卡住输入
    * 分发（ANR）。单线程池保证多次分享按顺序写盘，latest wins 不变。
    *
-   * 代价：前端首次拉取可能早于落盘 ⇒ 由前端补一次延迟重拉兜底（`useShareIntake` 的
-   * `bootRetryMs`），不靠猜时序。
+   * 代价：前端拉取可能早于落盘 ⇒ 由前端补一次延迟重拉兜底（`useShareIntake` 的
+   * `retryDelayMs`，常量 `PULL_RETRY_MS`）：**每一次事件触发的拉取**扑空后都补一次，
+   * 不只是挂载那一次（热启动不重新挂载），且只补一次、不做轮询，不靠猜时序。
    */
   private fun dispatchSharedImage(intent: Intent?) {
     val action = intent?.action ?: return
