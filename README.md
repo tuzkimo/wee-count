@@ -8,9 +8,13 @@
 
 ## 截图
 
-| 记账 | 流水 | 报表 | 我的 |
-|:---:|:---:|:---:|:---:|
-| ![记账](docs/screenshots/Screenshot_accounting.jpg) | ![流水](docs/screenshots/Screenshot_index.jpg) | ![报表](docs/screenshots/Screenshot_report.jpg) | ![我的](docs/screenshots/Screenshot_me.jpg) |
+| 首页 | 记账 | 报表 |
+|:---:|:---:|:---:|
+| ![首页](docs/screenshots/Screenshot_index.jpg) | ![记账](docs/screenshots/Screenshot_accounting.jpg) | ![报表](docs/screenshots/Screenshot_report.jpg) |
+
+| 账户 | AI 助手 | 我的 |
+|:---:|:---:|:---:|
+| ![账户](docs/screenshots/Screenshot_accounts.jpg) | ![AI 助手](docs/screenshots/Screenshot_ai.jpg) | ![我的](docs/screenshots/Screenshot_me.jpg) |
 
 ## 功能特性
 
