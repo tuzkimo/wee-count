@@ -27,6 +27,7 @@ import { shouldMaskAmounts } from "@/components/ai/amountMask";
 import type { AiMessagePayload } from "@/services/ai/session";
 import AppHeader from "@/components/AppHeader.vue";
 import AmountMaskToggle from "@/components/AmountMaskToggle.vue";
+import ImageLightbox from "@/components/ImageLightbox.vue";
 import MessageBubble from "@/components/ai/MessageBubble.vue";
 import FilterChips from "@/components/ai/FilterChips.vue";
 import DraftCard from "@/components/ai/DraftCard.vue";
@@ -97,15 +98,58 @@ function thumbOf(payload: AiMessagePayload | null): string | null {
  * 这条消息的金额要不要遮（§7.4 乙方案）。**判定只在这一处**：`revealed` 是 store 的内存集合
  * （"本轮主动问出来的"），全局 `amountsHidden` 是遮罩本身的语义（默认不看、需要时点开）。
  *
- * 于是三个金额出口共用同一个判定：
+ * 于是四个金额出口共用同一个判定：
  *  - `MessageBubble` 的正文（回填后的汇总数字）
  *  - `FilterChips` 的金额条件（`≥500`）
  *  - `DraftCard` 的金额（含它的编辑区输入框）
+ *  - 带图消息的缩略图与大图（截图里可能有余额，见下面的查看器）
  * 用户消息不带 refs / chips / drafts（`content` 就是原文），因此这条判定对它没有副作用。
  */
 function isMasked(messageId: string): boolean {
   return shouldMaskAmounts(amountsHidden.value, ai.revealed.has(messageId));
 }
+
+/**
+ * 全屏查看器（点图片 ⇒ 看大图）。**两处入口**共用这一个实例：
+ *  - 历史消息的缩略图（下面 `openMessageImage(m.id)`）；
+ *  - 待发附件的缩略图（`openAttachmentImage()`，经 composer 的 `@preview` 上来）。
+ *
+ * 存的是**消息 id** 而不是拍照式的 `masked` 快照：`revealed` 会变（用户点眼睛揭示的那一刻，
+ * 已经打开着的大图必须跟着变清晰）。`null` = 没打开。
+ * `messageId === null` 表示待发附件 —— 它没有消息 ⇒ 不可能在 `revealed` 里。
+ */
+const viewer = ref<{ src: string; messageId: string | null } | null>(null);
+
+function messageImage(messageId: string): string | null {
+  const message = ai.messages.find((m) => m.id === messageId);
+  return message === undefined ? null : thumbOf(message.payload);
+}
+
+function openMessageImage(messageId: string): void {
+  const src = messageImage(messageId);
+  // 缩略图还在渲染、图却取不到：宁可不打开，也不要弹一个空图
+  if (src === null) return;
+  viewer.value = { src, messageId };
+}
+
+function openAttachmentImage(): void {
+  const image = ai.attachedImage;
+  if (image === null) return;
+  viewer.value = { src: image.dataUrl, messageId: null };
+}
+
+/**
+ * 大图要不要打码：与缩略图**同一条判定**（`isMasked`），附件走同一条规则的"从未揭示"分支。
+ * 附件没有 messageId ⇒ `revealed` 里不可能有它 ⇒ 等价于只看全局遮蔽。
+ */
+const viewerMasked = computed(() => {
+  const target = viewer.value;
+  if (target === null) return false;
+  return shouldMaskAmounts(amountsHidden.value, target.messageId !== null && ai.revealed.has(target.messageId));
+});
+
+/** 待发附件的缩略图与它的大图共用同一个判定（页面算一次，透传给 composer） */
+const attachmentMasked = computed(() => shouldMaskAmounts(amountsHidden.value, false));
 
 /** 「知道了」：先落盘再改内存（失败即 reject）⇒ 失败时卡片留在原地，这里如实报出来 */
 async function onPrivacyDismiss(): Promise<void> {
@@ -287,12 +331,22 @@ watch(
         </p>
         <div v-for="m in ai.messages" :key="m.id" class="mb-3 space-y-2" data-test="ai-message">
           <MessageBubble :message="m" :masked="isMasked(m.id)" />
+          <!--
+            缩略图：§4.3 只换了**发给模型的上下文**，本地这条消息照样要能看见当初发的是哪张图。
+            ⚠️ 两件事都在这一个 `<img>` 上：
+             1. **点开看大图**（`openMessageImage`）：图是 base64 data URL ⇒ 直接给查看器的 `<img>`，
+                不碰文件系统、不用 `convertFileSrc`、也不指望 asset 协议（CSP 没开 asset:）。
+             2. **打码**：与气泡/条件/草稿卡同一条判定（`isMasked`）—— 图里可能有余额，
+                遮蔽开着且这条没被揭示时，缩略图与大图一起模糊（眼睛揭示后两处一起转清晰）。
+          -->
           <img
             v-if="thumbOf(m.payload) !== null"
             :src="thumbOf(m.payload) ?? ''"
             alt="截图"
-            class="h-16 w-16 rounded object-cover"
+            class="h-16 w-16 cursor-pointer rounded object-cover"
+            :class="isMasked(m.id) ? 'blur-lg' : ''"
             data-test="ai-message-thumb"
+            @click="openMessageImage(m.id)"
           />
           <FilterChips
             v-if="chipsOf(m.payload).length > 0"
@@ -376,15 +430,30 @@ watch(
       E12.1：附件**归 store**（`ai.attachedImage`），composer 只渲染 + 发事件 ⇒ 接线在这里。
       `@attach` / `@remove-attachment` 两个方向都必须接：漏掉前者选完图不出预览，
       漏掉后者点 ✕ 没反应 —— 两者都是"页面以为组件自己在管"这类断线的典型形态。
+      `@preview` 是第三个方向：点待发附件的缩略图看大图，与历史缩略图同一个查看器；
+      `:image-masked` 把"要不要打码"的判定从组件里收回到页面（附件跟随全局遮蔽）。
     -->
     <ChatComposer
       :sending="ai.sending"
       :enabled="ai.sendingEnabled"
       :image="ai.attachedImage"
+      :image-masked="attachmentMasked"
       @send="onSend"
       @cancel="onCancel"
       @attach="ai.setAttachedImage"
       @remove-attachment="ai.clearAttachedImage()"
+      @preview="openAttachmentImage"
+    />
+
+    <!--
+      全屏查看器：**只挂这一个实例**（两处入口共用）。`z-[60]` 高于锁屏弹层的 z-50；
+      返回键由它自己用哨兵历史条目实现（Tauri 没有 `onBackButton` 监听，见组件头注释）。
+    -->
+    <ImageLightbox
+      :visible="viewer !== null"
+      :src="viewer?.src ?? ''"
+      :masked="viewerMasked"
+      @close="viewer = null"
     />
   </div>
 </template>

@@ -39,10 +39,23 @@ import { type ImageAttachment, pickImage } from "@/services/ai/imageInput";
  * 附件放进 store 而不是留在这里的局部 `ref`，是因为"选完图切页再回来"必须还在（见 store 上
  * `attachedImage` 的注释）：组件被重挂载时局部状态会连同 DOM 一起消失。
  */
-const props = withDefaults(defineProps<{ sending: boolean; enabled?: boolean; image?: ImageAttachment | null }>(), {
-  enabled: true,
-  image: null,
-});
+const props = withDefaults(
+  defineProps<{
+    sending: boolean;
+    enabled?: boolean;
+    image?: ImageAttachment | null;
+    /**
+     * 待发附件要不要打码（金额遮蔽开着时）。**判定在页面**（`useAmountMask` + `revealed` 属于
+     * 页面/消息，不属于输入栏）⇒ 这里只透传给 `AttachmentPreview`，不自己读 store。
+     */
+    imageMasked?: boolean;
+  }>(),
+  {
+    enabled: true,
+    image: null,
+    imageMasked: false,
+  },
+);
 
 const emit = defineEmits<{
   send: [text: string];
@@ -51,6 +64,8 @@ const emit = defineEmits<{
   attach: [image: ImageAttachment];
   /** 用户撤掉**待发**附件（已落库的历史图不动，§7「不追溯删除」） */
   removeAttachment: [];
+  /** 用户点待发附件的缩略图要看大图 ⇒ 页面打开查看器（与历史缩略图同一个） */
+  preview: [];
 }>();
 
 const text = ref("");
@@ -103,8 +118,10 @@ function onCancel(): void {
     <AttachmentPreview
       v-if="props.image !== null"
       :image="props.image"
+      :masked="props.imageMasked"
       class="mb-2"
       @remove="emit('removeAttachment')"
+      @preview="emit('preview')"
     />
     <div class="flex items-end gap-2">
       <button

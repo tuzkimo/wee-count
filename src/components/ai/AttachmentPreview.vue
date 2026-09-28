@@ -5,13 +5,17 @@
 // 主规格 §7.3 那张"绝不发的"清单在截图场景下**只能靠"用户看得见"兜底**（规格 §7）⇒
 // 提示必须与缩略图同屏：用户点发送之前一定读到它。
 //
-// 本组件**无状态、零 IO**：只渲染传进来的 `image`、只发 `remove`。图片是本地数据，
+// 本组件**无状态、零 IO**：只渲染传进来的 `image`、只发 `remove` / `preview`。图片是本地数据，
 // 这里一次库都不碰（撤掉只是把附件从输入区拿掉，**不动**已落库的历史图，§7）。
+//
+// 缩略图是**可点的**（`preview`）：点它看大图，与历史消息里的缩略图同一个查看器。
+// 谁打开查看器、要不要打码都由页面决定 —— 这里只发事件（`masked` 由调用方按
+// `useAmountMask` 的语义算好传进来：附件没有 messageId ⇒ 不存在"本轮问出来"的 `revealed`）。
 import type { ImageAttachment } from "@/services/ai/imageInput";
 
-defineProps<{ image: ImageAttachment }>();
+withDefaults(defineProps<{ image: ImageAttachment; masked?: boolean }>(), { masked: false });
 
-const emit = defineEmits<{ remove: [] }>();
+const emit = defineEmits<{ remove: []; preview: [] }>();
 </script>
 
 <template>
@@ -20,7 +24,9 @@ const emit = defineEmits<{ remove: [] }>();
       data-test="attachment-thumb"
       :src="image.dataUrl"
       alt="待发送的截图"
-      class="h-16 w-16 shrink-0 rounded object-cover"
+      class="h-16 w-16 shrink-0 cursor-pointer rounded object-cover"
+      :class="masked ? 'blur-lg' : ''"
+      @click="emit('preview')"
     />
     <p class="min-w-0 flex-1 text-xs text-text-secondary" data-test="attachment-notice">截图会整张发给模型，可能含余额等其他信息</p>
     <button
