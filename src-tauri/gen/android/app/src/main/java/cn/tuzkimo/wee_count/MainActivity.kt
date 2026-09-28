@@ -3,11 +3,13 @@ package cn.tuzkimo.wee_count
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.IntentCompat
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.Executors
 
 /**
  * 应用主 Activity。除 Tauri 的启动骨架外，还负责**接住系统分享进来的截图**：
@@ -23,30 +25,43 @@ import java.util.UUID
  * ⚠️ 这里**不写任何用户可见中文**：错误只出 code，文案在前端的 attachText.ts。
  */
 class MainActivity : TauriActivity() {
+  /** 分享的拷贝串行执行：多次分享按顺序写盘 ⇒ latest wins 语义不变 */
+  private val inboxExecutor = Executors.newSingleThreadExecutor()
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
-    // 冷启动：**先写盘、后 super.onCreate** —— WebView 起来时 inbox 已经就绪，
-    // 从构造上消除「JS 拉取得比写盘快」的竞态（cacheDir / contentResolver 在 onCreate 前已可用）。
+    super.onCreate(savedInstanceState)
     // `savedInstanceState != null` = Activity 重建（不是真的冷启动）：那时 intent 还是老的那份，
     // 重复投递会让用户看到一张已经处理过的图。
-    if (savedInstanceState == null) {
-      captureSharedImage(intent)
-    }
-    super.onCreate(savedInstanceState)
+    if (savedInstanceState == null) dispatchSharedImage(intent)
   }
 
   override fun onNewIntent(intent: Intent) {
     // 签名与生成代码逐字一致（generated/TauriActivity.kt:46）；super 负责转发给 PluginManager
     super.onNewIntent(intent)
     setIntent(intent)
-    captureSharedImage(intent)
+    dispatchSharedImage(intent)
   }
 
-  /** 把分享进来的图片拷进 inbox。非分享 intent 直接忽略。 */
-  private fun captureSharedImage(intent: Intent?) {
-    if (intent == null) return
-    val action = intent.action
+  /**
+   * 把拷贝丢到**后台单线程**去跑。
+   *
+   * 为什么不在主线程（更不在 `super.onCreate` 之前）拷：`content://` 背后的云端 provider
+   * （相册、网盘）会在 `openInputStream` / `read` 上阻塞数秒 ⇒ 冷启动白屏、热启动卡住输入
+   * 分发（ANR）。单线程池保证多次分享按顺序写盘，latest wins 不变。
+   *
+   * 代价：前端首次拉取可能早于落盘 ⇒ 由前端补一次延迟重拉兜底（`useShareIntake` 的
+   * `bootRetryMs`），不靠猜时序。
+   */
+  private fun dispatchSharedImage(intent: Intent?) {
+    val action = intent?.action ?: return
     if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+    inboxExecutor.execute { captureSharedImage(intent) }
+  }
+
+  /** 把分享进来的图片拷进 inbox（在后台线程执行）。 */
+  private fun captureSharedImage(intent: Intent) {
+    val action = intent.action
 
     val uris: List<Uri> = if (action == Intent.ACTION_SEND_MULTIPLE) {
       IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
@@ -81,6 +96,7 @@ class MainActivity : TauriActivity() {
         }
       } ?: false
     } catch (e: Exception) {
+      Log.w(TAG, "读分享的图片失败", e)
       false
     }
 
@@ -100,16 +116,21 @@ class MainActivity : TauriActivity() {
 
   /** 原子写 `pending.json`，并先让旧 payload 引用的图片让位（latest wins）。 */
   private fun writeAtomicJson(json: String) {
-    val dir = inboxDir()
-    oldInboxFile(dir)?.let { old -> runCatching { old.delete() } }
-    val pending = File(dir, PENDING_NAME)
-    val tmp = File(dir, "$PENDING_NAME.tmp")
-    tmp.writeText(json)
-    if (!tmp.renameTo(pending)) {
-      // rename 失败（极罕见）⇒ 退化成直接写：宁可让前端读到内容，也不要静默丢掉这次分享
-      pending.writeText(json)
-      tmp.delete()
-    }
+    // ⚠️ 写盘也必须兜异常：cacheDir 不可写 / 磁盘满时 writeText 抛 IOException，逃出去会打崩
+    // onCreate / onNewIntent。写不进去时前端把"没有 pending.json"当"没有分享" —— 这一次分享
+    // 静默失败，但 App 不崩。
+    runCatching {
+      val dir = inboxDir()
+      oldInboxFile(dir)?.let { old -> runCatching { old.delete() } }
+      val pending = File(dir, PENDING_NAME)
+      val tmp = File(dir, "$PENDING_NAME.tmp")
+      tmp.writeText(json)
+      if (!tmp.renameTo(pending)) {
+        // rename 失败（极罕见）⇒ 退化成直接写：宁可让前端读到内容，也不要静默丢掉这次分享
+        pending.writeText(json)
+        tmp.delete()
+      }
+    }.onFailure { Log.w(TAG, "写 inbox 失败", it) }
   }
 
   /** 旧 payload 引用的图片文件；名字由我们生成，这里仍然拒绝任何路径分隔符（防御性）。 */
@@ -125,6 +146,9 @@ class MainActivity : TauriActivity() {
   private fun inboxDir(): File = File(cacheDir, INBOX_DIR).apply { mkdirs() }
 
   private companion object {
+    /** Logcat tag：本任务无单测，真机验收（8 MiB 边界 / read_failed）靠它定位。 */
+    const val TAG = "WeeCount/Share"
+
     /** inbox 子目录（契约见设计 §4.1） */
     const val INBOX_DIR = "share-inbox"
     const val PENDING_NAME = "pending.json"
