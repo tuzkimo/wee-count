@@ -110,8 +110,15 @@ export function useShareIntake(options: { retryDelayMs?: number } = {}): void {
     if (outcome === "none" && mayRetry) scheduleRetry();
   }
 
-  /** 排一次补拉。已有待命定时器 ⇒ 什么都不做（同一时刻最多一个） */
+  /**
+   * 排一次补拉。已有待命定时器 ⇒ 什么都不做（同一时刻最多一个）。
+   *
+   * `stopped` 守卫：`onUnmounted` 只清"已武装"的那个定时器；若某次在途 `pull` 在**卸载之后**
+   * 才 resolve 成 `"none"`，少了这道守卫就会在卸载后重新武装一个定时器（回调照跑 ⇒ 卸载后
+   * 仍读文件、写 store）。生产不可达（`App.vue` 只挂载一次），但守卫是一行。
+   */
   function scheduleRetry(): void {
+    if (stopped) return;
     if (retryTimer !== null) return;
     retryTimer = window.setTimeout(() => {
       retryTimer = null;

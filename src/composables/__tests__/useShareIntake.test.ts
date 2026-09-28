@@ -161,13 +161,17 @@ function imageRaw(count = 1): string {
 }
 
 describe("useShareIntake", () => {
-  it("① 没有待消费的分享 ⇒ 什么都不做，也没有附件", async () => {
+  it("① 没有待消费的分享 ⇒ 什么都不做、没有附件，**且一条日志都不打**", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await mountHost();
     expect(fs.readTextFile).toHaveBeenCalledTimes(1);
     expect(fs.readFile).not.toHaveBeenCalled();
     expect(useAiChatStore().attachedImage).toBeNull();
     // 用的就是 AppCache 这个基目录：不是 cwd、也不是绝对路径
     expect(fs.readTextFile).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 16 });
+    // "文件不存在"是绝大多数启动的正常路径，**不该**有日志。反方向（真错误 ⇒ 有 warn）由 ⑪ 钉住；
+    // 这一条则保证 `isNotFound` 的正则若与真机 plugin-fs 的措辞不符时会红。
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("② 有分享 ⇒ 附件进 store、inbox 被清掉（路径 + baseDir）、跳到 AI 页", async () => {
@@ -310,5 +314,31 @@ describe("useShareIntake", () => {
     expect(useAiChatStore().attachedImage).toBeNull();
     expect(useAiChatStore().imageNotice).toBe("");
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("⑫ 卸载之后才 resolve 的在途拉取不会再武装补拉（卸载后不读文件、不写 store）", async () => {
+    // 挂载时那一次拉取**悬在半空**：读 pending.json 的 promise 由用例自己控
+    let rejectPending: (e: unknown) => void = () => undefined;
+    fs.readTextFile.mockImplementation(
+      () =>
+        new Promise<string>((_resolve, reject) => {
+          rejectPending = reject;
+        }),
+    );
+
+    const wrapper = await mountHost(hostWith({ retryDelayMs: 100 }));
+    expect(fs.readTextFile).toHaveBeenCalledTimes(1);
+
+    // 先卸载（onUnmounted 只清"已武装"的定时器 —— 此刻还没有）
+    wrapper.unmount();
+    // 在途那次拉取随后才 resolve 成 "none"（= 文件不存在）
+    rejectPending(new Error(NOT_FOUND));
+    await flushPromises();
+
+    // 少了 `stopped` 守卫时，这里会武装一个 100ms 的补拉 ⇒ 下面两次断言都会红
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await flushPromises();
+    expect(fs.readTextFile).toHaveBeenCalledTimes(1);
+    expect(useAiChatStore().attachedImage).toBeNull();
   });
 });

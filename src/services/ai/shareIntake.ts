@@ -43,11 +43,15 @@ export interface ShareIntakeDeps {
 export type IntakeOutcome = "none" | "attached" | "failed" | "skipped";
 
 /**
- * 已知的原生错误 code 集合。用 `Record<ShareErrorCode, true>` 而不是数组：**多一个/少一个成员
- * 都是编译错**（`code in ERROR_CODES` 只做成员校验），数组则要靠 `as readonly string[]` 断言
- * 把类型系统挡在外面 —— 那就等于把"漏掉一个 code"留给运行期。
+ * 已知的原生错误 code 集合。类型用 `Record<ShareErrorCode, true>`：**加第 4 个 code 时忘了改这里
+ * 就是编译错（TS2741）**；数组则要靠 `as readonly string[]` 断言把类型系统挡在外面，等于把
+ * "漏掉一个 code"留给运行期。
  *
- * ⚠️ 不要用 `Object.hasOwn`：`tsconfig.json` 的 `lib` 是 ES2020，没有它。
+ * ⚠️ 成员校验必须用 `Object.prototype.hasOwnProperty.call(...)`，**不能**用 `code in ERROR_CODES`：
+ * `in` 会走**原型链**（`"constructor" in ERROR_CODES === true`），于是
+ * `{"v":1,"kind":"error","code":"constructor"}` 会被当成合法 payload，`messageForShareCode`
+ * 查表拿到 `Object` 构造函数 ⇒ `setNotice(函数)` ⇒ AI 页渲染出 `function Object() { [native code] }`。
+ * 同理**不要用 `Object.hasOwn`**：`tsconfig.json` 的 `lib` 是 ES2020，没有它。
  */
 const ERROR_CODES: Record<ShareErrorCode, true> = {
   no_stream: true,
@@ -75,7 +79,8 @@ export function parsePending(raw: string): PendingPayload | null {
 
   if (rec.kind === "error") {
     const code = rec.code;
-    if (typeof code === "string" && code in ERROR_CODES) {
+    // 只认**自有键**（原型链上的 `constructor` / `toString` 不是合法 code）
+    if (typeof code === "string" && Object.prototype.hasOwnProperty.call(ERROR_CODES, code)) {
       return { v: 1, kind: "error", code: code as ShareErrorCode };
     }
     return null;

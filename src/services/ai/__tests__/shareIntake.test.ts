@@ -104,13 +104,17 @@ describe("parsePending：形状与版本", () => {
     });
   });
 
-  it("坏 JSON / 非对象 / 版本不是 1 / 未知 kind / 未知 code / file 空 ⇒ null", () => {
+  it("坏 JSON / 非对象 / 版本不是 1 / 未知 kind / 未知 code / 原型链键 / file 空 ⇒ null", () => {
     expect(parsePending("not json")).toBeNull();
     expect(parsePending("null")).toBeNull();
     expect(parsePending('"x"')).toBeNull();
     expect(parsePending('{"v":2,"kind":"image","file":"a.bin","count":1}')).toBeNull();
     expect(parsePending('{"v":1,"kind":"video","file":"a.bin"}')).toBeNull();
     expect(parsePending('{"v":1,"kind":"error","code":"boom"}')).toBeNull();
+    // 原型链上的键**不是**合法 code：`code in ERROR_CODES` 会把它们判成合法
+    // （`"constructor" in ERROR_CODES === true`）⇒ 查表拿到 Object 构造函数
+    expect(parsePending('{"v":1,"kind":"error","code":"constructor"}')).toBeNull();
+    expect(parsePending('{"v":1,"kind":"error","code":"toString"}')).toBeNull();
     expect(parsePending('{"v":1,"kind":"image","file":""}')).toBeNull();
   });
 
@@ -251,6 +255,22 @@ describe("intakeShare：失败路径（都要消费掉，否则每次回前台�
       expect(calls.consume).toEqual([{ v: 1, kind: "error", code }]);
       expect(calls.pushAi).toBe(1);
     }
+  });
+
+  it("原型链上的键（constructor / toString）不是合法 code ⇒ 按坏形状处理：消费 + 读失败文案", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    for (const code of ["constructor", "toString"]) {
+      seq += 1;
+      const raw = JSON.stringify({ v: 1, kind: "error", code, seq });
+      const { deps, calls } = harness({ readPending: async () => raw });
+      await expect(intakeShare(deps)).resolves.toBe("failed");
+      // 关键：notice 必须是**那句文案**。用 `code in ERROR_CODES` 时这里会变成
+      // `Object` 构造函数（AI 页渲染出 `function Object() { [native code] }`）
+      expect(calls.notices).toEqual([MSG_READ_FAILED]);
+      expect(calls.consume).toEqual([null]);
+      expect(calls.pushAi).toBe(1);
+    }
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
   it("坏形状 ⇒ 按读失败处理 + 消费 + console.warn；紧接着第二次 ⇒ none，不重复弹", async () => {
