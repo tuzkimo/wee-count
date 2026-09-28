@@ -22,6 +22,12 @@
 //
 // ⚠️ 返回的 `mime` **固定 `"image/jpeg"`**：canvas 一律导出 JPEG（`toDataURL("image/jpeg", …)`），
 // 把源类型传下去会让 `payload.image.mime` 与 `dataUrl` 的真实类型**不一致**（E8c）。
+import {
+  MSG_DECODE_FAILED,
+  MSG_READ_FAILED,
+  MSG_TOO_LARGE,
+  MSG_UNSUPPORTED,
+} from "./attachText";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import {
@@ -48,14 +54,8 @@ export interface ImageAttachment {
  */
 export type PickResult = { ok: true; image: ImageAttachment } | { ok: false; message: string } | null;
 
-/**
- * 规格 §8 的用户可见文案。**逐字**照抄，且全文件只此一份（本仓 `toolNames.ts`
- * 记过"同一句话抄两份 ⇒ 两份手写真相迟早漂移"的血泪）。
- */
-const MSG_UNSUPPORTED = "只支持 JPEG / PNG / WebP 图片";
-const MSG_READ_FAILED = "读不到这张图片，请重试";
-const MSG_DECODE_FAILED = "这张图片打不开";
-const MSG_TOO_LARGE = "图片太大，换一张或先裁剪";
+// 用户可见文案（§8）在 `./attachText`：**唯一真相**在那儿 —— 分享链只为一句话，
+// 不该为它把本文件顶部的 `plugin-dialog` 拉进自己的模块图。本文件只用，不定义。
 
 /** 选择器里列的扩展名（**只是 UX 过滤**：连它自己都不参与准入判断，见文件头） */
 const PICK_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
@@ -103,27 +103,21 @@ async function toJpegDataUrl(bytes: Uint8Array, sourceMime: AcceptedMime): Promi
  */
 const realDeps: PickDeps = { open, readFile, toJpegDataUrl };
 
+/** 编码侧的注入缝：`toAttachment` 只依赖这一项 —— 分享链不必为了测它伪造 `open` / `readFile`。 */
+export type EncodeDeps = Pick<PickDeps, "toJpegDataUrl">;
+
 /**
- * 选一张图并压缩成 JPEG data URL（规格 §3 步骤 1–3）。
+ * **字节 → 附件**的唯一实现（M4 §3 步骤 2–3）：魔数定音 → 压缩 → 体积闸门。
+ * 选图链（`pickImage`）与分享链（`shareIntake`）都走它 ⇒ 两条链的文案、阈值与边界判定
+ * 不可能漂移。
  *
- * 步骤与失败文案（§8）一一对应：取消 ⇒ `null`；魔数认不出 ⇒ 只支持…；读失败 ⇒ 读不到…
- * 解不开 / 编码结果为空或非法 ⇒ 打不开；压缩后仍超 1 MiB ⇒ 图片太大…
+ * ⚠️ **永不返回 `null`**：`null` 的语义是"用户在选择器里点了取消"，只可能发生在 `open` 那一步
+ * （分享链没有取消这一步）。
  */
-export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> {
-  const selected = await deps.open({
-    multiple: false,
-    directory: false,
-    filters: [{ name: "图片", extensions: PICK_EXTENSIONS }],
-  });
-  if (selected === null) return null;
-
-  let bytes: Uint8Array;
-  try {
-    bytes = await deps.readFile(selected);
-  } catch {
-    return { ok: false, message: MSG_READ_FAILED };
-  }
-
+export async function toAttachment(
+  bytes: Uint8Array,
+  deps: EncodeDeps,
+): Promise<Exclude<PickResult, null>> {
   // 定音：**魔数**在转码之前拦下伪装（GIF 改名成 .jpg、%PDF-、截断/空字节都走这里）
   const sniffed = sniffImageMime(bytes);
   if (sniffed === null) return { ok: false, message: MSG_UNSUPPORTED };
@@ -148,4 +142,33 @@ export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> 
     // mime 固定 image/jpeg：canvas 导出的就是 JPEG（E8c）
     image: { mime: "image/jpeg", dataUrl: made.dataUrl, width: made.width, height: made.height, bytes: size },
   };
+}
+
+/** 生产默认编码器下的 `toAttachment`（分享链用它，不必知道内部依赖）。 */
+export function toAttachmentWithDefaults(bytes: Uint8Array): Promise<Exclude<PickResult, null>> {
+  return toAttachment(bytes, realDeps);
+}
+
+/**
+ * 选一张图并压缩成 JPEG data URL（规格 §3 步骤 1–3）。
+ *
+ * 步骤与失败文案（§8）一一对应：取消 ⇒ `null`；读失败 ⇒ 读不到…；
+ * 其余（魔数认不出 / 解不开 / 压缩后仍超 1 MiB）全由 `toAttachment` 判决。
+ */
+export async function pickImage(deps: PickDeps = realDeps): Promise<PickResult> {
+  const selected = await deps.open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "图片", extensions: PICK_EXTENSIONS }],
+  });
+  if (selected === null) return null;
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await deps.readFile(selected);
+  } catch {
+    return { ok: false, message: MSG_READ_FAILED };
+  }
+
+  return toAttachment(bytes, deps);
 }
