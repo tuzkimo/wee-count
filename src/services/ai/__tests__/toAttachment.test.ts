@@ -13,6 +13,7 @@ import { type EncodeDeps, toAttachment } from "../imageInput";
 import { MAX_BYTES } from "../imageScale";
 
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 const GIF_BYTES = new TextEncoder().encode("GIF89a......");
 
 /** 用真 base64 编码器造出**解码后恰好 n 字节**的 data URL。 */
@@ -38,6 +39,17 @@ describe("toAttachment：准入判据只有字节头", () => {
         bytes: 3000,
       },
     });
+  });
+
+  // 「mime 固定 image/jpeg」只有在**源是别的类型**时才与"透传嗅探结果"分得开：
+  // PNG 字节进来时转码器收到 image/png，但出去的附件 mime 仍是 image/jpeg（canvas 导出 JPEG）。
+  it("PNG 源字节 ⇒ 成功，且 mime 仍**固定** image/jpeg（不是透传嗅探结果）", async () => {
+    const { deps, toJpegDataUrl } = depsReturning(dataUrlOfBytes(3000));
+    await expect(toAttachment(PNG_BYTES, deps)).resolves.toMatchObject({
+      ok: true,
+      image: { mime: "image/jpeg" },
+    });
+    expect(toJpegDataUrl.mock.calls[0]?.[1]).toBe("image/png");
   });
 
   it("GIF 字节 ⇒ 只支持那条文案，且**根本没进转码器**（定序：先定音、后转码）", async () => {

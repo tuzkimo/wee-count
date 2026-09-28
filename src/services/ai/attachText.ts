@@ -1,7 +1,7 @@
 // src/services/ai/attachText.ts
 // 附件链路的**用户可见文案唯一真相**（M4 §8 四条 + 分享入口 §8 两条）。
 //
-// 为什么独立成模块（而不是从 `imageInput.ts` 导出）：`imageInput.ts:25-26` 顶部 import 了
+// 为什么独立成模块（而不是从 `imageInput.ts` 导出）：`imageInput.ts:31-32` 顶部 import 了
 // `@tauri-apps/plugin-dialog` 与 `plugin-fs`。分享链只需要**一句话**，不该为它把
 // `plugin-dialog` 拉进自己的模块图。
 //
@@ -23,14 +23,18 @@ export const MSG_MULTIPLE_TAKEN = "一次只能记一张，已用第一张";
 /** 原生侧能报的三个错误 code（本设计 §4.2） */
 export type ShareErrorCode = "no_stream" | "read_failed" | "source_too_large";
 
-/** `code → 文案`。**唯一的**原生错误 → 中文的落点。 */
+/**
+ * `code → 文案`。**唯一的**原生错误 → 中文的落点。
+ *
+ * 用 `Record` 而不是 `switch`：本仓 `strict` 没开 `noImplicitReturns`，穷尽 `switch` 的末尾被判定
+ * 为不可达 ⇒ 漏掉分支时编译不报错、运行期却返回 `undefined`；查表让这种遗漏直接变成编译错。
+ */
+const SHARE_ERROR_TEXTS: Record<ShareErrorCode, string> = {
+  no_stream: MSG_NO_STREAM,
+  read_failed: MSG_READ_FAILED,
+  source_too_large: MSG_TOO_LARGE,
+};
+
 export function messageForShareCode(code: ShareErrorCode): string {
-  switch (code) {
-    case "no_stream":
-      return MSG_NO_STREAM;
-    case "read_failed":
-      return MSG_READ_FAILED;
-    case "source_too_large":
-      return MSG_TOO_LARGE;
-  }
+  return SHARE_ERROR_TEXTS[code];
 }
