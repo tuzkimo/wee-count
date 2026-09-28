@@ -339,15 +339,25 @@ watch(
              2. **打码**：与气泡/条件/草稿卡同一条判定（`isMasked`）—— 图里可能有余额，
                 遮蔽开着且这条没被揭示时，缩略图与大图一起模糊（眼睛揭示后两处一起转清晰）。
           -->
-          <img
+          <!--
+            缩略图外面那层框：**描边落在这里**，不画在 `<img>` 上 —— `<img>` 上的 `blur-lg`
+            是 `filter: blur()`，会把同一元素的边框一起糊掉；`overflow-hidden` 顺便夹住外溢的模糊
+            （外溢正是"列表里的小图与背景糊成一片、看起来像没图"的来源）。清晰时也留框。
+          -->
+          <div
             v-if="thumbOf(m.payload) !== null"
-            :src="thumbOf(m.payload) ?? ''"
-            alt="截图"
-            class="h-16 w-16 cursor-pointer rounded object-cover"
-            :class="isMasked(m.id) ? 'blur-lg' : ''"
-            data-test="ai-message-thumb"
-            @click="openMessageImage(m.id)"
-          />
+            class="h-16 w-16 shrink-0 overflow-hidden rounded ring-1 ring-gray-300"
+            data-test="ai-message-thumb-frame"
+          >
+            <img
+              :src="thumbOf(m.payload) ?? ''"
+              alt="截图"
+              class="h-full w-full cursor-pointer object-cover"
+              :class="isMasked(m.id) ? 'blur-lg' : ''"
+              data-test="ai-message-thumb"
+              @click="openMessageImage(m.id)"
+            />
+          </div>
           <FilterChips
             v-if="chipsOf(m.payload).length > 0"
             :chips="chipsOf(m.payload)"

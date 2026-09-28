@@ -20,14 +20,24 @@ const emit = defineEmits<{ remove: []; preview: [] }>();
 
 <template>
   <div class="flex items-start gap-2 rounded-lg border border-gray-200 bg-surface p-2" data-test="attachment-preview">
-    <img
-      data-test="attachment-thumb"
-      :src="image.dataUrl"
-      alt="待发送的截图"
-      class="h-16 w-16 shrink-0 cursor-pointer rounded object-cover"
-      :class="masked ? 'blur-lg' : ''"
-      @click="emit('preview')"
-    />
+    <!--
+      缩略图外那层框：**描边必须落在这里**，不能画在 `<img>` 上 —— `<img>` 上的 `blur-lg`
+      是 `filter: blur()`，会把同一元素的边框一起糊掉；`overflow-hidden` 顺便把外溢的模糊夹住
+      （外溢正是"小图与背景糊成一片"的来源）。清晰时也留着：小图与浅色背景之间同样要有边界。
+    -->
+    <div
+      class="h-16 w-16 shrink-0 overflow-hidden rounded ring-1 ring-gray-300"
+      data-test="attachment-thumb-frame"
+    >
+      <img
+        data-test="attachment-thumb"
+        :src="image.dataUrl"
+        alt="待发送的截图"
+        class="h-full w-full cursor-pointer object-cover"
+        :class="masked ? 'blur-lg' : ''"
+        @click="emit('preview')"
+      />
+    </div>
     <p class="min-w-0 flex-1 text-xs text-text-secondary" data-test="attachment-notice">截图会整张发给模型，可能含余额等其他信息</p>
     <button
       type="button"

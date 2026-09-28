@@ -10,6 +10,9 @@
 //  3. **关闭**：背板、✕、**Android 返回键**。
 //  4. **不清楚的图片**：`masked` 由调用方按 `useAmountMask` / `revealed` 判好传进来
 //     （与 `MessageBubble` 同一条约定：判定不属于"一个查看器"，本组件不读 store）。
+//  5. **被遮时的可见性**：`masked` 时另加一层浅色描边/底 + 居中「已模糊」徽标（模板里有说明，
+//     要点是描边必须落在被 `blur` 的 `<img>` 之外）。揭示后两层一起消失。
+//  6. **安全区**：顶部/底部避开系统状态栏与手势条，✕ 的热区 44×44（见下面 `TAP_SLOP` 上方那段）。
 //
 // ⚠️ 返回键**只能自己实现**：Tauri 的 `onBackButton` 全仓没有监听，Android WebView 里的返回键
 // 就是一次浏览器历史后退（`popstate`，见 `router/__tests__/lockGuard.backNavigation.test.ts:9`）。
@@ -59,6 +62,16 @@ const imageStyle = computed(() => ({
   transform: `translate(${offset.value.x}px, ${offset.value.y}px) scale(${scale.value})`,
   transition: gesturing.value ? "none" : "transform 0.2s ease",
 }));
+
+// 安全区：系统状态栏 / 手势条压在上面的那块（实机反馈：✕ 顶到状态栏下面，被顶栏压住点不到）。
+//
+// 一律走 Tailwind 的 `*-[env(safe-area-inset-*)]` 任意值（仓库既有先例：`App.vue:110` 的
+// `pb-[env(safe-area-inset-bottom)]`）—— 不写行内 `style`：`calc(env(...) + 1rem)` 这类值
+// 在测试环境（happy-dom 的 CSS 解析器）里会被整条丢掉，钉不住。多出来的那点间距由 `mt-*` / `mb-*`
+// 给（绝对定位元素的外边距照样生效）。
+//
+// ⚠️ 根节点的 `padding` 只推**在流内**的内容（图片）；绝对定位的层（描边、✕）的包含块是 padding box，
+// `top-0` 依然是屏幕顶边 ⇒ **每一个绝对定位的元素都得自己再吃一遍安全区**。
 
 /** 位移超过这个数就不算"点按"（双击的第二下、以及"拖完不算点背板"都靠它） */
 const TAP_SLOP = 8;
@@ -238,7 +251,7 @@ onBeforeUnmount(() => {
       <div
         v-if="visible"
         ref="root"
-        class="fixed inset-0 z-[60] flex touch-none items-center justify-center bg-black"
+        class="fixed inset-0 z-[60] flex touch-none items-center justify-center bg-black pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
         data-test="image-lightbox"
         @click="onBackdropClick"
         @pointerdown="onPointerDown"
@@ -246,6 +259,21 @@ onBeforeUnmount(() => {
         @pointerup="onPointerUp"
         @pointercancel="onPointerUp"
       >
+        <!--
+          被遮时必须看得出"这里有图、只是被遮住了"（实机反馈：模糊图与纯黑底糊成一片，
+          看起来像图片没显示出来）。两件事缺一不可：
+            1. 一层**不被模糊**的浅色描边/底 —— 说清边界在哪；
+            2. 居中一句「已模糊」—— 说清它是被遮的，不是没加载出来。
+          ⚠️ 描边**不能画在 `<img>` 上**：`blur-lg` 的 `filter` 会把同一元素的边框/阴影一起糊掉
+          （1px 的线在 16px 模糊下等于不存在），所以它必须是 `<img>` 之外的独立一层。
+          ⚠️ 这两层都得 `pointer-events-none`：描边铺满整屏，一旦吃掉指针事件，
+          "点背板关闭"（`onBackdropClick` 判 `e.target === root`）与拖动/捏合手势就全断了。
+        -->
+        <div
+          v-if="masked"
+          class="pointer-events-none absolute inset-x-4 top-[env(safe-area-inset-top)] bottom-[env(safe-area-inset-bottom)] mb-4 mt-4 rounded-2xl bg-white/5 ring-1 ring-white/30"
+          data-test="lightbox-masked-plate"
+        />
         <img
           ref="image"
           data-test="lightbox-image"
@@ -256,9 +284,16 @@ onBeforeUnmount(() => {
           :class="masked ? 'blur-lg' : ''"
           :style="imageStyle"
         />
+        <p
+          v-if="masked"
+          class="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/70 px-3 py-1 text-xs text-white ring-1 ring-white/30"
+          data-test="lightbox-masked-badge"
+        >
+          已模糊
+        </p>
         <button
           type="button"
-          class="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full bg-black/50 text-lg text-white"
+          class="absolute right-3 top-[env(safe-area-inset-top)] z-10 mt-3 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-lg text-white"
           aria-label="关闭"
           data-test="lightbox-close"
           @click="emit('close')"
