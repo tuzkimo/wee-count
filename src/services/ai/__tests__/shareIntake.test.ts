@@ -141,7 +141,8 @@ describe("intakeShare：没有待消费的分享", () => {
     expect(calls.readPending).toBe(0);
   });
 
-  it("读 pending.json 抛 ⇒ none（下次拉取重试），不弹文案", async () => {
+  it("读 pending.json 抛 ⇒ none（下次拉取重试），不弹文案、**不消费**", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { deps, calls } = harness({
       readPending: async () => {
         throw new Error("fs down");
@@ -149,6 +150,9 @@ describe("intakeShare：没有待消费的分享", () => {
     });
     await expect(intakeShare(deps)).resolves.toBe("none");
     expect(calls.notices).toEqual([]);
+    // 这条路径的**唯一**设计要点：读失败 ≠ 没有分享 ⇒ 一份都不许消费，pending 留待重试
+    expect(calls.consume).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -160,7 +164,8 @@ describe("intakeShare：成功路径", () => {
     expect(calls.attached).toEqual([IMAGE]);
     expect(calls.pushAi).toBe(1);
     expect(calls.consume).toEqual([JSON.parse(raw)]);
-    expect(calls.notices).toEqual([]);
+    // 成功路径**一律**写通知：单图写空串（= 清掉上一次的提示），不是"什么都不写"
+    expect(calls.notices).toEqual([""]);
     // 字节是拿 payload 里的文件名去读的（不是别处猜的）
     expect(calls.readBytes).toEqual([JSON.parse(raw).file]);
   });
@@ -172,7 +177,20 @@ describe("intakeShare：成功路径", () => {
     expect(calls.notices).toEqual([MSG_MULTIPLE_TAKEN]);
   });
 
+  it("上次的多图提示会被下一次**单图成功**清掉（钉住「成功一律写 notice」）", async () => {
+    let raw = imageRaw(3);
+    const { deps, calls } = harness({ readPending: async () => raw });
+    await expect(intakeShare(deps)).resolves.toBe("attached");
+    expect(calls.notices).toEqual([MSG_MULTIPLE_TAKEN]);
+
+    // 第二份原文 = 一次干净的单图分享：只写"多图那一支"的实现在这里会漏掉第二次写入
+    raw = imageRaw(1);
+    await expect(intakeShare(deps)).resolves.toBe("attached");
+    expect(calls.notices).toEqual([MSG_MULTIPLE_TAKEN, ""]);
+  });
+
   it("路由失败**不回滚**附件，也不把异常冒给调用方", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { deps, calls } = harness({
       readPending: async () => imageRaw(),
       pushAi: () => {
@@ -181,11 +199,13 @@ describe("intakeShare：成功路径", () => {
     });
     await expect(intakeShare(deps)).resolves.toBe("attached");
     expect(calls.attached).toEqual([IMAGE]);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("intakeShare：失败路径（都要消费掉，否则每次回前台弹一次）", () => {
-  it("读字节抛 ⇒ 读不到那张图 + 消费", async () => {
+  it("读字节抛 ⇒ 读不到那张图 + 消费 + **跳 AI 页**", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const raw = imageRaw();
     const { deps, calls } = harness({
       readPending: async () => raw,
@@ -197,6 +217,9 @@ describe("intakeShare：失败路径（都要消费掉，否则每次回前台�
     expect(calls.notices).toEqual([MSG_READ_FAILED]);
     expect(calls.consume).toEqual([JSON.parse(raw)]);
     expect(calls.attached).toEqual([]);
+    // 失败也要把用户送到那双眼睛前面：他站在原页面看不到这句话
+    expect(calls.pushAi).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("魔数拒 / 体积超限 ⇒ 用 toAttachment 给的那句话", async () => {
@@ -208,6 +231,7 @@ describe("intakeShare：失败路径（都要消费掉，否则每次回前台�
       await expect(intakeShare(deps)).resolves.toBe("failed");
       expect(calls.notices).toEqual([message]);
       expect(calls.consume).toHaveLength(1);
+      expect(calls.pushAi).toBe(1);
     }
   });
 
@@ -225,6 +249,7 @@ describe("intakeShare：失败路径（都要消费掉，否则每次回前台�
       expect(calls.notices).toEqual([message]);
       // consume 收到的是**解析后**的 payload：`seq` 只用来让原文唯一，parsePending 只挑已知键
       expect(calls.consume).toEqual([{ v: 1, kind: "error", code }]);
+      expect(calls.pushAi).toBe(1);
     }
   });
 

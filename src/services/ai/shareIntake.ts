@@ -42,7 +42,18 @@ export interface ShareIntakeDeps {
 
 export type IntakeOutcome = "none" | "attached" | "failed" | "skipped";
 
-const ERROR_CODES: readonly ShareErrorCode[] = ["no_stream", "read_failed", "source_too_large"];
+/**
+ * 已知的原生错误 code 集合。用 `Record<ShareErrorCode, true>` 而不是数组：**多一个/少一个成员
+ * 都是编译错**（`code in ERROR_CODES` 只做成员校验），数组则要靠 `as readonly string[]` 断言
+ * 把类型系统挡在外面 —— 那就等于把"漏掉一个 code"留给运行期。
+ *
+ * ⚠️ 不要用 `Object.hasOwn`：`tsconfig.json` 的 `lib` 是 ES2020，没有它。
+ */
+const ERROR_CODES: Record<ShareErrorCode, true> = {
+  no_stream: true,
+  read_failed: true,
+  source_too_large: true,
+};
 
 /**
  * 解析 `pending.json` 原文。`null` = 形状/版本不认（调用方按读失败处理**并消费掉**）。
@@ -64,7 +75,7 @@ export function parsePending(raw: string): PendingPayload | null {
 
   if (rec.kind === "error") {
     const code = rec.code;
-    if (typeof code === "string" && (ERROR_CODES as readonly string[]).includes(code)) {
+    if (typeof code === "string" && code in ERROR_CODES) {
       return { v: 1, kind: "error", code: code as ShareErrorCode };
     }
     return null;
@@ -85,7 +96,12 @@ let consumedRaw: string | null = null;
 /** 单飞：多个拉取点撞在一起时只跑一条（boot / visible / resumed / 解锁后）。 */
 let inFlight: Promise<IntakeOutcome> | null = null;
 
-/** 拉取一次。**不抛**：所有失败都以返回值 + 一行文案表达（调用方是事件回调）。 */
+/**
+ * 拉取一次。**只兜 IO 依赖与路由**：`readPending` / `readBytes` / `consume` 的异常在这里被转成
+ * 了返回值或 `console.warn`，`pushAi` 被 `pushAiQuietly` 的 try 包住；但 `toAttachment` /
+ * `setAttachedImage` / `setNotice` 抛错仍会让本函数 **reject**（store 写入方按约定不抛）。
+ * ⇒ 调用方在事件回调里仍需自己兜边界（见 `useShareIntake` 的 `pull()`）。
+ */
 export async function intakeShare(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
   if (inFlight !== null) return inFlight;
   inFlight = runIntake(deps).finally(() => {
@@ -138,18 +154,21 @@ async function runIntake(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
   }
 
   deps.setAttachedImage(made.image);
-  if (payload.count > 1) deps.setNotice(MSG_MULTIPLE_TAKEN);
+  // 成功路径**一律写**：多图给"只取第一张"，单图给空串（= 清掉上一次的多图/失败提示）。
+  // 只写"多图"那一支的话，上一次的「已用第一张」会跨过一次干净的单图分享继续挂在输入框上方。
+  deps.setNotice(payload.count > 1 ? MSG_MULTIPLE_TAKEN : "");
   await consume(deps, payload);
-  try {
-    deps.pushAi();
-  } catch (e) {
-    // 路由失败不回滚附件（设计 §9 第 11 条）：图已经在 store 里，用户进 AI 页照样看得到
-    console.warn("[ai/share] 进 AI 页失败（附件已就位）：", e);
-  }
+  pushAiQuietly(deps);
   return "attached";
 }
 
-/** 出文案 + 消费：失败路径的唯一出口（漏掉消费 = 每次回前台重复弹一次） */
+/**
+ * 失败路径的唯一出口：出文案 + 消费 + 进 AI 页。
+ *
+ * ⚠️ 漏掉消费 = 每次回前台重复弹一次；漏掉 `pushAi` = **用户站在原页面什么都看不到**
+ * （他的意图就是"送到 AI 聊天窗"，失败的那句话必须让他看见）。`pushAi` 内部会判"已在 /ai
+ * 就不推"，所以成功/失败两条路都调它不会堆历史栈。
+ */
 async function noticeAndConsume(
   deps: ShareIntakeDeps,
   payload: PendingPayload | null,
@@ -157,6 +176,16 @@ async function noticeAndConsume(
 ): Promise<void> {
   deps.setNotice(message);
   await consume(deps, payload);
+  pushAiQuietly(deps);
+}
+
+/** 进 AI 页：路由失败不回滚附件（设计 §9 第 11 条）—— 图已经在 store 里，用户进 AI 页照样看得到 */
+function pushAiQuietly(deps: ShareIntakeDeps): void {
+  try {
+    deps.pushAi();
+  } catch (e) {
+    console.warn("[ai/share] 进 AI 页失败：", e);
+  }
 }
 
 async function consume(deps: ShareIntakeDeps, payload: PendingPayload | null): Promise<void> {

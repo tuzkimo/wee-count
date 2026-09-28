@@ -1,5 +1,6 @@
 // useShareIntake 的接线契约（规格 §5.4）：
-//  - 四个拉取点里，**启动**与**回前台**在这里被钉住（解锁补拉由 store 状态驱动，同样在本文件）；
+//  - 五个拉取点里，**启动**、**回前台**、**`tauri://resumed`**、**扑空后的补拉**都在这里被钉住
+//    （解锁补拉由 store 状态驱动，同样在本文件）；
 //  - 锁定时**连 pending.json 都不读**；
 //  - 成功路径走的是**真的** canvas 链（探针把 createImageBitmap 与 canvas 两个方法换掉），
 //    所以"分享进来的图确实变成了附件"这件事不是靠 mock 自己的函数自证的。
@@ -11,15 +12,24 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 
+/** plugin-fs 在文件不存在时抛出的**真实**形态（Rust `io::Error` 的 Display）。 */
+const NOT_FOUND = "No such file or directory (os error 2)";
+
 const fs = vi.hoisted(() => ({
+  // ⚠️ 必须用 plugin-fs **真实抛出的措辞**：`readPending` 据此区分"文件不存在"（⇒ null，不打日志）
+  //    与"真错误"（⇒ 抛出去 + warn + 不消费）。用 `new Error("ENOENT")` 这类假措辞会被判成真错误，
+  //    于是每条用例都多一条 warn，且与真机行为不符。
+  //（这里的字面量与下面 `NOT_FOUND` 同一份：`vi.hoisted` 的工厂跑在模块初始化之前，不能引用它。）
   readTextFile: vi.fn(async (_path: string, _opts?: unknown): Promise<string> => {
-    throw new Error("ENOENT");
+    throw new Error("No such file or directory (os error 2)");
   }),
   readFile: vi.fn(async (_path: string, _opts?: unknown): Promise<Uint8Array> => new Uint8Array([1])),
   remove: vi.fn(async (_path: string, _opts?: unknown): Promise<void> => undefined),
 }));
 vi.mock("@tauri-apps/plugin-fs", () => ({
-  BaseDirectory: { AppCache: 12 },
+  // AppCache 的真实值是 **16**（`@tauri-apps/api/path` 的 `BaseDirectory` 枚举；12 是 `Temp`）。
+  // 随手写 12 的话，"baseDir 传错/漏传"这一整类 bug 在用例里是全绿的。
+  BaseDirectory: { AppCache: 16 },
   readTextFile: fs.readTextFile,
   readFile: fs.readFile,
   remove: fs.remove,
@@ -30,13 +40,15 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const tauriWindow = vi.hoisted(() => ({
   eventNames: [] as string[],
-  listen: (_event: string, _handler: () => void): Promise<() => void> => Promise.resolve(() => undefined),
+  /** 真实保存 handler：只断言事件名的话，把回调换成空函数仍然全绿（第 4 个拉取点就没人钉了） */
+  handlers: [] as Array<() => void>,
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     listen: (event: string, handler: () => void) => {
       tauriWindow.eventNames.push(event);
-      return tauriWindow.listen(event, handler);
+      tauriWindow.handlers.push(handler);
+      return Promise.resolve(() => undefined);
     },
   }),
 }));
@@ -68,7 +80,7 @@ import { MSG_MULTIPLE_TAKEN } from "@/services/ai/attachText";
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
 
 /** 宿主组件：composable 的 onMounted/onUnmounted 需要一个活动实例才会真的跑。 */
-function hostWith(options: { bootRetryMs?: number } = {}) {
+function hostWith(options: { retryDelayMs?: number } = {}) {
   return defineComponent({
     setup() {
       useShareIntake(options);
@@ -78,11 +90,11 @@ function hostWith(options: { bootRetryMs?: number } = {}) {
 }
 
 /**
- * 默认宿主把延迟重拉推到 60 秒后 —— 远大于任何用例的时长，于是 ①–⑥ 的"拉了几次"
- * 断言与生产行为无关地保持确定；重拉本身由 ⑦ 用 `bootRetryMs: 0` 专门验证。
+ * 默认宿主把补拉推到 60 秒后 —— 远大于任何用例的时长，于是 ①–⑥、⑪ 的"拉了几次"
+ * 断言与生产行为无关地保持确定；补拉本身由 ⑦/⑨/⑩ 用小的 `retryDelayMs` 专门验证。
  * （卸载时定时器会被清掉，不留悬挂。）
  */
-const Host = hostWith({ bootRetryMs: 60_000 });
+const Host = hostWith({ retryDelayMs: 60_000 });
 
 let pinia: Pinia;
 let router: Router;
@@ -113,13 +125,14 @@ beforeEach(() => {
   setActivePinia(pinia);
   fs.readTextFile.mockReset();
   fs.readTextFile.mockImplementation(async () => {
-    throw new Error("ENOENT");
+    throw new Error(NOT_FOUND);
   });
   fs.readFile.mockReset();
   fs.readFile.mockResolvedValue(JPEG_BYTES);
   fs.remove.mockReset();
   fs.remove.mockResolvedValue(undefined);
   tauriWindow.eventNames.length = 0;
+  tauriWindow.handlers.length = 0;
   setVisibility("visible");
 
   // 真 canvas 链的探针：happy-dom 里 createImageBitmap 是 undefined、getContext 返回 null。
@@ -154,18 +167,25 @@ describe("useShareIntake", () => {
     expect(fs.readFile).not.toHaveBeenCalled();
     expect(useAiChatStore().attachedImage).toBeNull();
     // 用的就是 AppCache 这个基目录：不是 cwd、也不是绝对路径
-    expect(fs.readTextFile).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 12 });
+    expect(fs.readTextFile).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 16 });
   });
 
-  it("② 有分享 ⇒ 附件进 store、inbox 被清掉、跳到 AI 页", async () => {
-    fs.readTextFile.mockResolvedValue(imageRaw());
+  it("② 有分享 ⇒ 附件进 store、inbox 被清掉（路径 + baseDir）、跳到 AI 页", async () => {
+    const raw = imageRaw();
+    fs.readTextFile.mockResolvedValue(raw);
     await mountHost();
 
     const ai = useAiChatStore();
     expect(ai.attachedImage).toMatchObject({ mime: "image/jpeg", width: 1280, height: 960, bytes: 3000 });
     expect(ai.imageNotice).toBe("");
-    // 图 + pending.json 两份都要删
+    const file = (JSON.parse(raw) as { file: string }).file;
+    // 读字节用的是 payload 里的文件名，且同样落在 AppCache 下
+    expect(fs.readFile).toHaveBeenCalledWith(`share-inbox/${file}`, { baseDir: 16 });
+    // 图 + pending.json 两份都要删，且**都必须带 AppCache**：漏掉 baseDir 时这一整套仍然全绿，
+    // 而真机上的后果是 inbox 永不清空、每次回前台重弹一次文案
     expect(fs.remove).toHaveBeenCalledTimes(2);
+    expect(fs.remove).toHaveBeenCalledWith(`share-inbox/${file}`, { baseDir: 16 });
+    expect(fs.remove).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 16 });
     expect(router.currentRoute.value.path).toBe("/ai");
   });
 
@@ -200,16 +220,23 @@ describe("useShareIntake", () => {
     expect(fs.readTextFile).toHaveBeenCalledTimes(2);
   });
 
-  it("⑥ 订阅的是 tauri://resumed（非 Tauri 环境静默跳过）", async () => {
+  it("⑥ 订阅的是 tauri://resumed，且那个回调**真的会拉**（第 4 个拉取点）", async () => {
     await mountHost();
     expect(tauriWindow.eventNames).toEqual(["tauri://resumed"]);
+    expect(fs.readTextFile).toHaveBeenCalledTimes(1);
+
+    // 只断言事件名的话，把回调换成 `() => {}` 仍然全绿 —— 所以这里真的触发一次
+    expect(tauriWindow.handlers).toHaveLength(1);
+    tauriWindow.handlers[0]();
+    await flushPromises();
+    expect(fs.readTextFile).toHaveBeenCalledTimes(2);
   });
 
   it("⑦ 挂载后还补一次延迟重拉（后台拷贝可能晚于首次拉取落盘）", async () => {
     // 100ms 的注入延迟：远大于"挂载 + 一次 flushPromises"的耗时（实测 1–17ms），
-    // 于是"重拉还在延迟窗口里"这件事可断言。用 0ms 会与本用例自己的等待撞在同一个
-    // 定时器桶里：机器一忙，重拉可能在挂载阶段就已经跑掉，`1 次` 那条断言就假红。
-    await mountHost(hostWith({ bootRetryMs: 100 }));
+    // 于是"补拉还在延迟窗口里"这件事可断言。用 0ms 会与本用例自己的等待撞在同一个
+    // 定时器桶里：机器一忙，补拉可能在挂载阶段就已经跑掉，`1 次` 那条断言就假红。
+    await mountHost(hostWith({ retryDelayMs: 100 }));
     // ① 挂载只拉了一次：同步再拉一次的实现会让这里变成 2 ⇒ 红
     expect(fs.readTextFile).toHaveBeenCalledTimes(1);
 
@@ -223,7 +250,7 @@ describe("useShareIntake", () => {
   });
 
   it("⑧ 卸载后那次延迟重拉被清掉（不留悬挂定时器）", async () => {
-    const wrapper = await mountHost(hostWith({ bootRetryMs: 100 }));
+    const wrapper = await mountHost(hostWith({ retryDelayMs: 100 }));
     expect(fs.readTextFile).toHaveBeenCalledTimes(1);
 
     wrapper.unmount();
@@ -231,5 +258,57 @@ describe("useShareIntake", () => {
     await flushPromises();
     // 定时器没清 ⇒ 卸载后还会拉一次（对着已经不存在的组件写 store）
     expect(fs.readTextFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("⑨ 热启动补拉：回前台那次扑空后仍会再补一次（挂载时的定时器早已不在）", async () => {
+    // 热启动的真实序列：`App.vue` **不会**重新挂载 ⇒ 挂载时排的那个定时器早就用掉了，
+    // 只剩 visibilitychange / tauri://resumed 两次拉取。这两次都扑空时若不再补，
+    // 用户看到的就是"分享了一把，什么都没发生"。
+    // 100ms 的注入延迟（同 ⑦）：远大于一次 flushPromises（实测 1–17ms），"补拉还没到点"才可断言。
+    await mountHost(hostWith({ retryDelayMs: 100 }));
+    expect(fs.readTextFile).toHaveBeenCalledTimes(1); // 挂载那次（扑空）
+
+    // 挂载排的那次补拉到点并用掉 ⇒ 此刻**没有**待命定时器（否则下面那次会被"已有定时器"挡掉）
+    await vi.waitFor(() => expect(fs.readTextFile).toHaveBeenCalledTimes(2), { timeout: 2000 });
+    await flushPromises();
+
+    // 回前台拉一次、又扑空 ⇒ 必须**再排一次**补拉
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    expect(fs.readTextFile).toHaveBeenCalledTimes(3);
+
+    // 那次补拉真的会跑（去掉"扑空补拉"⇒ 停在这条上 ⇒ 红）
+    await vi.waitFor(() => expect(fs.readTextFile).toHaveBeenCalledTimes(4), { timeout: 2000 });
+  });
+
+  it("⑩ 回前台排的那次补拉再扑空 ⇒ 不再链下一次（只补一次，不是轮询）", async () => {
+    await mountHost(hostWith({ retryDelayMs: 100 }));
+    // 先把挂载排的那次用掉，让"事件拉取"能自己排一个
+    await vi.waitFor(() => expect(fs.readTextFile).toHaveBeenCalledTimes(2), { timeout: 2000 });
+    await flushPromises();
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    // 3 = 回前台那次拉取，4 = 它排出来的补拉
+    await vi.waitFor(() => expect(fs.readTextFile).toHaveBeenCalledTimes(4), { timeout: 2000 });
+
+    // 补拉是"定时器触发"（不可再排）⇒ 再等三个延迟周期也涨不到 5
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await flushPromises();
+    expect(fs.readTextFile).toHaveBeenCalledTimes(4);
+  });
+
+  it("⑪ 读 pending.json 抛真错误（不是「不存在」）⇒ 仍按 none 处理、有 warn、不消费、不弹文案", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // capability / scope 配错在真机上就长这样：**不是** "os error 2"
+    fs.readTextFile.mockRejectedValue(new Error("forbidden path: not allowed by scope"));
+
+    await mountHost();
+    expect(fs.readTextFile).toHaveBeenCalledTimes(1);
+    // "读不到" ≠ "这次没有分享"：一份都不许消费（否则图还躺在 inbox 里却已经记账了）
+    expect(fs.remove).not.toHaveBeenCalled();
+    expect(useAiChatStore().attachedImage).toBeNull();
+    expect(useAiChatStore().imageNotice).toBe("");
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
