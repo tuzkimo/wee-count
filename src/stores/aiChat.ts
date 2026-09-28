@@ -316,6 +316,20 @@ export const useAiChatStore = defineStore("aiChat", () => {
     attachedImage.value = null;
   }
   /**
+   * 分享入口的**一行提示**（本设计 §5.5）：空串 = 不渲染。
+   *
+   * 只由分享链写（`useShareIntake` → `intakeShare` 的 `setNotice`）：多图时提示"只取第一张"、
+   * 失败时提示 §8 的那句话。⚠️ 不复用 `error`（那是助手回答的语义），也不复用 `ChatComposer`
+   * 的局部 `imageError`（那是选图语义）—— 两条来源混一处，文案归属就说不清了。
+   *
+   * 清除时机：只被"下一次分享处理"覆盖（成功或失败都会写），**不做定时器、不自动消失**：
+   * 它说的是"上一张图怎么了"，跟着下一次操作走。
+   */
+  const imageNotice = ref("");
+  function setImageNotice(text: string): void {
+    imageNotice.value = text;
+  }
+  /**
    * 会话里**全部**草稿（含已确认 / 已拒绝）——**唯一**的草稿真相。
    *
    * 每次 `load()` 都从 payload 重建（`readDrafts`），所以"决定"跨页面存活这件事只有一份实现：
@@ -1292,6 +1306,8 @@ export const useAiChatStore = defineStore("aiChat", () => {
     attachedImage,
     setAttachedImage,
     clearAttachedImage,
+    imageNotice,
+    setImageNotice,
     load,
     send,
     cancel,

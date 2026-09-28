@@ -437,6 +437,19 @@ watch(
     </p>
 
     <!--
+      分享入口的一行提示（本设计 §5.5）：多图"只取了第一张"、或分享失败的那句话。
+      位置刻意贴着输入区（与 `ChatComposer` 内部那条选图错误同一个视觉位置），
+      来源不同所以是两条独立的 <p>：那条说"你刚选的图怎么了"，这条说"你刚分享的图怎么了"。
+    -->
+    <p
+      v-if="ai.imageNotice !== ''"
+      class="border-t border-gray-100 px-4 py-2 text-xs text-red-500"
+      data-test="ai-share-notice"
+    >
+      {{ ai.imageNotice }}
+    </p>
+
+    <!--
       E12.1：附件**归 store**（`ai.attachedImage`），composer 只渲染 + 发事件 ⇒ 接线在这里。
       `@attach` / `@remove-attachment` 两个方向都必须接：漏掉前者选完图不出预览，
       漏掉后者点 ✕ 没反应 —— 两者都是"页面以为组件自己在管"这类断线的典型形态。

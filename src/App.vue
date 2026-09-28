@@ -3,6 +3,7 @@ import { computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Home, BarChart3, Wallet, User, Sparkles } from "lucide-vue-next";
 import { useAutoLock } from "@/composables/useAutoLock";
+import { useShareIntake } from "@/composables/useShareIntake";
 import { useLockStore } from "@/stores/lock";
 import { useAuthStore } from "@/stores/auth";
 import { useAiChatStore } from "@/stores/aiChat";
@@ -17,6 +18,10 @@ const ai = useAiChatStore();
 
 // 前后台切换自动锁定：挂在根组件上，随应用生命周期只注册一次。
 useAutoLock();
+
+// 系统分享进来的截图：**必须挂在 useAutoLock 之后** —— 同一个 visibilitychange 事件按注册
+// 顺序派发，自动锁的判定要先跑，我们才会读到更新过的 isLocked（见该 composable 的文件头）。
+useShareIntake();
 
 /**
  * 锁定态必须**立刻**把人赶到解锁页（R70）。
