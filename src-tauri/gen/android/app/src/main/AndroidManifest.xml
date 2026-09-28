@@ -22,6 +22,22 @@
                 <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <!--
+              系统分享目标：截图（或相册里任意图片）→ 分享 → 「一起数钱」。
+              ⚠️ 只声明 image/*：视频/PDF 不该出现在这个入口里（设计 §1）。
+              ⚠️ 本 Activity 已经是 singleTask（:15）、exported=true（:18）⇒ 热启动会走
+                 onNewIntent，两处都不需要改。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
 
         <provider
