@@ -8,6 +8,7 @@ import { usePrivacyStore } from "@/stores/privacy";
 import { useAiChatStore } from "@/stores/aiChat";
 import { SCREENSHOT_PROTECTION_DEFAULT } from "@/services/privacySettings";
 import { applyScreenshotProtection } from "@/services/screenshotProtection";
+import { decideBootLock } from "@/services/sessionLock";
 
 const app = createApp(App);
 app.use(createPinia()); // 必须先装 Pinia，useLockStore() 才有活跃实例
@@ -21,7 +22,12 @@ app.use(createPinia()); // 必须先装 Pinia，useLockStore() 才有活跃实�
  *    `localStorage.current_user_id` 无口令恢复会话并打开用户库，页面能读到真实数据。
  *    真实链路里 `load()` 有 ≥3 个 await（Tauri 下还要等 plugin-store 的 IPC），
  *    所以「先 use(router) 再装锁」不是偶发竞态，是稳定输掉。
- *    冷启动总是要求解锁：`load()` 之后立刻 `lock()`。
+ *    冷启动是否上锁**不在这里拍**：交给 `decideBootLock()`（`services/sessionLock.ts`，判据是
+ *    `utils/autoLock.ts` 的 `shouldLockOnBoot`）。它把自动锁窗口延伸到跨进程 ——
+ *    "切走 20 秒回来"只要碰上进程被杀/Activity 重建/WebView 重载也**不再**要求解锁；
+ *    而"用户自己划掉后台"仍然要求解锁：原生写下的会话记录里既有 `reason`，也有任务号
+ *    （`reconcileTask()` 比对 task id 来判"这次还是不是同一个任务"，因为本机 ROM 的划掉是
+ *    force-stop + SIGKILL，只靠 `onDestroy(isFinishing)` 是在跟杀进程抢时间）。
  * 2. 整个门禁——**包括 `useLockStore()` 本身**——必须包在 try 里。它抛错时降级为
  *    「不锁启动」，但绝不能因此跳过 mount：Android 上跳过 mount 就是白屏。
  *    `app.use(router)` 同理包在 try 里：注册失败只是功能降级，同样不许挡住宿主流程
@@ -42,7 +48,18 @@ async function bootstrap(): Promise<void> {
     try {
       const lock = useLockStore();
       await lock.load();
-      if (lock.isLockConfigured) lock.lock();
+      if (lock.isLockConfigured) {
+        // 判定**单开一个 try**：它抛错时的方向必须是"照锁不误"，而不是随外层的
+        // "门禁失败 ⇒ 降级为不锁启动"一起放行。今天 `decideBootLock` 内部已经把
+        // 所有 IO 失败收敛成从严返回值，这里是防将来改动把方向弄反。
+        let mustLock = true;
+        try {
+          mustLock = await decideBootLock(lock.autoLockSeconds);
+        } catch (cause) {
+          console.error("启动门禁判定失败，按从严处理（要求解锁）", cause);
+        }
+        if (mustLock) lock.lock();
+      }
     } catch (cause) {
       console.error("启动门禁失败，降级为不锁启动", cause);
     }

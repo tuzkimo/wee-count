@@ -59,27 +59,63 @@ export function useShareIntake(options: { retryDelayMs?: number } = {}): void {
   /** 待命中的补拉定时器：非 null 时不再排第二个（多个拉取点撞在一起也不叠定时器） */
   let retryTimer: number | null = null;
 
+  /**
+   * 读 `pending.json` 的原文。
+   *
+   * 文件不存在 = 没有待消费的分享（绝大多数启动都走这条，**不打日志**）；其它错误
+   * （capability/scope 配错、权限、磁盘）必须**抛出去**：由 shareIntake 的 catch 与 pull()
+   * 的边界 catch 记录，并且**不消费** —— 否则真机上最可能的失败与"这次没有分享"表现逐字相同
+   * （不崩、不提示、不消费、图还躺在 inbox），根本查不出原因。
+   *
+   * `readPending` 与 `consume` 的复核都用它：两处读的必须是同一个口径。
+   */
+  async function readPendingRaw(): Promise<string | null> {
+    try {
+      // AppCache = `<cacheDir>`，与 Kotlin 写盘的目录是同一个
+      return await readTextFile(inboxPath(PENDING_NAME), { baseDir: BaseDirectory.AppCache });
+    } catch (e) {
+      if (isNotFound(e)) return null;
+      throw e;
+    }
+  }
+
   const deps: ShareIntakeDeps = {
     isLocked: () => lock.isLocked,
-    readPending: async () => {
-      try {
-        // AppCache = `<cacheDir>`，与 Kotlin 写盘的目录是同一个
-        return await readTextFile(inboxPath(PENDING_NAME), { baseDir: BaseDirectory.AppCache });
-      } catch (e) {
-        // 文件不存在 = 没有待消费的分享（绝大多数启动都走这条，**不打日志**）；
-        // 其它错误（capability/scope 配错、权限、磁盘）必须**抛出去**：由 shareIntake 的 catch
-        // 与 pull() 的边界 catch 记录，并且**不消费** —— 否则真机上最可能的失败与"这次没有分享"
-        // 表现逐字相同（不崩、不提示、不消费、图还躺在 inbox），根本查不出原因。
-        if (isNotFound(e)) return null;
-        throw e;
-      }
-    },
+    readPending: readPendingRaw,
     readBytes: (file) => readFile(inboxPath(file), { baseDir: BaseDirectory.AppCache }),
-    consume: async (payload: PendingPayload | null) => {
-      if (payload !== null && payload.kind === "image") {
-        await remove(inboxPath(payload.file), { baseDir: BaseDirectory.AppCache });
+    consume: async (payload: PendingPayload | null, raw: string) => {
+      // compare-and-delete：只有盘上还是**我刚刚处理的那一份**才允许删。
+      //
+      // 为什么需要复核：原生写新一次分享时会连带删掉旧 payload 引用的图（latest wins，设计 §4.3），
+      // 所以在"读到 → 处理完"这段（读字节 + canvas 压缩，几十~几百毫秒）里，盘上完全可能已经换成
+      // 新的一份。此时无条件删 `pending.json` 就是把**用户刚分享的那一次**吞掉（那次分享静默丢失，
+      // 只剩一个孤儿 .bin）。旧顺序（先删图）靠"删图抛错就跳过删 pending.json"意外躲过了这一点 ——
+      // 那个 bug 顺手提供了保护，所以修 Bug ② 时必须把这份保护显式化。
+      let current: string | null;
+      try {
+        current = await readPendingRaw();
+      } catch (e) {
+        // 读不出来（不是"文件不存在"）：无从判断，一律不删 —— 宁可留着残留让下次拉取自愈，
+        // 也不赌一次盲删删掉的不是别人的数据。
+        console.warn("[ai/share] 复核 pending.json 失败，本次不删任何文件：", e);
+        return;
       }
+      if (current !== raw) return;
+
+      // 顺序是**规格**：`pending.json` 才是"这份分享已经处理过"的权威标记，先删它，
+      // 即使随后删图失败或进程在这一刻被杀，盘上也不会留下"指着一个不存在文件的 pending.json"。
+      // 旧顺序在被中断时正好留下那种残留：之后每次回前台都弹一次「读不到这张图片」，
+      // 而前端的内存去重又让它自己清不掉 —— 只能重启 App（这就是真机上的 Bug ②）。
       await remove(inboxPath(PENDING_NAME), { baseDir: BaseDirectory.AppCache });
+      if (payload !== null && payload.kind === "image") {
+        try {
+          await remove(inboxPath(payload.file), { baseDir: BaseDirectory.AppCache });
+        } catch (e) {
+          // 图已经不在（被原生 latest wins 删掉）不该影响本次结果，也不该把异常抛给
+          // shareIntake 变成一条"消费失败"的日志 —— 这次分享本身是成功的。
+          console.warn("[ai/share] 删 inbox 图片失败（不影响本次结果）：", e);
+        }
+      }
     },
     toAttachment: (bytes) => toAttachmentWithDefaults(bytes),
     setAttachedImage: (image) => ai.setAttachedImage(image),

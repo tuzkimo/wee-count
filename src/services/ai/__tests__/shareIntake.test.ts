@@ -38,6 +38,8 @@ function harness(overrides: Partial<ShareIntakeDeps> = {}) {
     readPending: 0,
     readBytes: [] as string[],
     consume: [] as unknown[],
+    /** 每次消费带上来的原文：实现方靠它做 compare-and-delete（"盘上还是这一份吗"） */
+    consumeRaws: [] as string[],
     attached: [] as ImageAttachment[],
     notices: [] as string[],
     pushAi: 0,
@@ -52,8 +54,9 @@ function harness(overrides: Partial<ShareIntakeDeps> = {}) {
       calls.readBytes.push(file);
       return new Uint8Array([1, 2, 3]);
     },
-    consume: async (payload) => {
+    consume: async (payload, raw) => {
       calls.consume.push(payload);
+      calls.consumeRaws.push(raw);
     },
     toAttachment: async () => ({ ok: true, image: IMAGE }),
     setAttachedImage: (image) => {
@@ -319,5 +322,44 @@ describe("intakeShare：去重与单飞", () => {
     expect([a, b]).toEqual(["attached", "attached"]);
     expect(reads).toBe(1);
     expect(calls.attached).toHaveLength(1);
+  });
+
+  it("error payload 带唯一 id（原生侧 F4）：id 不同的两次失败都必须出文案与消费，不被按原文去重吞掉", async () => {
+    // 原生侧给 error payload 加 id 就是为了这一条：同一个 code 两次写出的 JSON 若逐字节相同，
+    // `consumedRaw` 会把第二次判成"这次没有分享" —— 用户看到的是"分享进来没反应，重启才好"。
+    seq += 1;
+    const first = JSON.stringify({ v: 1, kind: "error", code: "read_failed", id: `e${seq}` });
+    seq += 1;
+    const second = JSON.stringify({ v: 1, kind: "error", code: "read_failed", id: `e${seq}` });
+    const raws = [first, second];
+    const { deps, calls } = harness({ readPending: async () => raws.shift() ?? null });
+
+    await expect(intakeShare(deps)).resolves.toBe("failed");
+    await expect(intakeShare(deps)).resolves.toBe("failed");
+
+    // 两次都要弹（第二次被吞掉的话这里只有一条）
+    expect(calls.notices).toEqual([MSG_READ_FAILED, MSG_READ_FAILED]);
+    expect(calls.consume).toHaveLength(2);
+    // id 不进 payload：解析只挑已知键
+    expect(calls.consume).toEqual([
+      { v: 1, kind: "error", code: "read_failed" },
+      { v: 1, kind: "error", code: "read_failed" },
+    ]);
+  });
+
+  it("消费时把「读到的那份原文」一并交出去（实现方据此做 compare-and-delete）", async () => {
+    // 只有拿到原文，实现方才能判断"盘上现在还是不是我处理的那一份"：
+    // 原生写新分享时会顺带删掉旧 payload 引用的图（latest wins），无条件删 pending.json
+    // 会把用户刚分享的那一次吞掉。契约断了 ⇒ 这条红。
+    const first = imageRaw();
+    const second = imageRaw();
+    const raws = [first, second];
+    const { deps, calls } = harness({ readPending: async () => raws.shift() ?? null });
+
+    await expect(intakeShare(deps)).resolves.toBe("attached");
+    expect(calls.consumeRaws).toEqual([first]);
+
+    await expect(intakeShare(deps)).resolves.toBe("attached");
+    expect(calls.consumeRaws).toEqual([first, second]);
   });
 });

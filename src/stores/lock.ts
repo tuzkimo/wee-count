@@ -9,6 +9,7 @@ import {
   type LockType,
 } from "@/services/lockStorage";
 import { usePrefsStore } from "@/stores/prefs";
+import { markSessionAuthenticated } from "@/services/sessionLock";
 import { hashPassword, verifyPassword } from "@/utils/passwordHash";
 import { PIN_LENGTH, isWeakPin } from "@/utils/pin";
 import { PATTERN_MIN_DOTS, encodePattern, isValidPattern } from "@/utils/pattern";
@@ -104,6 +105,14 @@ export const useLockStore = defineStore("lock", () => {
   function unlock(): void {
     isLocked.value = false;
     failedAttempts.value = 0;
+    // 记下"本段前台期已过门禁"（落盘，见 `services/sessionLock.ts`）：页面重载（dev HMR、
+    // 渲染进程崩溃）会丢掉全部内存状态，不落盘就会把正在用 App 的人再踢回解锁页一次。
+    // 原生在 onStop / onDestroy 时删掉这个标记 ⇒ 它只对当前这一段前台期有效。
+    //
+    // 用 `void` 而不是 await：解锁必须同步生效（调用方是解锁页的提交动作）。
+    // `markSessionAuthenticated()` 内部把所有失败都收敛成一条 warn，**不会 reject**，
+    // 因此不会产生 unhandled rejection。
+    void markSessionAuthenticated();
   }
 
   /**

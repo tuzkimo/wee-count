@@ -28,7 +28,11 @@ export interface ShareIntakeDeps {
   isLocked: () => boolean;
   readPending: () => Promise<string | null>;
   readBytes: (file: string) => Promise<Uint8Array>;
-  consume: (payload: PendingPayload | null) => Promise<void>;
+  /**
+   * 消费掉这份分享。第二个参数是**读到的那份原文**：实现方据此做 compare-and-delete ——
+   * 只有盘上还是这一份才允许删（原生写新分享时会连带删掉旧 payload 引用的图，见设计 §4.3）。
+   */
+  consume: (payload: PendingPayload | null, raw: string) => Promise<void>;
   /**
    * 收窄掉 `null`：`PickResult` 里的 `null` 语义是"用户在选择器里点了取消"，而分享链**没有**这一步
    * （任务 1 的 `toAttachment` 本身就声明为永不返回 `null`，见 `imageInput.ts` 的说明）。
@@ -134,12 +138,12 @@ async function runIntake(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
   const payload = parsePending(raw);
   if (payload === null) {
     console.warn("[ai/share] pending.json 形状不认，按读失败处理并消费");
-    await noticeAndConsume(deps, null, MSG_READ_FAILED);
+    await noticeAndConsume(deps, null, raw, MSG_READ_FAILED);
     return "failed";
   }
 
   if (payload.kind === "error") {
-    await noticeAndConsume(deps, payload, messageForShareCode(payload.code));
+    await noticeAndConsume(deps, payload, raw, messageForShareCode(payload.code));
     return "failed";
   }
 
@@ -148,13 +152,13 @@ async function runIntake(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
     bytes = await deps.readBytes(payload.file);
   } catch (e) {
     console.warn("[ai/share] 读图片字节失败：", e);
-    await noticeAndConsume(deps, payload, MSG_READ_FAILED);
+    await noticeAndConsume(deps, payload, raw, MSG_READ_FAILED);
     return "failed";
   }
 
   const made = await deps.toAttachment(bytes);
   if (!made.ok) {
-    await noticeAndConsume(deps, payload, made.message);
+    await noticeAndConsume(deps, payload, raw, made.message);
     return "failed";
   }
 
@@ -162,7 +166,7 @@ async function runIntake(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
   // 成功路径**一律写**：多图给"只取第一张"，单图给空串（= 清掉上一次的多图/失败提示）。
   // 只写"多图"那一支的话，上一次的「已用第一张」会跨过一次干净的单图分享继续挂在输入框上方。
   deps.setNotice(payload.count > 1 ? MSG_MULTIPLE_TAKEN : "");
-  await consume(deps, payload);
+  await consume(deps, payload, raw);
   pushAiQuietly(deps);
   return "attached";
 }
@@ -177,10 +181,11 @@ async function runIntake(deps: ShareIntakeDeps): Promise<IntakeOutcome> {
 async function noticeAndConsume(
   deps: ShareIntakeDeps,
   payload: PendingPayload | null,
+  raw: string,
   message: string,
 ): Promise<void> {
   deps.setNotice(message);
-  await consume(deps, payload);
+  await consume(deps, payload, raw);
   pushAiQuietly(deps);
 }
 
@@ -193,9 +198,13 @@ function pushAiQuietly(deps: ShareIntakeDeps): void {
   }
 }
 
-async function consume(deps: ShareIntakeDeps, payload: PendingPayload | null): Promise<void> {
+async function consume(
+  deps: ShareIntakeDeps,
+  payload: PendingPayload | null,
+  raw: string,
+): Promise<void> {
   try {
-    await deps.consume(payload);
+    await deps.consume(payload, raw);
   } catch (e) {
     // 删除失败不重试、不阻塞：原文已在 `consumedRaw` 里，本进程内不会再处理它
     console.warn("[ai/share] 消费 inbox 失败：", e);

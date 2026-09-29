@@ -23,6 +23,9 @@ const state = vi.hoisted(() => ({
   aiPrivacyLoads: 0,
   aiPrivacyAfterRender: false,
   aiPrivacyThrows: false,
+  /** 跨进程窗口判定的替身取值：true = 本次启动要求解锁 */
+  bootLock: true,
+  decideThrows: false,
 }));
 
 vi.mock("@/App.vue", () => ({
@@ -63,6 +66,7 @@ vi.mock("@/stores/lock", () => ({
     if (state.lockStoreThrows) throw new Error("no active pinia");
     return {
       isLockConfigured: true,
+      autoLockSeconds: 60,
       load: async () => {
         state.order.push("load");
         if (state.loadRejects) throw new Error("readAppLock failed");
@@ -71,6 +75,21 @@ vi.mock("@/stores/lock", () => ({
         state.order.push("lock");
       },
     };
+  },
+}));
+
+/**
+ * 跨进程窗口判定的替身。
+ *
+ * 为什么必须 mock：真身要读原生写的会话记录，**没有 Tauri 运行时它恒返回 true**
+ * （从严兜底）—— 也就是说不 mock 的话"判定说不用锁"这条路径根本无法表达，
+ * 而它恰恰是 Bug ① 的修复内容。`main.coldStart.e2e.test.ts` 走的是真身 + 无运行时那条路。
+ */
+vi.mock("@/services/sessionLock", () => ({
+  decideBootLock: async () => {
+    state.order.push("decideBootLock");
+    if (state.decideThrows) throw new Error("session record unreadable");
+    return state.bootLock;
   },
 }));
 
@@ -124,6 +143,8 @@ beforeEach(() => {
   state.aiPrivacyLoads = 0;
   state.aiPrivacyAfterRender = false;
   state.aiPrivacyThrows = false;
+  state.bootLock = true;
+  state.decideThrows = false;
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -147,7 +168,8 @@ describe("main.ts 启动顺序", () => {
     expect(state.order).toEqual([
       "useLockStore",
       "load",
-      "lock", // 冷启动总是要求解锁
+      "decideBootLock", // 配置了锁就必须先问一次"这一段算不算过过门禁"
+      "lock", // 本次启动判定为需要解锁
       "usePrivacyStore",
       "privacy-load", // 截屏防护的取值也要在 mount 之前读好
       "router-install", // 只有锁就位后 router 才会发起初始导航
@@ -155,6 +177,43 @@ describe("main.ts 启动顺序", () => {
       "render", // = app.mount()
     ]);
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Bug ① 的接线回归保护：改回改造前的 `if (lock.isLockConfigured) lock.lock()` 这条会红。
+   *
+   * 光有 `shouldLockOnBoot` / `decideBootLock` 的纯函数用例挡不住接线写错：真身在没有 Tauri
+   * 运行时恒返回 true，所以"判定为不需要锁"这条路径只有在接线层 mock 掉才验得到。
+   */
+  it("判定为「本段已经过门禁」⇒ 不调 lock()，但判定仍要发生在 router 之前", async () => {
+    state.bootLock = false;
+
+    await startApp();
+
+    expect(state.order).toEqual([
+      "useLockStore",
+      "load",
+      "decideBootLock",
+      "usePrivacyStore",
+      "privacy-load",
+      "router-install",
+      "screenshot:true",
+      "render",
+    ]);
+    expect(state.order).not.toContain("lock");
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("判定抛错 ⇒ 按从严处理：仍然调 lock()（方向不能跟着外层的兜底反过来）", async () => {
+    state.decideThrows = true;
+
+    await startApp();
+
+    expect(state.order).toContain("lock");
+    expect(errorSpy).toHaveBeenCalledWith("启动门禁判定失败，按从严处理（要求解锁）", expect.any(Error));
+    // 只降级"这次判定"，不能降级整条门禁路径：router 该装还是要装
+    expect(state.order).toContain("router-install");
+    expect(state.order).toContain("render");
   });
 
   it("load() 抛错也要 mount（Android 白屏防线）", async () => {
@@ -204,6 +263,7 @@ describe("main.ts 启动顺序", () => {
     expect(state.order).toEqual([
       "useLockStore",
       "load",
+      "decideBootLock",
       "lock",
       "usePrivacyStore",
       "privacy-load",
@@ -231,6 +291,7 @@ describe("main.ts 启动顺序", () => {
     expect(state.order).toEqual([
       "useLockStore",
       "load",
+      "decideBootLock",
       "lock",
       "usePrivacyStore",
       "privacy-load",

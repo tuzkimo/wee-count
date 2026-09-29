@@ -212,7 +212,9 @@ describe("useShareIntake", () => {
 
     lock.unlock();
     await flushPromises();
-    expect(fs.readTextFile).toHaveBeenCalledTimes(1);
+    // 2 = 这次补拉的 1 次读 + 消费时"复核盘上还是不是这一份"的 1 次读（compare-and-delete，
+    // 见 ⑮）。条数仍然是精确的杀手：漏掉补拉 ⇒ 1，多出一次拉取 ⇒ 3。
+    expect(fs.readTextFile).toHaveBeenCalledTimes(2);
     expect(useAiChatStore().attachedImage).not.toBeNull();
   });
 
@@ -340,5 +342,109 @@ describe("useShareIntake", () => {
     await flushPromises();
     expect(fs.readTextFile).toHaveBeenCalledTimes(1);
     expect(useAiChatStore().attachedImage).toBeNull();
+  });
+
+  it("⑬ 图已经不在了（删图抛错）⇒ pending.json 仍被删掉，本次结果不受影响", async () => {
+    // 真机形态：原生的 latest wins 已经把旧 .bin 删了（新分享抢在消费中途到达），
+    // 于是"删图"这一步抛 ENOENT。若它把后面的"删 pending.json"整段跳过，盘上就留下
+    // 一个指向不存在文件的 pending.json ⇒ 之后每次回前台都弹一次「读不到这张图片」。
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const raw = imageRaw();
+    fs.readTextFile.mockResolvedValue(raw);
+    fs.remove.mockImplementation(async (path: string) => {
+      if (path.endsWith(".bin")) throw new Error(NOT_FOUND);
+    });
+
+    await mountHost();
+
+    // 承重断言：pending.json 必须被删（旧实现里这条红）
+    expect(fs.remove).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 16 });
+    // 本次结果不受影响：附件已进 store，且**不弹**失败文案
+    expect(useAiChatStore().attachedImage).not.toBeNull();
+    expect(useAiChatStore().imageNotice).toBe("");
+    // 删图失败只留一条日志
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("⑭ 先删 pending.json 再删图（权威标记优先：中途被打断也不会留下毒丸）", async () => {
+    const raw = imageRaw();
+    fs.readTextFile.mockResolvedValue(raw);
+
+    await mountHost();
+
+    const removed = fs.remove.mock.calls.map((call) => call[0] as string);
+    expect(removed[0]).toBe("share-inbox/pending.json");
+    expect(removed[1]).toBe(`share-inbox/${(JSON.parse(raw) as { file: string }).file}`);
+  });
+
+  it("⑮ 处理期间盘上换成了新的一份（又来了分享）⇒ 一个文件都不删，不吞掉用户刚分享的那次", async () => {
+    // 触发窗口 = 本次的"读字节 + canvas 压缩"那几十~几百毫秒：原生写进第二次分享，
+    // 并顺手删掉旧 payload 引用的 .bin（latest wins）。此时无条件删 pending.json
+    // 就是把**新那一份**的权威标记删掉 ⇒ 新分享静默丢失、只剩一个孤儿 .bin。
+    const first = imageRaw();
+    const second = imageRaw();
+    let reads = 0;
+    fs.readTextFile.mockImplementation(async () => {
+      reads += 1;
+      return reads === 1 ? first : second;
+    });
+
+    await mountHost();
+
+    // 承重断言：这次一份都不许删（旧实现里这条红）
+    expect(fs.remove).not.toHaveBeenCalled();
+    // 本次分享本身照旧成功 —— 被保护的是"别人的那一份"
+    expect(useAiChatStore().attachedImage).not.toBeNull();
+    expect(useAiChatStore().imageNotice).toBe("");
+  });
+
+  it("⑯ 复核 pending.json 抛真错误 ⇒ 也不删任何文件（宁可留残留让下次自愈，不做盲删）", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const raw = imageRaw();
+    let reads = 0;
+    fs.readTextFile.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 1) return raw;
+      throw new Error("forbidden path: not allowed by scope");
+    });
+
+    await mountHost();
+
+    expect(fs.remove).not.toHaveBeenCalled();
+    expect(useAiChatStore().attachedImage).not.toBeNull();
+    // 断言到**文案**：只数一条 warn 的话，把 consume 里的复核 try/catch 整段删掉也照样绿
+    // （异常会冒到 shareIntake 的 consume 边界，同样是"没删文件 + 一条 warn"）。
+    expect(warn).toHaveBeenCalledWith(
+      "[ai/share] 复核 pending.json 失败，本次不删任何文件：",
+      expect.any(Error),
+    );
+  });
+
+  it("⑰ 复核拒绝删除之后，盘上那份新分享必须在下一次事件拉取里被处理（不静默吞掉）", async () => {
+    // ⑮ 保护了"不删别人的那份"，这条守住它的另一半：拒绝之后新分享**不能**变成永久丢失。
+    const first = imageRaw();
+    const second = imageRaw();
+    const firstFile = (JSON.parse(first) as { file: string }).file;
+    const secondFile = (JSON.parse(second) as { file: string }).file;
+    let reads = 0;
+    fs.readTextFile.mockImplementation(async () => {
+      reads += 1;
+      // 1 = 本次拉取读到旧那份；2 = 复核读到新那份（拒绝删除）；3+ = 下一次拉取读到新那份
+      return reads === 1 ? first : second;
+    });
+
+    await mountHost();
+    expect(fs.remove).not.toHaveBeenCalled();
+    expect(fs.readFile).not.toHaveBeenCalledWith(`share-inbox/${secondFile}`, expect.anything());
+
+    // 下一次事件拉取（回到前台）应当把新那份处理掉并删干净
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    await flushPromises();
+
+    expect(fs.readFile).toHaveBeenCalledWith(`share-inbox/${secondFile}`, { baseDir: 16 });
+    expect(fs.remove).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 16 });
+    expect(fs.remove).toHaveBeenCalledWith(`share-inbox/${secondFile}`, { baseDir: 16 });
+    expect(firstFile).not.toBe(secondFile);
   });
 });
