@@ -110,6 +110,9 @@ async function mountHost(host = Host): Promise<VueWrapper> {
     routes: [
       { path: "/", component: { template: "<div />" } },
       { path: "/ai", component: { template: "<div />" } },
+      // 真机上分享触发的解锁会先落在这一页（守卫把人赶过来）；本文件里没有守卫，
+      // 所以路由表必须自己有这一条，⑱ 才能停在解锁页上。
+      { path: "/unlock", component: { template: "<div />" } },
     ],
   });
   await router.push("/");
@@ -446,5 +449,34 @@ describe("useShareIntake", () => {
     expect(fs.remove).toHaveBeenCalledWith("share-inbox/pending.json", { baseDir: 16 });
     expect(fs.remove).toHaveBeenCalledWith(`share-inbox/${secondFile}`, { baseDir: 16 });
     expect(firstFile).not.toBe(secondFile);
+  });
+
+  it("⑱ 人还停在解锁页时补拉成功 ⇒ 用 **replace** 去 /ai（按一次返回不会回到解锁页）", async () => {
+    // 真机 bug：`UnlockPage.leave()` 先 unlock（同步唤醒本补拉）再 fire-and-forget 地
+    // replace(回跳目标)，补拉紧接着 push("/ai") 把它**取消**掉 ⇒ `/unlock` 那条历史条目
+    // 留在栈里，锁已经开了、用户按一次返回却又回到解锁页。
+    // 杀手：把 `pushAi` 里 `/unlock` 那条分支去掉（退回无条件 `push`）⇒ 最后一条断言红。
+    const lock = useLockStore();
+    lock.isLockConfigured = true;
+    lock.isLocked = true;
+    fs.readTextFile.mockResolvedValue(imageRaw());
+
+    await mountHost();
+    // 前置：锁着的时候连 pending.json 都没读（④ 的口径），所以附件还是空
+    expect(useAiChatStore().attachedImage).toBeNull();
+
+    // 用 push 而不是 replace 到这里：真机上解锁页是被守卫"赶"过来的，历史栈里
+    // 它前面还有用户原本那一页 —— 这正是"按返回会回到哪里"的判据，必须造出来。
+    await router.push("/unlock?redirect=%2Faccounts");
+    expect(router.currentRoute.value.path).toBe("/unlock");
+
+    lock.isLocked = false; // 用户解锁 ⇒ watch 补拉
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe("/ai"));
+    expect(useAiChatStore().attachedImage).not.toBeNull();
+
+    // 关键：这条导航必须是 replace。push 的话历史栈里会留下解锁页，
+    // 真机上一按返回就回到它（而锁已经开了）。
+    router.back();
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe("/"));
   });
 });

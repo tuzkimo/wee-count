@@ -122,7 +122,18 @@ export function useShareIntake(options: { retryDelayMs?: number } = {}): void {
     setNotice: (text) => ai.setImageNotice(text),
     pushAi: () => {
       // 已经在 AI 页就不推：避免历史栈里堆一串重复条目
-      if (router.currentRoute.value.path !== "/ai") void router.push("/ai");
+      if (router.currentRoute.value.path === "/ai") return;
+      // 从**解锁页**出来时必须用 `replace`：`UnlockPage.leave()` 是"先 unlock（同步唤醒
+      // 本补拉）再 fire-and-forget 地 replace(回跳目标)"，我们这次导航会把它取消掉
+      // （vue-router 里后发起的导航会取消前一个），那条 replace 不落地 ⇒ `/unlock` 就留在
+      // 历史栈里 ⇒ 用户按一次返回又回到解锁页，而锁其实已经开了。
+      // 用 replace 就没有这个问题：无论谁先落地，`/unlock` 那条条目都会被换掉。
+      // （守卫侧还有一道收口：解锁态下 `/unlock` 不再放行，见 `lockGuard.resolveLockRedirect`。）
+      if (router.currentRoute.value.path === "/unlock") {
+        void router.replace("/ai");
+        return;
+      }
+      void router.push("/ai");
     },
   };
 

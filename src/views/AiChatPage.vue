@@ -139,17 +139,25 @@ function openAttachmentImage(): void {
 }
 
 /**
- * 大图要不要打码：与缩略图**同一条判定**（`isMasked`），附件走同一条规则的"从未揭示"分支。
- * 附件没有 messageId ⇒ `revealed` 里不可能有它 ⇒ 等价于只看全局遮蔽。
+ * 大图要不要打码：与缩略图**同一条判定**（`isMasked`）。
+ * 待发附件（`messageId === null`）走"一律不打码"，与它的缩略图保持同一条规则。
  */
 const viewerMasked = computed(() => {
   const target = viewer.value;
-  if (target === null) return false;
-  return shouldMaskAmounts(amountsHidden.value, target.messageId !== null && ai.revealed.has(target.messageId));
+  if (target === null || target.messageId === null) return false;
+  return shouldMaskAmounts(amountsHidden.value, ai.revealed.has(target.messageId));
 });
 
-/** 待发附件的缩略图与它的大图共用同一个判定（页面算一次，透传给 composer） */
-const attachmentMasked = computed(() => shouldMaskAmounts(amountsHidden.value, false));
+/**
+ * 待发附件（预览窗格）的缩略图与它的大图：**一律不打码**。
+ *
+ * 为什么它和历史消息不同：历史消息是"已经发出去的账目截图"，遮蔽防的是之后被人翻屏幕；
+ * 而待发附件是用户**刚刚**分享进来、正要发出去的那一张 —— 遮它等于每次截图记账都要先点一次
+ * 全局眼睛，而眼睛是全局开关（点开会把历史一起揭掉），于是"防偷看"变成"给自己添一步"。
+ * 实机反馈原话：「预览窗格的图片不用模糊的，历史对话的再模糊，否则每次截图记账，都要先点一下
+ * 眼睛，有点本末倒置」。历史消息那条路径（`isMasked` / `viewerMasked`）不受影响。
+ */
+const attachmentMasked = computed(() => false);
 
 /** 「知道了」：先落盘再改内存（失败即 reject）⇒ 失败时卡片留在原地，这里如实报出来 */
 async function onPrivacyDismiss(): Promise<void> {
@@ -454,7 +462,8 @@ watch(
       `@attach` / `@remove-attachment` 两个方向都必须接：漏掉前者选完图不出预览，
       漏掉后者点 ✕ 没反应 —— 两者都是"页面以为组件自己在管"这类断线的典型形态。
       `@preview` 是第三个方向：点待发附件的缩略图看大图，与历史缩略图同一个查看器；
-      `:image-masked` 把"要不要打码"的判定从组件里收回到页面（附件跟随全局遮蔽）。
+      `:image-masked` 把"要不要打码"的判定从组件里收回到页面 —— 待发附件恒 `false`（实机
+      反馈：预览窗格不模糊，只有历史对话模糊，见 `attachmentMasked`）。
     -->
     <ChatComposer
       :sending="ai.sending"

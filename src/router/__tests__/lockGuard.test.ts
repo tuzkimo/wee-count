@@ -110,4 +110,41 @@ describe("resolveLockRedirect", () => {
       },
     );
   });
+
+  it("解锁态下 /unlock 不放行：原地换到它带的回跳目标（真机：解锁后按返回又回到解锁页）", () => {
+    // 杀手：把新加的 `if (state.isLocked) return true;` 去掉（恢复无条件放行）⇒ 本用例红。
+    // 这条钉的是「解锁态下不存在解锁页」：残留条目（leave 的 replace 被补拉的 push 挤掉、
+    // WebView 重载、手输 URL）一律不许渲染成页面。
+    expect(
+      resolveLockRedirect(target("/unlock?redirect=%2Faccounts"), { isLocked: false }, LOCK_ALLOWED_PAGES),
+    ).toEqual({ path: "/accounts", replace: true });
+
+    // 没有回跳参数 ⇒ 回首页，而不是停在解锁页
+    expect(resolveLockRedirect(target("/unlock"), { isLocked: false }, LOCK_ALLOWED_PAGES)).toEqual({
+      path: "/",
+      replace: true,
+    });
+
+    // 深链的 query 不能丢
+    expect(
+      resolveLockRedirect(target("/unlock?redirect=%2Frecord%2F123%3Fa%3D1"), { isLocked: false }, LOCK_ALLOWED_PAGES),
+    ).toEqual({ path: "/record/123?a=1", replace: true });
+
+    // 回跳原文是**不可信输入**（用户可直接深链 /unlock?redirect=<任意值>）：
+    // 消毒规则与守卫自己产出回跳值时同一套 —— 外站、协议相对、解锁页自身都兜成 /
+    for (const raw of ["https://evil.example", "//evil.example", "/unlock?redirect=/accounts"]) {
+      expect(
+        resolveLockRedirect(
+          target(`/unlock?redirect=${encodeURIComponent(raw)}`),
+          { isLocked: false },
+          LOCK_ALLOWED_PAGES,
+        ),
+      ).toEqual({ path: "/", replace: true });
+    }
+
+    // 必须 replace：push 的话返回键还是能回到解锁页（这正是真机上的表现）
+    const stale = resolveLockRedirect(target("/unlock"), { isLocked: false }, LOCK_ALLOWED_PAGES);
+    expect(stale).not.toBe(true);
+    expect(stale === true ? null : stale.replace).toBe(true);
+  });
 });

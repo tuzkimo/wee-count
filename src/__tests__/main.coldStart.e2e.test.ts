@@ -66,6 +66,8 @@ vi.mock("@/views/ReportsPage.vue", () => ({ default: page.make("ReportsPage") })
 vi.mock("@/views/MePage.vue", () => ({ default: page.make("MePage") }));
 vi.mock("@/views/WelcomePage.vue", () => ({ default: page.make("WelcomePage") }));
 vi.mock("@/views/LoginPage.vue", () => ({ default: page.make("LoginPage") }));
+// `/ai` 也必须是替身：真实页面组件要开真 sqlite / 真 store，端到端环境里挂不起来。
+vi.mock("@/views/AiChatPage.vue", () => ({ default: page.make("AiChatPage") }));
 
 // 真实 `@/db/meta` 会去开 sqlite:_meta.db（真机行为、单测环境无 Tauri IPC）。
 // 只替掉取数，守卫的判定逻辑仍是真实的。
@@ -230,6 +232,9 @@ beforeEach(() => {
 afterEach(() => {
   // 环境标记按用例回收：哪一条用例先跑都不能影响另一段（Tauri 段 / 非 Tauri 段）。
   exitTauri();
+  // `vi.restoreAllMocks()` **不覆盖** `vi.stubGlobal` 装的全局（分享用例探 `createImageBitmap`），
+  // 少了这一句，那个替身会漏给后面的用例。
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -379,5 +384,145 @@ describe("跨进程自动锁窗口的启动门禁（Tauri 内：settings.json + 
     expect(window.location.pathname).toBe("/unlock");
     expect(page.renders.UnlockPage ?? 0).toBeGreaterThan(0);
     expectNoBusinessPageRendered();
+  });
+
+  /**
+   * 收件箱的两个名字与 `useShareIntake.ts` / `MainActivity.kt` 逐字一致。
+   *
+   * `pending.json` 的形状照 `shareIntake.parsePending` 抄（`{v:1,kind:"image",file,count}`）：
+   * 差一个字段就会走"形状不认 ⇒ 按读失败处理并消费"那条路，用例会以一种与导航无关的
+   * 方式变红（附件不进 store），而不是我们想钉的那条。
+   */
+  const PENDING_PATH = "share-inbox/pending.json";
+  const SHARE_FILE = "8a1f0c34-5d2b-4f77-9c6e-2b0d5a7e91c3.bin";
+  const SHARE_PATH = `share-inbox/${SHARE_FILE}`;
+  /** JPEG 的字节头：`sniffImageMime` 的准入判据**只有魔数**（FF D8 FF…）。 */
+  const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+
+  /**
+   * 真机问题：「系统分享（截图 ⇒ 分享 ⇒ 一起数钱）时应用处于锁定态 ⇒ 输 PIN 解锁 ⇒
+   * 解锁之后又落回 `/unlock`」。期望是解锁后停在 `/ai`（收件箱补拉把人带过去）。
+   *
+   * 这条用例把**整条跨进程链条**接起来验：假盘里那份待消费的分享 + `user_closed` 的会话
+   * 记录（⇒ 启动必锁）⇒ 真 `main.ts` 冷启动 ⇒ 落 `/unlock` ⇒ 解锁（`lock.unlock()` 与
+   * `router.replace(回跳值)`，照 `UnlockPage.leave()` 的两条副作用）⇒ 收件箱补拉 ⇒ `/ai`。
+   *
+   * 断言不只看终点：解锁之后 `router.afterEach` 记下的**每一次**落点都不许是 `/unlock`。
+   * 只看终点的话，「先落 `/unlock`、下一拍才跳 `/ai`」和「压根没回过去」会得到同一个绿。
+   */
+  it("⑦ 分享触发的解锁 ⇒ 落在 /ai；解锁之后没有任何一次导航回到 /unlock（回前台也一样）", async () => {
+    // ---- 假盘预置：一份待消费的分享 ----
+    fakeFs.files.set(
+      PENDING_PATH,
+      JSON.stringify({ v: 1, kind: "image", file: SHARE_FILE, count: 1 }),
+    );
+    fakeFs.files.set(SHARE_PATH, "（内容无关紧要：读字节的替身按字节头喂真 JPEG）");
+    fakeFs.readFile.mockImplementation(async () => JPEG_BYTES);
+    // 真 canvas 链的探针（与 `useShareIntake.test.ts` 同款）：happy-dom 里 `createImageBitmap`
+    // 是 undefined、`getContext("2d")` 返回 null。不探这两处，这份分享会被判成"解不开"而走
+    // **失败路径**（那条路也会 pushAi），于是用例证明不了"截图真的进了 AI 页"。
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 4000, height: 3000, close: vi.fn() })),
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
+      `data:image/jpeg;base64,${Buffer.alloc(3000, 0x41).toString("base64")}`,
+    );
+
+    // ---- 假盘预置：上一次会话是「用户自己关的」⇒ 启动必锁（判据由用例 ③ 钉住，这里只借用）----
+    fakeFs.files.set(RECORD_PATH, sessionRecord(Date.now() - 1_000, "user_closed", false));
+
+    await coldStart();
+
+    // 前置条件：首帧真的锁着。不成立的话，下面验的就不是"分享触发的那一次解锁"。
+    expect(window.location.pathname).toBe("/unlock");
+    expect(page.renders.UnlockPage ?? 0).toBeGreaterThan(0);
+
+    // 引导跑完后 `vi.resetModules()` 的注册表还是热的：动态 import 拿到的就是 `main.ts`
+    // 自己用的那一份 router / lock store / aiChat store（pinia 的 `install` 会
+    // `setActivePinia`，所以这里 `useLockStore()` 取到的与 App.vue 里是同一个实例）。
+    const router = (await import("@/router")).default;
+    const { sanitizeRedirect } = await import("@/router/lockGuard");
+    const { useLockStore } = await import("@/stores/lock");
+    const { useAiChatStore } = await import("@/stores/aiChat");
+    const lock = useLockStore();
+
+    /** 解锁之后的每一次落点（含被守卫重定向后的落点）。 */
+    const landings: string[] = [];
+    const stopRecording = router.afterEach((to) => {
+      landings.push(to.fullPath);
+    });
+
+    // ---- 模拟用户在解锁页输对 PIN ----
+    // `UnlockPage` 在本文件里是渲染计数替身，`leave()` 不会跑，所以那两条副作用只能在这里
+    // 照抄：`lock.unlock()` + `router.replace(回跳值)`（回跳值同样过 `sanitizeRedirect`，
+    // 与 `UnlockPage.leave()` 逐字同款）。源码一个字都不改。
+    lock.unlock();
+    void router.replace(sanitizeRedirect(router.currentRoute.value.query.redirect));
+
+    // ---- 收件箱补拉把人带到 /ai（`useShareIntake` 的解锁 watch ⇒ intakeShare ⇒ pushAi）----
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/ai"), { timeout: 3000 });
+    expect(page.renders.AiChatPage ?? 0).toBeGreaterThan(0);
+
+    // 这份分享真的走完了成功路径：附件进了 store、`pending.json` 已从盘上消费掉。
+    expect(useAiChatStore().attachedImage).not.toBeNull();
+    expect(fakeFs.files.has(PENDING_PATH)).toBe(false);
+
+    // 承重断言一：解锁之后 router 落过的**每一个**去处都不是解锁页。
+    // （把 `lockGuard` 的 `if (!state.isLocked) return true` 去掉、或让解锁后再锁一次 ⇒ 红）
+    expect(landings.length).toBeGreaterThan(0);
+    expect(landings.filter((p) => p.startsWith("/unlock"))).toEqual([]);
+    // 承重断言二：最后一个落点是 AI 页。
+    expect(landings[landings.length - 1]).toBe("/ai");
+
+    // ---- 再回一次前台：离开 20 秒（< 配置的 60 秒窗口，`valid.auto_lock_seconds`）----
+    // 两个时钟各由独立变量驱动、同时前进（与 `useAutoLock.test.ts` 同款）：`computeElapsed`
+    // 取两者的较大值，只推一个会被另一个兜住 ⇒ 假绿。
+    let wallNow = Date.now();
+    let monotonicNow = performance.now();
+    vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    wallNow += 20_000;
+    monotonicNow += 20_000;
+    visibility.mockReturnValue("visible");
+    const readsBeforeResume = fakeFs.readTextFile.mock.calls.length;
+    document.dispatchEvent(new Event("visibilitychange"));
+    // 一次宏任务即可排空这条链上的全部微任务（假盘全是 async 函数，没有真定时器）。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 先证明这次"回前台"真的被处理了（收件箱补拉又读了一次盘），再断言落点没变 ——
+    // 否则"事件没派发出去"与"派发了但没人回解锁页"会得到同一个绿。
+    expect(fakeFs.readTextFile.mock.calls.length).toBeGreaterThan(readsBeforeResume);
+    expect(lock.isLocked).toBe(false); // 窗口没过期 ⇒ 不该有自动锁
+    expect(window.location.pathname).toBe("/ai");
+    expect(page.renders.AiChatPage ?? 0).toBeGreaterThan(0);
+
+    stopRecording();
+    expect(landings.filter((p) => p.startsWith("/unlock"))).toEqual([]);
+
+    // ---- 承重断言三：解锁页没留在历史栈里 —— 真按一次返回验证 ----
+    //
+    // 真机上那个「解锁完以后返回，会回到解锁页」就是这么来的：`UnlockPage.leave()` 的
+    // `replace(回跳值)` 被收件箱补拉的 `push("/ai")` **取消**掉（vue-router 里后发起的导航
+    // 取消前一个）⇒ `/unlock` 那条历史条目没被替换掉 ⇒ 锁已经开了，按一次返回却又回到它。
+    //
+    // ⚠️ 只记 `landings` 看不见它：被取消的导航同样触发 `afterEach`（第三参才是 failure，
+    // `to` 是那个**根本没落地**的目标），所以落点序列看着很健康。这里改成按真的返回键。
+    // ⚠️ 这条断言是**两层叠加**才守得住的（`pushAi` 用 replace 去堵源头、守卫用
+    // 「解锁态不放行 /unlock」兜残条）：只坏一层仍会绿 —— 单坏 `pushAi` ⇒ 守卫把残条换走；
+    // 单坏守卫 ⇒ 根本没有残条。它要的是"两层一起坏"才红，正因如此它才值得留着：
+    // 将来任何一层被重构掉，这条端到端用例就是最后一道。
+    // 上面两条落点断言则有各自的单点杀手（让守卫在解锁态也把人往 /unlock 送、
+    // 或让 `App.vue` 的锁 watch 在解锁那一次也跳 /unlock，两条都实测能让它们红）。
+    router.back();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(window.location.pathname).not.toBe("/unlock");
+    expect(lock.isLocked).toBe(false);
   });
 });

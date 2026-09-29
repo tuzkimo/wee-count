@@ -45,8 +45,11 @@ const props = withDefaults(
     enabled?: boolean;
     image?: ImageAttachment | null;
     /**
-     * 待发附件要不要打码（金额遮蔽开着时）。**判定在页面**（`useAmountMask` + `revealed` 属于
-     * 页面/消息，不属于输入栏）⇒ 这里只透传给 `AttachmentPreview`，不自己读 store。
+     * 待发附件要不要打码。**判定在页面**（`useAmountMask` + `revealed` 属于页面/消息，
+     * 不属于输入栏）⇒ 这里只透传给 `AttachmentPreview`，不自己读 store。
+     *
+     * 页面目前**恒传 `false`**（实机反馈：「预览窗格的图片不用模糊的，历史对话的再模糊」）
+     * —— 能力保留、语义不变，将来若要恢复"预览也遮"，改页面那一处即可。
      */
     imageMasked?: boolean;
   }>(),

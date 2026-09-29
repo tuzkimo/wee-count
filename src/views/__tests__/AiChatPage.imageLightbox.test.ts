@@ -196,17 +196,22 @@ describe("AI 聊天页：点历史消息缩略图 ⇒ 全屏预览", () => {
 describe("AI 聊天页：点待发附件缩略图 ⇒ 全屏预览", () => {
   // 杀手：删掉 AttachmentPreview 缩略图的 `@click="emit('preview')"`、或 ChatComposer 的
   // `@preview="emit('preview')"` 转发、或页面上的 `@preview="openAttachmentImage"` ⇒ 第一条红
-  it("点附件缩略图 ⇒ 查看器打开的是那张待发图；遮蔽开着时附件缩略图也模糊", async () => {
+  it("点附件缩略图 ⇒ 查看器打开的是那张待发图；遮蔽开着时**待发附件也不模糊**（实机反馈）", async () => {
     const w = await mountPage();
     aiStore().attachedImage = attachment(ATTACH_URL);
+    aiStore().messages = [imageMessage("m1", HISTORY_URL)];
     await flushPromises();
 
-    expect(w.get(ATTACH_THUMB).classes()).toContain("blur-lg");
+    // 遮蔽开着：历史消息仍然模糊（隐私那半边不许被这次改动带走）
+    expect(w.get(THUMB).classes()).toContain("blur-lg");
+    // 待发附件（预览窗格）不模糊：它就是用户刚分享进来、正要发出去的那一张
+    expect(w.get(ATTACH_THUMB).classes()).not.toContain("blur-lg");
 
     await w.get(ATTACH_THUMB).trigger("click");
 
     expect(w.get(LIGHTBOX_IMAGE).attributes("src")).toBe(ATTACH_URL);
-    expect(w.get(LIGHTBOX_IMAGE).classes()).toContain("blur-lg");
+    // 大图与缩略图同一条规则：待发附件的大图也清晰
+    expect(w.get(LIGHTBOX_IMAGE).classes()).not.toContain("blur-lg");
   });
 });
 
