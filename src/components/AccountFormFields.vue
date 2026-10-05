@@ -12,6 +12,14 @@ const props = defineProps<{
   creditLimit: string;
   repaymentDay: string;
   color: string;
+  /**
+   * 期初金额只读（账户已有流水时由 AccountEdit 传入）。
+   *
+   * 判据是「账户有没有流水」而不是「是不是编辑态」：没有流水的账户改期初只是
+   * 修正一个刚填错的数字，锁死它等于逼用户删账户重建；有流水再改，已发生的
+   * 报表会跟着变形。
+   */
+  initialBalanceLocked?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +55,15 @@ const isLiability = computed(() => ACCOUNT_CATEGORY[props.accountType] === "liab
 function switchCategory(tab: "asset" | "liability") {
   emit("update:categoryTab", tab);
   emit("update:accountType", tab === "asset" ? "bank" : "credit_card");
+}
+
+/**
+ * readonly 只挡用户输入，挡不住程序化赋 value + 派发 input 事件。锁定态必须在
+ * 处理器里吞掉事件：否则 AccountEdit 会拿着被改过的期初金额去提交/推同步。
+ */
+function onInitialBalanceInput(event: Event) {
+  if (props.initialBalanceLocked) return;
+  emit("update:initialBalance", (event.target as HTMLInputElement).value);
 }
 </script>
 
@@ -112,9 +129,16 @@ function switchCategory(tab: "asset" | "liability") {
     type="number"
     step="0.01"
     placeholder="0.00"
-    class="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-text outline-none focus:border-primary"
-    @input="emit('update:initialBalance', ($event.target as HTMLInputElement).value)"
+    :readonly="initialBalanceLocked"
+    class="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none"
+    :class="initialBalanceLocked
+      ? 'mb-1 cursor-not-allowed bg-gray-50 text-text-secondary'
+      : 'mb-4 text-text focus:border-primary'"
+    @input="onInitialBalanceInput"
   />
+  <p v-if="initialBalanceLocked" class="mb-4 text-xs text-text-secondary">
+    该账户已有流水，期初金额不可再修改；余额变动请通过「记一笔」体现
+  </p>
 
   <!-- 负债条件字段 -->
   <template v-if="isLiability">

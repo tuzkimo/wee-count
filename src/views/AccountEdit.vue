@@ -9,7 +9,7 @@ import { ACCOUNT_CATEGORY } from "@/types";
 import { useAccountStore } from "@/stores/account";
 import { useAuthStore } from "@/stores/auth";
 import { useLedgerStore } from "@/stores/ledger";
-import { getCurrentUserId } from "@/db/userDb";
+import { getCurrentUserId, getUserDb } from "@/db/userDb";
 import AppHeader from "@/components/AppHeader.vue";
 import AccountFormFields from "@/components/AccountFormFields.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
@@ -40,6 +40,14 @@ const color = ref("#3b82f6");
 
 const deleteDialogVisible = ref(false);
 const saving = ref(false);
+/**
+ * 期初金额是否锁定：只看该账户有没有流水。
+ *
+ * 危害来自历史而不是编辑本身——账户一旦有流水，改期初会让已经发生的报表跟着变形；
+ * 而没有流水的账户改期初只是修正一个刚填错的数字。查询与 `accountStore.remove`
+ * 的占用判据同款（两侧账户 + 排除软删），两处口径必须一致：能删的账户就该能改期初。
+ */
+const initialBalanceLocked = ref(false);
 
 onMounted(async () => {
   const ledgerStore = useLedgerStore();
@@ -56,6 +64,15 @@ onMounted(async () => {
     creditLimit.value = account.value.credit_limit ? String(account.value.credit_limit) : "";
     repaymentDay.value = account.value.repayment_day ? String(account.value.repayment_day) : "";
     color.value = account.value.color;
+
+    const db = getUserDb();
+    if (db) {
+      const rows = await db.select<{ count: number }[]>(
+        "SELECT COUNT(*) AS count FROM transactions WHERE (from_account_id = ? OR to_account_id = ?) AND is_deleted = 0",
+        [accountId.value, accountId.value],
+      );
+      initialBalanceLocked.value = (rows[0]?.count ?? 0) > 0;
+    }
   }
 });
 
@@ -63,11 +80,16 @@ async function handleSave() {
   if (!name.value.trim() || saving.value) return;
   saving.value = true;
   try {
+    // 有流水时刻意不带 initial_balance：只读只是 UI 约束，payload 里不带它才是保证——
+    // update 对未提供的字段会回退用库里的现值，同步对象依旧完整（见 account.ts 的 LWW 说明）。
+    // 无流水时必须带上，否则「可编辑却改不动」，用户改的期初会被静默丢弃。
     await accountStore.update(accountId.value, {
       name: name.value.trim(),
       type: accountType.value,
       category: ACCOUNT_CATEGORY[accountType.value],
-      initial_balance: parseFloat(initialBalance.value) || 0,
+      ...(initialBalanceLocked.value
+        ? {}
+        : { initial_balance: parseFloat(initialBalance.value) || 0 }),
       credit_limit: creditLimit.value ? parseFloat(creditLimit.value) : undefined,
       repayment_day: repaymentDay.value ? parseInt(repaymentDay.value, 10) : undefined,
       color: color.value,
@@ -114,6 +136,7 @@ async function handleDelete() {
         v-model:credit-limit="creditLimit"
         v-model:repayment-day="repaymentDay"
         v-model:color="color"
+        :initial-balance-locked="initialBalanceLocked"
       />
     </div>
 
